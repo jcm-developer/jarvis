@@ -1,0 +1,27 @@
+name = "jarvis"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Este fichero va a git. NUNCA pongas secretos aquí: usa `wrangler secret put`.
+[vars]
+ALLOWED_TELEGRAM_IDS = ""          # tu telegram user id, separados por coma
+DEFAULT_TIMEZONE = "Europe/Madrid"
+LOG_LEVEL = "info"
+
+# Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
+# Crear con:  wrangler kv namespace create STATE
+[[kv_namespaces]]
+binding = "STATE"
+id = "REEMPLAZAR_CON_EL_ID_DEL_NAMESPACE"
+
+# Workers AI. Se usa a partir de la Fase 3 (Whisper). Declararlo ya no cuesta nada.
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true
+
+# Fase 5: briefing y recordatorios.
+# [triggers]
+# crons = ["0 * * * *"]
