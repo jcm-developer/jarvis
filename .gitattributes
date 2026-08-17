@@ -1,0 +1,13 @@
+# Normaliza finales de línea: en el repo siempre LF, en el checkout lo que toque.
+# Evita diffs enteros de "todo el fichero cambió" al trabajar desde Windows y Linux.
+* text=auto eol=lf
+
+# El lockfile lo gestiona npm: no lo trates como conflicto a resolver a mano.
+package-lock.json -diff linguist-generated
+
+# Binarios: nunca convertir.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
