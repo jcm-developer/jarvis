@@ -3,17 +3,28 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Este fichero va a git. NUNCA pongas secretos aquí: usa `wrangler secret put`.
+# ⚠️ Este fichero está en un repo PÚBLICO. Nada sensible aquí.
+#
+# Además, `wrangler deploy` sobrescribe [vars] con lo que haya en este fichero:
+# cualquier variable que edites en el dashboard se pierde en el siguiente push.
+# Este fichero es la única fuente de verdad para las vars.
+#
+# Los secrets funcionan al revés: `wrangler secret put` los guarda en Cloudflare
+# y los deploys NO los tocan. Se ponen una vez y sobreviven a todos los pushes.
+#
+#   wrangler secret put TELEGRAM_BOT_TOKEN
+#   wrangler secret put TELEGRAM_WEBHOOK_SECRET
+#   wrangler secret put ALLOWED_TELEGRAM_IDS   # tu telegram user id, separados por coma
 [vars]
-ALLOWED_TELEGRAM_IDS = ""          # tu telegram user id, separados por coma
 DEFAULT_TIMEZONE = "Europe/Madrid"
 LOG_LEVEL = "info"
 
 # Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
-# Crear con:  wrangler kv namespace create STATE
+# Crear con:  npx wrangler kv namespace create STATE
+# El id no es un secreto: sin credenciales de cuenta no sirve de nada.
 [[kv_namespaces]]
 binding = "STATE"
-id = "REEMPLAZAR_CON_EL_ID_DEL_NAMESPACE"
+id = "0e41914a829c4f87897b73eca34a2760"
 
 # Workers AI. Se usa a partir de la Fase 3 (Whisper). Declararlo ya no cuesta nada.
 [ai]

@@ -366,22 +366,31 @@ modelo como `{ok:false, error}` para que se autocorrija o lo explique.
 ### Variables de entorno
 
 ```
-# Secrets (wrangler secret put)
+# Secrets — se ponen una vez y sobreviven a todos los deploys
 TELEGRAM_BOT_TOKEN
 TELEGRAM_WEBHOOK_SECRET
+ALLOWED_TELEGRAM_IDS      # secret, no var: el repo es público
 NVIDIA_API_KEY
-GROQ_API_KEY            # opcional
+GROQ_API_KEY              # opcional
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 
-# Vars (wrangler.toml)
+# Vars (wrangler.toml) — se SOBRESCRIBEN en cada deploy
 LLM_PROVIDER = "nvidia"
 LLM_MODEL    = "meta/llama-3.3-70b-instruct"
-ALLOWED_TELEGRAM_IDS = "123456789"
 DEFAULT_TIMEZONE     = "Europe/Madrid"
 MAX_AGENT_ITERATIONS = "5"
 HISTORY_WINDOW       = "20"
 ```
+
+> Editar una var en el dashboard no sirve: el siguiente push la revierte al valor
+> de `wrangler.toml`. Los secrets funcionan al revés y los deploys no los tocan.
+
+### Despliegue
+
+**Cloudflare Workers Builds** conectado a `jcm-developer/jarvis`. Cada push a `main`
+ejecuta `npm run typecheck` y, solo si pasa, `npx wrangler deploy`. El typecheck actúa
+de barrera: un push que no compila no llega a producción.
 
 ### Bindings
 

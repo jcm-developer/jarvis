@@ -1,9 +1,16 @@
 # Copia este fichero a `.dev.vars` para desarrollo local.
 # `.dev.vars` está en .gitignore — no se sube nunca.
+#
 # En producción estos valores van con `wrangler secret put <NOMBRE>`.
+# Se ponen una sola vez: los deploys (incluidos los automáticos de Workers Builds)
+# no los sobrescriben.
 
 TELEGRAM_BOT_TOKEN="123456789:AA..."
 TELEGRAM_WEBHOOK_SECRET="una-cadena-larga-y-aleatoria"
+
+# Tu telegram user id (te lo da @userinfobot). Varios separados por coma.
+# Es un secret, no una var, porque el repo es público.
+ALLOWED_TELEGRAM_IDS="123456789"
 
 # A partir de la Fase 1
 # NVIDIA_API_KEY="nvapi-..."

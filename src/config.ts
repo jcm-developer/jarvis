@@ -17,9 +17,9 @@ export class ConfigError extends Error {}
  * como un 401 opaco de una API de terceros.
  */
 export function loadConfig(env: Env): Config {
-  const missing = (['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET'] as const).filter(
-    (key) => !env[key],
-  );
+  const missing = (
+    ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'ALLOWED_TELEGRAM_IDS'] as const
+  ).filter((key) => !env[key]);
   if (missing.length > 0) {
     throw new ConfigError(
       `Faltan secrets: ${missing.join(', ')}. Defínelos con \`wrangler secret put <NOMBRE>\` ` +
@@ -32,8 +32,8 @@ export function loadConfig(env: Env): Config {
     // Sin whitelist el bot es un servicio abierto: cualquiera consume cuota y,
     // a partir de la Fase 2, escribe en la base de datos.
     throw new ConfigError(
-      'ALLOWED_TELEGRAM_IDS está vacío. Añade tu telegram user id en wrangler.toml ' +
-        'antes de desplegar; el bot rechaza todo mientras esté vacío.',
+      'ALLOWED_TELEGRAM_IDS no contiene ningún id válido. Debe ser una lista de números ' +
+        'separados por coma (te lo da @userinfobot); el bot rechaza todo mientras esté vacío.',
     );
   }
 

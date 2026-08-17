@@ -7,12 +7,13 @@ export interface Env {
   STATE: KVNamespace;
   AI: Ai;
 
-  // --- Secrets ---
+  // --- Secrets (wrangler secret put / dashboard) ---
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
-
-  // --- Vars ---
+  /** Secret y no var: el repo es público y wrangler.toml se lee desde GitHub. */
   ALLOWED_TELEGRAM_IDS: string;
+
+  // --- Vars (wrangler.toml) ---
   DEFAULT_TIMEZONE: string;
   LOG_LEVEL?: string;
 }
