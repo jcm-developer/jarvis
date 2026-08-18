@@ -1,24 +1,28 @@
+import type { LLMMessage, ToolCall } from '../llm/provider';
 import type { Env } from '../types';
 
 /**
  * Historial de conversación de corto plazo, en KV.
  *
- * INTERINO. En la Fase 4 esto se sustituye por la tabla `messages` de Supabase,
- * que además guarda tool_calls, transcripciones y permite consultarlo. Vive aquí
- * de momento porque una conversación sin memoria del turno anterior no se puede
- * ni probar, y KV no exige montar la base de datos todavía.
+ * Guarda la secuencia COMPLETA de mensajes, incluidas las llamadas a herramientas
+ * y sus resultados. Guardar solo el texto visible parecía suficiente y no lo era:
+ * el modelo perdía constancia de lo que ya había hecho y repetía acciones —
+ * creaba dos veces la misma tarea al mencionarla de nuevo en el turno siguiente.
  *
- * Coste: 1 lectura + 1 escritura por mensaje. Con las 1.000 escrituras/día del
- * plan free, y contando la del dedupe, salen unos 500 mensajes diarios. De sobra
- * para uso personal, pero es el límite que primero se rozaría.
+ * INTERINO. En la Fase 4 lo sustituye la tabla `messages` de Supabase, cuyo
+ * esquema ya contempla estos mismos campos.
  */
 
 const PREFIX = 'history:';
 const TTL_SECONDS = 604_800; // 7 días
+/** Los resultados de herramienta pueden ser largos; en el historial basta el resumen. */
+const MAX_TOOL_CONTENT = 600;
 
 export interface StoredTurn {
-  role: 'user' | 'assistant';
-  content: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string | null;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
 }
 
 function key(chatId: number): string {
@@ -32,7 +36,7 @@ export async function loadHistory(env: Env, chatId: number): Promise<StoredTurn[
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isStoredTurn);
+    return trimToValidStart(parsed.filter(isStoredTurn));
   } catch {
     // Historial corrupto: mejor empezar limpio que romper la conversación.
     return [];
@@ -46,8 +50,7 @@ export async function appendTurns(
   turns: StoredTurn[],
   windowSize: number,
 ): Promise<void> {
-  // Ventana deslizante: solo interesan los últimos N turnos.
-  const merged = [...previous, ...turns].slice(-windowSize);
+  const merged = trimToValidStart([...previous, ...turns].slice(-windowSize));
   await env.STATE.put(key(chatId), JSON.stringify(merged), { expirationTtl: TTL_SECONDS });
 }
 
@@ -55,10 +58,41 @@ export async function clearHistory(env: Env, chatId: number): Promise<void> {
   await env.STATE.delete(key(chatId));
 }
 
+/** Convierte el historial guardado al formato que espera el proveedor. */
+export function toLLMMessages(turns: StoredTurn[]): LLMMessage[] {
+  return turns.map((turn) => {
+    const message: LLMMessage = { role: turn.role, content: turn.content };
+    if (turn.toolCalls?.length) message.toolCalls = turn.toolCalls;
+    if (turn.toolCallId) message.toolCallId = turn.toolCallId;
+    return message;
+  });
+}
+
+export function toolTurn(toolCallId: string, result: unknown): StoredTurn {
+  return {
+    role: 'tool',
+    toolCallId,
+    content: JSON.stringify(result).slice(0, MAX_TOOL_CONTENT),
+  };
+}
+
+/**
+ * Descarta mensajes del principio hasta encontrar un 'user'.
+ *
+ * Obligatorio, no cosmético: la ventana deslizante puede cortar justo entre un
+ * assistant con tool_calls y su resultado, y la API rechaza un mensaje 'tool'
+ * huérfano con un 400 que dejaría el bot mudo hasta hacer /reset.
+ */
+function trimToValidStart(turns: StoredTurn[]): StoredTurn[] {
+  let start = 0;
+  while (start < turns.length && turns[start]!.role !== 'user') start++;
+  return turns.slice(start);
+}
+
 function isStoredTurn(value: unknown): value is StoredTurn {
   if (typeof value !== 'object' || value === null) return false;
   const turn = value as Record<string, unknown>;
-  return (
-    (turn['role'] === 'user' || turn['role'] === 'assistant') && typeof turn['content'] === 'string'
-  );
+  const role = turn['role'];
+  if (role !== 'user' && role !== 'assistant' && role !== 'tool') return false;
+  return typeof turn['content'] === 'string' || turn['content'] === null;
 }

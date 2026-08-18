@@ -139,8 +139,7 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
 
   try {
     const outcome = await executeConfirmed(
-      pending.toolName,
-      pending.args,
+      pending.calls,
       { chatId: ctx.actor.chatId, from: query.from },
       ctx,
     );

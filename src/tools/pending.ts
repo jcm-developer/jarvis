@@ -3,17 +3,22 @@ import type { Env } from '../types';
 /**
  * Acciones destructivas a la espera de confirmación.
  *
- * Viven en KV con TTL corto: si el usuario no contesta en 5 minutos, la acción
- * caduca sola. Es lo correcto — una confirmación de hace media hora ya no
- * significa lo mismo, y el contexto de la conversación ha cambiado.
+ * Viven en KV con TTL: si el usuario no contesta, la acción caduca sola. Una
+ * confirmación de hace media hora ya no significa lo mismo, porque el contexto
+ * de la conversación ha cambiado.
  */
 
-const TTL_SECONDS = 300;
+const TTL_SECONDS = 900; // 15 min
 
-export interface PendingAction {
+export interface PendingCall {
   toolName: string;
   args: Record<string, unknown>;
-  /** Lo que se le enseñó al usuario al preguntar, para poder repetirlo al confirmar. */
+}
+
+export interface PendingAction {
+  /** Varias a la vez: "bórralas todas" se confirma de una sola vez, no una por una. */
+  calls: PendingCall[];
+  /** Lo que se le enseñó al usuario al preguntar. */
   prompt: string;
 }
 
@@ -49,15 +54,21 @@ export async function takePending(
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
     const candidate = parsed as Record<string, unknown>;
-    if (typeof candidate['toolName'] !== 'string') return null;
+    const calls = candidate['calls'];
+    if (!Array.isArray(calls) || calls.length === 0) return null;
+
     return {
-      toolName: candidate['toolName'],
-      args: (candidate['args'] ?? {}) as Record<string, unknown>,
+      calls: calls.filter(isPendingCall),
       prompt: typeof candidate['prompt'] === 'string' ? candidate['prompt'] : '',
     };
   } catch {
     return null;
   }
+}
+
+function isPendingCall(value: unknown): value is PendingCall {
+  if (typeof value !== 'object' || value === null) return false;
+  return typeof (value as Record<string, unknown>)['toolName'] === 'string';
 }
 
 function key(chatId: number, token: string): string {

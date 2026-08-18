@@ -5,9 +5,11 @@ import { logToolCall } from './db/logs';
 import { createProvider } from './llm';
 import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
-import { appendTurns, loadHistory } from './memory/history';
+import type { StoredTurn } from './memory/history';
+import { appendTurns, loadHistory, toLLMMessages, toolTurn } from './memory/history';
 import { buildSystemPrompt } from './prompts/system';
 import { loadMemories } from './tools/memory';
+import type { PendingCall } from './tools/pending';
 import { savePending } from './tools/pending';
 import { getTool, toolSchemas } from './tools/registry';
 import type { ToolContext, ToolResult } from './tools/types';
@@ -27,7 +29,7 @@ export interface AgentDeps {
 
 export type AgentResult =
   | { kind: 'text'; text: string }
-  /** Una acción destructiva espera confirmación; el handler pinta los botones. */
+  /** Una o varias acciones destructivas esperan confirmación. */
   | { kind: 'confirm'; text: string; token: string };
 
 export class ConfigMissingError extends Error {}
@@ -49,6 +51,10 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     db,
   };
 
+  // Turnos nuevos de esta interacción. Se persisten al final, junto al historial
+  // previo, para que el modelo conserve constancia de lo que ya ha hecho.
+  const newTurns: StoredTurn[] = [{ role: 'user', content: input.text }];
+
   const messages: LLMMessage[] = [
     {
       role: 'system',
@@ -58,7 +64,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         memories: memories.map((memory) => ({ key: memory.key, value: memory.value })),
       }),
     },
-    ...history.map((turn) => ({ role: turn.role, content: turn.content }) as LLMMessage),
+    ...toLLMMessages(history),
     { role: 'user', content: input.text },
   ];
 
@@ -88,39 +94,41 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
       if (!reply) {
         throw new LLMError('malformed', 'el modelo devolvió una respuesta vacía');
       }
-      await persist(env, input, history, reply, config.historyWindow);
+      newTurns.push({ role: 'assistant', content: reply });
+      await appendTurns(env, input.chatId, history, newTurns, config.historyWindow);
       return { kind: 'text', text: reply };
     }
 
-    messages.push({
+    const assistantTurn: StoredTurn = {
       role: 'assistant',
       content: response.content,
       toolCalls: response.toolCalls,
-    });
+    };
+    messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
+
+    // Las destructivas se agrupan y se preguntan de una vez. Preguntarlas de una
+    // en una convierte "bórralas todas" en una cadena de diálogos absurda.
+    const confirmable = response.toolCalls.filter(
+      (call) => getTool(call.name)?.requiresConfirmation,
+    );
+
+    if (confirmable.length > 0) {
+      // No se persiste nada de este turno: hasta que la persona diga que sí, no
+      // ha pasado nada que el modelo deba recordar.
+      const prompt = await buildConfirmationPrompt(confirmable, toolCtx);
+      const token = await savePending(env, input.chatId, {
+        calls: confirmable.map((call) => ({ toolName: call.name, args: parseArguments(call) })),
+        prompt,
+      });
+      return { kind: 'confirm', text: prompt, token };
+    }
+
+    newTurns.push(assistantTurn);
 
     for (const call of response.toolCalls) {
-      const tool = getTool(call.name);
-
-      if (tool?.requiresConfirmation) {
-        // Se corta el bucle: nada se ejecuta hasta que la persona diga que sí.
-        const args = parseArguments(call);
-        const prompt = tool.confirmationPrompt
-          ? await tool.confirmationPrompt(args, toolCtx)
-          : `¿Confirmas la acción "${tool.name}"?`;
-        const token = await savePending(env, input.chatId, {
-          toolName: tool.name,
-          args,
-          prompt,
-        });
-        return { kind: 'confirm', text: prompt, token };
-      }
-
       const result = await executeTool(call, toolCtx);
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        content: JSON.stringify(result),
-      });
+      messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify(result) });
+      newTurns.push(toolTurn(call.id, result));
     }
   }
 
@@ -133,16 +141,28 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   };
 }
 
-/** Ejecuta una tool ya confirmada por el usuario. */
+async function buildConfirmationPrompt(
+  calls: ToolCall[],
+  ctx: ToolContext,
+): Promise<string> {
+  const lines = await Promise.all(
+    calls.map(async (call) => {
+      const tool = getTool(call.name);
+      if (!tool?.confirmationPrompt) return `Ejecutar "${call.name}"`;
+      return tool.confirmationPrompt(parseArguments(call), ctx);
+    }),
+  );
+
+  if (lines.length === 1) return lines[0]!;
+  return ['¿Confirmas estas acciones?', '', ...lines.map((line) => `• ${line}`)].join('\n');
+}
+
+/** Ejecuta las acciones ya confirmadas por el usuario. */
 export async function executeConfirmed(
-  toolName: string,
-  args: Record<string, unknown>,
+  calls: PendingCall[],
   input: { chatId: number; from: TelegramUser | undefined },
   deps: AgentDeps,
 ): Promise<string> {
-  const tool = getTool(toolName);
-  if (!tool) return 'Esa acción ya no existe.';
-
   const db = createDb(deps.env);
   const identity = await resolveIdentity(
     deps.env,
@@ -151,13 +171,32 @@ export async function executeConfirmed(
     input.chatId,
     deps.config.defaultTimezone,
   );
+  const ctx: ToolContext = {
+    userId: identity.userId,
+    conversationId: identity.conversationId,
+    timezone: identity.timezone,
+    db,
+  };
 
-  const result = await executeTool(
-    { id: 'confirmed', name: toolName, arguments: JSON.stringify(args) },
-    { userId: identity.userId, conversationId: identity.conversationId, timezone: identity.timezone, db },
-  );
+  const failures: string[] = [];
+  let done = 0;
 
-  return result.ok ? 'Hecho.' : `No he podido: ${result.error}`;
+  for (const call of calls) {
+    const result = await executeTool(
+      { id: 'confirmed', name: call.toolName, arguments: JSON.stringify(call.args) },
+      ctx,
+    );
+    if (result.ok) done++;
+    else failures.push(result.error);
+  }
+
+  if (failures.length === 0) {
+    return done === 1 ? 'Hecho, borrado.' : `Hecho, ${done} borradas.`;
+  }
+  if (done === 0) {
+    return `No he podido: ${failures[0]}`;
+  }
+  return `He completado ${done}, pero ${failures.length} han fallado: ${failures[0]}`;
 }
 
 async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {
@@ -216,28 +255,7 @@ function parseArguments(call: ToolCall): Record<string, unknown> {
 
 function createDb(env: Env): Db {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new ConfigMissingError(
-      'Faltan los secrets SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.',
-    );
+    throw new ConfigMissingError('Faltan los secrets SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.');
   }
   return new Db(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-}
-
-async function persist(
-  env: Env,
-  input: AgentInput,
-  history: Awaited<ReturnType<typeof loadHistory>>,
-  reply: string,
-  windowSize: number,
-): Promise<void> {
-  await appendTurns(
-    env,
-    input.chatId,
-    history,
-    [
-      { role: 'user', content: input.text },
-      { role: 'assistant', content: reply },
-    ],
-    windowSize,
-  );
 }
