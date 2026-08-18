@@ -59,23 +59,40 @@ app.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
-  // 4. Responder ya y procesar después.
-  //    El loop agéntico tardará bastante más que el timeout de Telegram; si
-  //    esperásemos a terminar, Telegram reintentaría y duplicaría el trabajo.
+  // 4. Procesar dentro de la petición, no en waitUntil().
+  //
+  //    waitUntil() parecía lo natural (responder 200 al instante y trabajar
+  //    después), pero Cloudflare cancela esas tareas pasado un margen corto tras
+  //    devolver la respuesta. Con el modelo tardando 10-30 s, la tarea moría a
+  //    media llamada: ni respuesta, ni excepción, ni log. Silencio.
+  //
+  //    Awaitando aquí disponemos de toda la vida de la petición, y la espera de
+  //    red no consume tiempo de CPU. El coste es que Telegram puede reintentar si
+  //    tardamos demasiado, y eso ya está cubierto por el dedupe del paso 3.
   const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
+  const started = Date.now();
 
-  c.executionCtx.waitUntil(
-    handleUpdate(update, { env, config, telegram, actor }).catch(async (error: unknown) => {
-      console.error('fallo procesando update', update.update_id, error);
-      // El usuario merece saber que algo se rompió, en vez de quedarse esperando.
-      await telegram
-        .sendMessage(actor.chatId, 'Algo ha fallado por dentro. Los detalles están en los logs.')
-        .catch((sendError: unknown) => {
-          console.error('además falló avisar al usuario:', sendError);
-        });
+  try {
+    await handleUpdate(update, { env, config, telegram, actor });
+  } catch (error) {
+    console.error('fallo procesando update', update.update_id, error);
+    // El usuario merece saber que algo se rompió, en vez de quedarse esperando.
+    await telegram
+      .sendMessage(actor.chatId, 'Algo ha fallado por dentro. Los detalles están en los logs.')
+      .catch((sendError: unknown) => {
+        console.error('además falló avisar al usuario:', sendError);
+      });
+  }
+
+  console.info(
+    JSON.stringify({
+      event: 'update_processed',
+      update_id: update.update_id,
+      duration_ms: Date.now() - started,
     }),
   );
 
+  // Siempre 200: un 5xx solo haría que Telegram reintentase algo ya procesado.
   return c.json({ ok: true });
 });
 

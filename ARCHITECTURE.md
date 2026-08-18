@@ -20,7 +20,7 @@ como base de datos.
 
 | Decisión | Elección | Motivo |
 |---|---|---|
-| Plan Cloudflare | **Free** | Uso personal. Procesamiento en background con `ctx.waitUntil()`. Migrable a Queues sin rediseñar. |
+| Plan Cloudflare | **Free** | Uso personal. Procesamiento dentro de la petición (ver §4). Migrable a Queues sin rediseñar. |
 | Proveedor LLM | **NVIDIA NIM** tras capa de abstracción | Free tier para empezar; el free tier se agota y hay que poder cambiar por env var. |
 | STT | **Workers AI Whisper** | Corre en el mismo Worker. Sin API key extra, sin salto de red. |
 | DB | **Supabase** | Postgres gestionado + free tier + REST. |
@@ -41,10 +41,8 @@ Telegram
 │      ├─ whitelist de telegram_user_id                                    │
 │      └─ dedupe update_id en KV (TTL 24h)                                 │
 │                                                                          │
-│  [2] return 200 OK  ◄──── inmediato, Telegram deja de reintentar         │
-│      ctx.waitUntil(process(update))                                      │
-│                                                                          │
-│  ─── background ────────────────────────────────────────────────────     │
+│  [2] Procesamiento DENTRO de la petición (await, no waitUntil)           │
+│      el 200 OK se devuelve al terminar; ver §4                           │
 │                                                                          │
 │  [3] Normalización de entrada                                            │
 │      ├─ texto      → tal cual                                            │
@@ -431,11 +429,34 @@ manda una cadena vacía al LLM.
 | Cron triggers | Incluidos | No |
 | Supabase | 500 MB | No |
 | NVIDIA NIM | Créditos finitos, ~40 req/min | **Sí, es el cuello de botella real** |
+| `waitUntil` tras responder | Margen corto, y luego cancela | **Sí** — nos costó un fallo intermitente |
+
+### El fallo de `waitUntil` (Fase 1)
+
+El diseño original respondía `200 OK` al instante y procesaba en `ctx.waitUntil()`,
+para no agotar el timeout de Telegram. En producción apareció esto:
+
+```
+(warn) waitUntil() tasks did not complete within the allowed time
+after invocation end and have been cancelled.
+```
+
+Cloudflare cancela esas tareas pasado un margen corto tras devolver la respuesta.
+Con el modelo tardando 10-30 s, la tarea moría a media llamada: **sin respuesta, sin
+excepción y sin log**. Un fallo intermitente y silencioso, el peor tipo — desde
+Telegram solo se veía que "a veces no contesta".
+
+**Solución:** el handler *awaita* el procesamiento y responde 200 al terminar. Dispone
+de toda la vida de la petición, y la espera de red no consume CPU, que es lo que
+limita el plan free. A cambio Telegram puede reintentar si tardamos mucho, y eso ya
+lo cubre el dedupe de `update_id`.
+
+Ese es exactamente el motivo por el que el dedupe estaba desde el día 1: sin él, este
+cambio no habría sido viable.
 
 **Ruta de migración si aprieta:** el paso a Workers Paid ($5/mes) habilita Queues
-con reintentos y dead-letter queue. El cambio afecta solo a `index.ts`
-(`ctx.waitUntil` → `queue.send`); el resto del código no se toca. Está diseñado así
-a propósito.
+con reintentos y dead-letter queue. El cambio afecta solo a `index.ts`; el resto del
+código no se toca. Está diseñado así a propósito.
 
 ---
 

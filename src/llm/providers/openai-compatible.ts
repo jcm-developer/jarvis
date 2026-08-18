@@ -67,7 +67,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.apiKey = options.apiKey;
     this.temperature = options.temperature ?? 0.6;
     this.maxTokens = options.maxTokens ?? 1024;
-    this.timeoutMs = options.timeoutMs ?? 45_000;
+    this.timeoutMs = options.timeoutMs ?? 25_000;
   }
 
   async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
@@ -114,10 +114,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
       } catch (error) {
         // AbortSignal.timeout produce un TimeoutError; el resto son fallos de red.
         const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-        lastError = new LLMError(
-          isTimeout ? 'timeout' : 'upstream',
-          `${this.name}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const detail = error instanceof Error ? error.message : String(error);
+
+        // Un timeout NO se reintenta: duplicaría el peor caso justo cuando ya
+        // vamos tarde, y quien espera al otro lado es una persona mirando el chat.
+        if (isTimeout) {
+          throw new LLMError('timeout', `${this.name}: ${detail}`);
+        }
+
+        lastError = new LLMError('upstream', `${this.name}: ${detail}`);
         if (attempt < MAX_ATTEMPTS) {
           await sleep(RETRY_DELAY_MS);
           continue;
