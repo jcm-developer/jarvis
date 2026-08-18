@@ -271,6 +271,7 @@ descritas en prosa dentro del prompt, que duplicaría la fuente de verdad.
 |---|---|---|
 | `create_task` | Crea tarea con fecha, prioridad y notas | No |
 | `list_tasks` | Filtra por estado y vencimiento | No |
+| `update_task` | Cambia fecha, título, notas, prioridad o estado | No |
 | `complete_task` | Marca como hecha | No |
 | `delete_task` | Borra permanentemente | **Sí** |
 | `remember` | Guarda un dato duradero del usuario | No |

@@ -44,7 +44,7 @@ export const listTasks: ToolDefinition = {
   name: 'list_tasks',
   description:
     'Lista las tareas del usuario. Úsala cuando pregunte qué tiene pendiente, y ' +
-    'también antes de completar o borrar algo, para obtener el id correcto.',
+    'también antes de modificar, completar o borrar algo, para obtener el id correcto.',
   parameters: {
     type: 'object',
     properties: {
@@ -92,11 +92,98 @@ export const listTasks: ToolDefinition = {
   },
 };
 
+export const updateTask: ToolDefinition = {
+  name: 'update_task',
+  description:
+    'Modifica una tarea que ya existe: su fecha límite, su título, sus notas, su ' +
+    'prioridad o su estado. Es la herramienta correcta cuando el usuario cambia de ' +
+    'plan sobre algo ya apuntado ("mejor a las seis", "pásalo al viernes", "ya no ' +
+    'hace falta"). Solo se tocan los campos que envíes. Necesitas el id exacto: si ' +
+    'no lo tienes, llama antes a list_tasks.',
+  parameters: {
+    type: 'object',
+    properties: {
+      task_id: { type: 'string', description: 'El id (uuid) devuelto por list_tasks.' },
+      title: { type: 'string', description: 'Nuevo título.' },
+      notes: {
+        type: 'string',
+        description: 'Nuevas notas. Cadena vacía para dejarla sin notas.',
+      },
+      due_at: {
+        type: 'string',
+        description:
+          'Nueva fecha límite en ISO 8601 con zona horaria. Cadena vacía para quitarle la fecha.',
+      },
+      priority: { type: 'integer', description: 'Nueva prioridad: 1 alta, 2 normal, 3 baja.' },
+      status: {
+        type: 'string',
+        enum: ['pending', 'done', 'cancelled'],
+        description:
+          'Nuevo estado. Usa "pending" para reabrir una tarea completada por error; ' +
+          'para darla por hecha basta complete_task.',
+      },
+    },
+    required: ['task_id'],
+  },
+  requiresConfirmation: false,
+  handler: async (args, ctx): Promise<ToolResult> => {
+    const taskId = requireString(args, 'task_id', 64);
+
+    // Se mira la presencia del campo, no su valor: los validadores devuelven null
+    // tanto para "no lo mandó" como para "lo mandó vacío", y aquí significan cosas
+    // distintas —no tocar, frente a borrar el dato—.
+    const patch: Record<string, unknown> = {};
+
+    if (args['title'] !== undefined) patch['title'] = requireString(args, 'title', 200);
+    if (args['notes'] !== undefined) patch['notes'] = optionalString(args, 'notes');
+    if (args['priority'] !== undefined) {
+      patch['priority'] = optionalInt(args, 'priority', 1, 3) ?? 2;
+    }
+
+    if (args['due_at'] !== undefined) {
+      patch['due_at'] = optionalIsoDate(args, 'due_at');
+      // Mover la fecha reabre el aviso. Sin esto, una tarea de la que ya se avisó
+      // se aplazaría al día siguiente y el recordatorio no volvería a salir nunca,
+      // porque el cron solo mira las que tienen reminded_at a null.
+      patch['reminded_at'] = null;
+    }
+
+    if (args['status'] !== undefined) {
+      const status = requireString(args, 'status', 20);
+      if (!['pending', 'done', 'cancelled'].includes(status)) {
+        return { ok: false, error: `status "${status}" no válido. Usa pending, done o cancelled.` };
+      }
+      patch['status'] = status;
+      patch['completed_at'] = status === 'done' ? new Date().toISOString() : null;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return {
+        ok: false,
+        error:
+          'No has indicado qué cambiar. Manda al menos uno de: title, notes, due_at, priority o status.',
+      };
+    }
+
+    const updated = await ctx.db.update<TaskRow>(
+      'tasks',
+      { id: `eq.${taskId}`, user_id: `eq.${ctx.userId}` },
+      patch,
+    );
+
+    const task = updated[0];
+    if (!task) return notFound(taskId);
+
+    return { ok: true, data: summarize(task, ctx.timezone) };
+  },
+};
+
 export const completeTask: ToolDefinition = {
   name: 'complete_task',
   description:
-    'Marca una tarea como hecha. Necesitas el id exacto: si no lo tienes, llama ' +
-    'antes a list_tasks.',
+    'Marca una tarea como hecha, solo cuando el usuario ya la ha hecho de verdad. ' +
+    'Si lo que hace es cambiarla de fecha o de plan, usa update_task en su lugar. ' +
+    'Necesitas el id exacto: si no lo tienes, llama antes a list_tasks.',
   parameters: {
     type: 'object',
     properties: {

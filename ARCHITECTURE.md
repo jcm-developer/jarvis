@@ -102,7 +102,7 @@ jarvis/
 │  ├─ tools/
 │  │  ├─ registry.ts           # Map<name, ToolDefinition>
 │  │  ├─ types.ts              # ToolDefinition, ToolContext, validadores de args
-│  │  ├─ tasks.ts              # create/list/complete/delete_task
+│  │  ├─ tasks.ts              # create/list/update/complete/delete_task
 │  │  ├─ memory.ts             # remember, recall
 │  │  └─ pending.ts            # acciones a la espera de confirmación (KV)
 │  │
@@ -359,6 +359,7 @@ export type ToolResult =
 |---|---|---|
 | `create_task` | Crea una tarea. Fechas relativas resueltas contra la TZ del usuario. | No |
 | `list_tasks` | Lista con filtros: status, rango de fechas, prioridad. | No |
+| `update_task` | Cambia fecha, título, notas, prioridad o estado de una tarea existente. | No |
 | `complete_task` | Marca como hecha. | No |
 | `delete_task` | Elimina permanentemente. | **Sí** |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
@@ -421,7 +422,7 @@ modelo como `{ok:false, error}` para que se autocorrija o lo explique.
 | Fuga de credenciales | Todo en `wrangler secret put`. `wrangler.toml` no contiene secretos y va a git. |
 | Acceso directo a la DB | RLS activa en todas las tablas. Solo `service_role`, solo desde el Worker. |
 | Doble ejecución por reintento | Dedupe de `update_id` en KV, TTL 24h. |
-| Prompt injection vía contenido | Los handlers validan a mano los argumentos del modelo (`tools/types.ts`); nunca se construye SQL desde texto del modelo. Sin Zod: son seis herramientas y no justifica la dependencia. |
+| Prompt injection vía contenido | Los handlers validan a mano los argumentos del modelo (`tools/types.ts`); nunca se construye SQL desde texto del modelo. Sin Zod: son siete herramientas y no justifica la dependencia. |
 | Agotamiento de cuota | La whitelist es la defensa real, y `MAX_AGENT_ITERATIONS` acota el gasto por mensaje. No hay contador diario: con un solo usuario autorizado no hay a quién limitar. |
 
 ### Variables de entorno
@@ -593,6 +594,9 @@ dejaría caer entre dos disparos lo que vence a y media.
   se convertiría en un recordatorio que nunca llega.
 - Tope de 10 por ejecución. La primera vez que esto corre, todo lo vencido de antes
   entra en el lote, y no queremos que llegue como una avalancha.
+- **`update_task` pone `reminded_at` a null cuando cambia la fecha.** Sin eso, aplazar
+  una tarea de la que ya se avisó la dejaría sin recordatorio para siempre: el cron
+  solo mira las que lo tienen a null.
 
 Los mensajes proactivos se guardan en `messages` como turnos del asistente. Sin eso,
 un "hecho" o un "posponlo" como respuesta al aviso no tendría referente en el
