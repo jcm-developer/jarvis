@@ -26,6 +26,9 @@ export interface Env {
   LLM_MODEL?: string;
   HISTORY_WINDOW?: string;
   MAX_AGENT_ITERATIONS?: string;
+  STT_PROVIDER?: string;
+  STT_MODEL?: string;
+  STT_LANGUAGE?: string;
   LOG_LEVEL?: string;
 }
 

@@ -4,7 +4,7 @@ Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base
 
 Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 2** — el agente ejecuta acciones reales: tareas y memoria en Supabase.
+**Estado: Fase 3** — tareas, memoria y notas de voz. Le hablas y ejecuta.
 
 Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
 
@@ -253,6 +253,33 @@ Entra con `service_role`, que se salta RLS.
 argumentos, resultado, duración y error. Es lo que permite entender después por qué
 el agente hizo lo que hizo.
 
+## Qué hace la Fase 3
+
+Notas de voz. Le mandas un audio y hace lo que le pidas.
+
+Telegram envía OGG/Opus → se descarga con `getFile` → se transcribe → el texto
+entra por el mismo camino que un mensaje escrito.
+
+**Dos transcriptores** ([src/stt/](src/stt/)), intercambiables como los de LLM:
+
+| `STT_PROVIDER` | Modelo | Notas |
+|---|---|---|
+| `openai` (por defecto) | `whisper-1` | Acepta OGG sin convertir. Mejor en español. Céntimos por hora |
+| `workers-ai` | `@cf/openai/whisper-large-v3-turbo` | Gratis, dentro de Cloudflare |
+
+`STT_LANGUAGE = "es"` fija el idioma en vez de autodetectarlo, lo que mejora
+bastante la precisión en audio de móvil.
+
+Una transcripción vacía **nunca** llega al modelo: se responde pidiendo repetir. Si
+no, el agente improvisaría sobre una cadena vacía.
+
+## Varias cosas en un mensaje
+
+Ya funcionaba desde la Fase 2 — el bucle ejecuta todas las `tool_calls` de una misma
+respuesta — y ahora el prompt lo pide explícitamente. Un audio como *"recuérdame
+llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una vez.
+
 ## Siguiente
 
-**Fase 3** — transcripción de audios con Workers AI (Whisper).
+**Fase 4** — historial en Supabase (sustituye al de KV).
+**Fase 5** — cron: briefing matutino y recordatorios.

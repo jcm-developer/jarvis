@@ -90,7 +90,26 @@ export class TelegramClient {
   fileUrl(filePath: string): string {
     return `${API_BASE}/file/bot${this.token}/${filePath}`;
   }
+
+  /** Resuelve el file_id y descarga el contenido. Usado para las notas de voz. */
+  async downloadFile(fileId: string): Promise<ArrayBuffer> {
+    const file = await this.getFile(fileId);
+    if (!file.file_path) {
+      throw new TelegramError('getFile', undefined, 'la respuesta no traía file_path');
+    }
+
+    const response = await fetch(this.fileUrl(file.file_path), {
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      throw new TelegramError('downloadFile', response.status, 'no se pudo descargar el fichero');
+    }
+    return response.arrayBuffer();
+  }
 }
+
+/** Tope de descarga de la Bot API. Más allá, getFile falla. */
+export const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 
 /** Telegram rechaza mensajes de más de 4096 caracteres. */
 const MAX_MESSAGE_LENGTH = 4096;

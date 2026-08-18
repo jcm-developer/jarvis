@@ -46,6 +46,14 @@ HISTORY_WINDOW = "20"
 # Vueltas máximas del bucle agéntico por mensaje.
 MAX_AGENT_ITERATIONS = "5"
 
+# Transcripción de notas de voz.
+# "openai" acepta el OGG/Opus de Telegram sin conversión y acierta más en español.
+# Alternativa gratis, dentro de Cloudflare:
+#   STT_PROVIDER = "workers-ai"   STT_MODEL = "@cf/openai/whisper-large-v3-turbo"
+STT_PROVIDER = "openai"
+STT_MODEL = "whisper-1"
+STT_LANGUAGE = "es"
+
 # Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
 # Crear con:  npx wrangler kv namespace create STATE
 # El id no es un secreto: sin credenciales de cuenta no sirve de nada.

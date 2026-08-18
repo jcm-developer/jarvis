@@ -1,4 +1,5 @@
 import { isProviderName, type ProviderName } from './llm';
+import { isSttProviderName, type SttProviderName } from './stt';
 import type { Env } from './types';
 
 export interface Config {
@@ -11,6 +12,9 @@ export interface Config {
   historyWindow: number;
   /** Tope de vueltas del bucle agéntico. Evita que un modelo confundido queme la cuota. */
   maxAgentIterations: number;
+  sttProvider: SttProviderName;
+  sttModel: string;
+  sttLanguage: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -18,6 +22,11 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
   openai: 'gpt-4o-mini',
   groq: 'llama-3.3-70b-versatile',
   nvidia: 'meta/llama-3.3-70b-instruct',
+};
+
+const DEFAULT_STT_MODELS: Record<SttProviderName, string> = {
+  openai: 'whisper-1',
+  'workers-ai': '@cf/openai/whisper-large-v3-turbo',
 };
 
 export class ConfigError extends Error {}
@@ -58,9 +67,15 @@ export function loadConfig(env: Env): Config {
     console.warn(`LLM_PROVIDER "${rawProvider}" no reconocido; usando "${llmProvider}"`);
   }
 
+  const rawStt = env.STT_PROVIDER?.trim().toLowerCase() ?? '';
+  const sttProvider: SttProviderName = isSttProviderName(rawStt) ? rawStt : 'openai';
+
   return {
     allowedTelegramIds,
     defaultTimezone: env.DEFAULT_TIMEZONE || 'Europe/Madrid',
+    sttProvider,
+    sttModel: env.STT_MODEL?.trim() || DEFAULT_STT_MODELS[sttProvider],
+    sttLanguage: env.STT_LANGUAGE?.trim() || 'es',
     llmProvider,
     llmModel: env.LLM_MODEL?.trim() || DEFAULT_MODELS[llmProvider],
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),

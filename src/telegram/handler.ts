@@ -3,10 +3,12 @@ import type { Config } from '../config';
 import { DbError } from '../db/client';
 import { LLMError } from '../llm/provider';
 import { clearHistory } from '../memory/history';
+import { createTranscriber } from '../stt';
+import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
 import type { Env, TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '../types';
 import type { Actor } from './guard';
-import { TelegramClient } from './client';
+import { MAX_DOWNLOAD_BYTES, TelegramClient } from './client';
 
 export interface HandlerContext {
   env: Env;
@@ -53,23 +55,60 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
     return { kind: 'text', text: await handleCommand(text, ctx) };
   }
 
-  if (text) {
-    try {
-      return await runAgent({ chatId: ctx.actor.chatId, from: message.from, text }, ctx);
-    } catch (error) {
-      return { kind: 'text', text: describeError(error) };
-    }
-  }
-
   const voice = message.voice ?? message.audio;
-  if (voice) {
-    return {
-      kind: 'text',
-      text: `Audio recibido (${voice.duration} s). La transcripción entra en la Fase 3.`,
-    };
+  if (!text && !voice) {
+    return { kind: 'text', text: 'Por ahora solo entiendo texto y audio.' };
   }
 
-  return { kind: 'text', text: 'Por ahora solo entiendo texto y audio.' };
+  const prompt = text ?? (await transcribeVoice(voice!, ctx));
+  // La transcripción devuelve un Reply ya formateado si falla.
+  if (typeof prompt !== 'string') return prompt;
+
+  try {
+    return await runAgent({ chatId: ctx.actor.chatId, from: message.from, text: prompt }, ctx);
+  } catch (error) {
+    return { kind: 'text', text: describeError(error) };
+  }
+}
+
+type VoiceLike = { file_id: string; duration: number; mime_type?: string; file_size?: number };
+
+/** Devuelve el texto transcrito, o un Reply ya formateado si algo falla. */
+async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<string | Reply> {
+  if ((voice.file_size ?? 0) > MAX_DOWNLOAD_BYTES) {
+    return { kind: 'text', text: new SttError('too_large', 'supera el límite').userMessage };
+  }
+
+  try {
+    const started = Date.now();
+    const audio = await ctx.telegram.downloadFile(voice.file_id);
+    const transcriber = createTranscriber(ctx.env, ctx.config);
+    const transcript = await transcriber.transcribe(audio, voice.mime_type ?? 'audio/ogg');
+
+    console.info(
+      JSON.stringify({
+        event: 'transcription',
+        provider: transcriber.name,
+        audio_seconds: voice.duration,
+        bytes: audio.byteLength,
+        chars: transcript.length,
+        duration_ms: Date.now() - started,
+      }),
+    );
+
+    if (!transcript) {
+      // Nunca mandar una cadena vacía al modelo: respondería cualquier cosa.
+      return { kind: 'text', text: new SttError('empty', 'sin texto').userMessage };
+    }
+    return transcript;
+  } catch (error) {
+    if (error instanceof SttError) {
+      console.error(`stt_error kind=${error.kind}`, error.message);
+      return { kind: 'text', text: error.userMessage };
+    }
+    console.error('fallo descargando el audio:', error);
+    return { kind: 'text', text: 'No he podido descargar ese audio de Telegram.' };
+  }
 }
 
 async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext): Promise<void> {
