@@ -163,6 +163,27 @@ Si el paso 2 da 200 y el bot sigue mudo, el problema es la whitelist: mira los l
 (**Compute → Workers → jarvis → Logs**), donde `update ignorado de usuario no
 autorizado: N` te da tu id real.
 
+### Límite conocido: audios largos
+
+El plan free de Cloudflare concede **30 s** a `ctx.waitUntil()` tras responder y
+luego cancela la tarea. Todo el procesamiento de un mensaje tiene que caber ahí,
+y el reparto lo controla [src/lib/deadline.ts](src/lib/deadline.ts) con un
+presupuesto de 27 s:
+
+| Paso | Tope |
+|---|---|
+| Descarga del audio | 15 s |
+| Transcripción | 10 s |
+| Cada llamada al modelo | 15 s, o lo que quede |
+
+El paso más lento y peor escalado es la descarga: el servidor de ficheros de
+Telegram tarda varios segundos con notas de voz de más de 15 s. **Los audios de
+más de ~20 s pueden fallar**, y cuando ocurre el bot lo dice y pide trocearlos.
+
+La solución real es **Cloudflare Queues** ($5/mes): desacopla el trabajo de la
+petición y elimina el techo. El cambio afecta casi solo a
+[src/index.ts](src/index.ts) — está diseñado para eso desde el principio.
+
 ### Dos trampas que cuestan tiempo
 
 **Los secrets del dashboard no se aplican hasta pulsar Deploy.** Añadirlos en

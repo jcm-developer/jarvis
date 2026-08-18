@@ -18,7 +18,7 @@ import type { Env, TelegramUpdate } from './types';
  * Cloudflare Queues ($5/mes), que desacopla el trabajo de la petición y trae
  * reintentos. Afectaría solo a este fichero.
  */
-const TOTAL_BUDGET_MS = 20_000;
+const TOTAL_BUDGET_MS = 27_000;
 
 const app = new Hono<{ Bindings: Env }>();
 

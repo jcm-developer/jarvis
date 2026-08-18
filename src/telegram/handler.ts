@@ -20,9 +20,15 @@ export interface HandlerContext {
   deadline: Deadline;
 }
 
-/** Topes por paso, acotados además por el presupuesto global. */
-const MAX_DOWNLOAD_MS = 8_000;
-const MAX_STT_MS = 12_000;
+/**
+ * Topes por paso, acotados además por el presupuesto global.
+ *
+ * La descarga se lleva la porción grande porque medido en producción es el paso
+ * más lento y el que peor escala: el servidor de ficheros de Telegram tarda
+ * varios segundos con notas de voz de más de 15 s.
+ */
+const MAX_DOWNLOAD_MS = 15_000;
+const MAX_STT_MS = 10_000;
 
 const CONFIRM_PREFIX = 'ok:';
 const CANCEL_PREFIX = 'no:';
@@ -124,7 +130,13 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
       return { kind: 'text', text: error.userMessage };
     }
     console.error('fallo descargando el audio:', error);
-    return { kind: 'text', text: 'No he podido descargar ese audio de Telegram.' };
+    // Casi siempre es un timeout con audios largos: el plan free de Cloudflare da
+    // 30 s en total y el servidor de ficheros de Telegram se lleva buena parte.
+    // Decirle qué hacer es más útil que informarle de que algo falló.
+    return {
+      kind: 'text',
+      text: 'No he podido descargar ese audio a tiempo. Suele pasar con los largos: mándamelo en trozos de menos de 20 segundos.',
+    };
   }
 }
 

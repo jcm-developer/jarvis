@@ -32,7 +32,7 @@ export interface AgentDeps {
 
 /** Margen que se reserva para enviar la respuesta antes de que nos corten. */
 const MIN_ROOM_FOR_CALL_MS = 4_000;
-const MAX_LLM_CALL_MS = 20_000;
+const MAX_LLM_CALL_MS = 15_000;
 
 export type AgentResult =
   | { kind: 'text'; text: string }
