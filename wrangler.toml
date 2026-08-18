@@ -15,9 +15,22 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put TELEGRAM_BOT_TOKEN
 #   wrangler secret put TELEGRAM_WEBHOOK_SECRET
 #   wrangler secret put ALLOWED_TELEGRAM_IDS   # tu telegram user id, separados por coma
+#   wrangler secret put NVIDIA_API_KEY
+#
+# ⚠️ En el dashboard, los cambios en Variables and Secrets NO se aplican hasta
+#    pulsar el botón Deploy. Sin eso el Worker sigue corriendo sin ellos.
 [vars]
 DEFAULT_TIMEZONE = "Europe/Madrid"
 LOG_LEVEL = "info"
+
+# Proveedor de LLM. Cambiar a "groq" solo requiere tocar estas dos líneas y tener
+# GROQ_API_KEY puesto: el código del agente no se entera.
+# Ojo: no todos los modelos de NIM soportan tool calling (necesario en la Fase 2).
+LLM_PROVIDER = "nvidia"
+LLM_MODEL = "meta/llama-3.3-70b-instruct"
+
+# Turnos de conversación que se arrastran como contexto.
+HISTORY_WINDOW = "20"
 
 # Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
 # Crear con:  npx wrangler kv namespace create STATE

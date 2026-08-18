@@ -443,8 +443,8 @@ a propósito.
 
 | Fase | Alcance | Estado |
 |---|---|---|
-| **0** | Scaffold, webhook, guard de seguridad, echo | Pendiente |
-| **1** | Provider NVIDIA + conversación de texto | Pendiente |
+| **0** | Scaffold, webhook, guard de seguridad, echo | ✅ Hecha |
+| **1** | Provider NVIDIA + conversación de texto | ✅ Hecha |
 | **2** | Registry de tools + tareas en Supabase + confirmaciones | Pendiente |
 | **3** | Audio con Whisper | Pendiente |
 | **4** | Historial + memoria de largo plazo | Pendiente |

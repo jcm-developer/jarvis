@@ -4,7 +4,7 @@ Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base
 
 Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 0** — webhook seguro y bot respondiendo. Sin LLM todavía.
+**Estado: Fase 1** — conversación real con memoria de corto plazo. Sin herramientas todavía.
 
 Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
 
@@ -59,6 +59,9 @@ Tras el primer deploy: **Worker → Settings → Variables and Secrets → Add**
 | `TELEGRAM_BOT_TOKEN` | el de BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | cadena aleatoria larga (ver abajo) |
 | `ALLOWED_TELEGRAM_IDS` | tu user id, varios separados por coma |
+| `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/models) → un modelo → *Get API Key* |
+
+**Al terminar, pulsa Deploy.** Los secrets no se aplican hasta entonces.
 
 Generar el secreto del webhook en PowerShell:
 
@@ -185,9 +188,35 @@ Cada update pasa por cuatro filtros antes de procesarse:
 4. **Respuesta inmediata** — `200 OK` al momento y el trabajo real en `ctx.waitUntil()`,
    porque el agente tardará más que el timeout de Telegram.
 
-Comandos: `/start`, `/help`, `/ping`. Cualquier otro texto se responde con eco.
+## Qué hace la Fase 1
+
+Conversación real contra un LLM, con memoria de los últimos turnos.
+
+**Capa de proveedor** ([src/llm/](src/llm/)). Nada fuera de ese directorio sabe qué
+proveedor está activo. NVIDIA NIM y Groq hablan el formato de OpenAI, así que
+comparten un único adaptador ([openai-compatible.ts](src/llm/providers/openai-compatible.ts))
+y cambiar entre ellos son dos líneas de `wrangler.toml` más su API key:
+
+```toml
+LLM_PROVIDER = "groq"
+LLM_MODEL = "llama-3.3-70b-versatile"
+```
+
+Se usa `fetch` directo en lugar del SDK de OpenAI para no engordar el bundle.
+Incluye timeout de 45 s, un reintento ante 429 y 5xx, y limpieza de los bloques
+`<think>` que emiten los modelos de razonamiento.
+
+**Memoria de corto plazo** ([src/memory/history.ts](src/memory/history.ts)). Ventana
+deslizante de `HISTORY_WINDOW` turnos en KV, con TTL de 7 días. Es **interina**: en
+la Fase 4 la sustituye la tabla `messages` de Supabase.
+
+**Errores legibles.** Cuota agotada, clave inválida o timeout llegan a Telegram como
+una frase clara, no como silencio ni como un volcado de stack.
+
+Comandos: `/ping`, `/reset`, `/help`. Todo lo demás va al modelo.
 Los audios se acusan recibo pero no se transcriben hasta la Fase 3.
 
 ## Siguiente
 
-**Fase 1** — capa `LLMProvider`, adaptador de NVIDIA NIM y conversación real.
+**Fase 2** — registry de herramientas con JSON Schema, tareas en Supabase y
+confirmación humana para las acciones destructivas.

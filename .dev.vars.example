@@ -12,8 +12,12 @@ TELEGRAM_WEBHOOK_SECRET="una-cadena-larga-y-aleatoria"
 # Es un secret, no una var, porque el repo es público.
 ALLOWED_TELEGRAM_IDS="123456789"
 
-# A partir de la Fase 1
-# NVIDIA_API_KEY="nvapi-..."
+# Fase 1 — clave del proveedor activo (ver LLM_PROVIDER en wrangler.toml).
+# Se saca en https://build.nvidia.com → cualquier modelo → "Get API Key".
+NVIDIA_API_KEY="nvapi-..."
+
+# Alternativa si se agota el free tier de NVIDIA: https://console.groq.com
+# GROQ_API_KEY="gsk_..."
 
 # A partir de la Fase 2
 # SUPABASE_URL="https://xxxx.supabase.co"

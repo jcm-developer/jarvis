@@ -1,11 +1,21 @@
+import { isProviderName, type ProviderName } from './llm';
 import type { Env } from './types';
 
 export interface Config {
   /** IDs de Telegram autorizados. Cualquier otro se ignora en silencio. */
   allowedTelegramIds: Set<number>;
   defaultTimezone: string;
+  llmProvider: ProviderName;
+  llmModel: string;
+  /** Nº de turnos de conversación que se arrastran como contexto. */
+  historyWindow: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
+
+const DEFAULT_MODELS: Record<ProviderName, string> = {
+  nvidia: 'meta/llama-3.3-70b-instruct',
+  groq: 'llama-3.3-70b-versatile',
+};
 
 export class ConfigError extends Error {}
 
@@ -37,11 +47,27 @@ export function loadConfig(env: Env): Config {
     );
   }
 
+  // Un LLM_PROVIDER desconocido cae a nvidia en vez de tumbar el bot: es una var
+  // de wrangler.toml, y un typo ahí no debe dejar al asistente incomunicado.
+  const rawProvider = env.LLM_PROVIDER?.trim().toLowerCase() ?? '';
+  const llmProvider: ProviderName = isProviderName(rawProvider) ? rawProvider : 'nvidia';
+  if (rawProvider && !isProviderName(rawProvider)) {
+    console.warn(`LLM_PROVIDER "${rawProvider}" no reconocido; usando "${llmProvider}"`);
+  }
+
   return {
     allowedTelegramIds,
     defaultTimezone: env.DEFAULT_TIMEZONE || 'Europe/Madrid',
+    llmProvider,
+    llmModel: env.LLM_MODEL?.trim() || DEFAULT_MODELS[llmProvider],
+    historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
     logLevel: parseLogLevel(env.LOG_LEVEL),
   };
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseIdList(raw: string | undefined): Set<number> {

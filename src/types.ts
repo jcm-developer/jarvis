@@ -12,9 +12,15 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET: string;
   /** Secret y no var: el repo es público y wrangler.toml se lee desde GitHub. */
   ALLOWED_TELEGRAM_IDS: string;
+  /** Opcionales: solo hace falta la del proveedor activo (LLM_PROVIDER). */
+  NVIDIA_API_KEY?: string;
+  GROQ_API_KEY?: string;
 
   // --- Vars (wrangler.toml) ---
   DEFAULT_TIMEZONE: string;
+  LLM_PROVIDER?: string;
+  LLM_MODEL?: string;
+  HISTORY_WINDOW?: string;
   LOG_LEVEL?: string;
 }
 
