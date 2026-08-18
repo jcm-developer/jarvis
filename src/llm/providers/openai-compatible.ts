@@ -1,4 +1,5 @@
 import type {
+  ChatOptions,
   FinishReason,
   LLMMessage,
   LLMProvider,
@@ -67,13 +68,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.apiKey = options.apiKey;
     this.temperature = options.temperature ?? 0.6;
     this.maxTokens = options.maxTokens ?? 800;
-    // 45 s: el free tier de NIM encola las peticiones y se va por encima de 25 s.
-    // El techo real es el timeout de webhook de Telegram (~60 s), no Cloudflare,
-    // porque el procesamiento ya no vive en waitUntil().
-    this.timeoutMs = options.timeoutMs ?? 45_000;
+    // Tope por llamada. El límite real lo impone el presupuesto global del
+    // mensaje (ver lib/deadline.ts), que puede recortarlo aún más.
+    this.timeoutMs = options.timeoutMs ?? 20_000;
   }
 
-  async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
+  async chat(
+    messages: LLMMessage[],
+    tools?: ToolSchema[],
+    options?: ChatOptions,
+  ): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: messages.map(toWireMessage),
@@ -94,11 +98,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
       body['tool_choice'] = 'auto';
     }
 
-    const response = await this.request(body);
+    const response = await this.request(body, options?.timeoutMs ?? this.timeoutMs);
     return this.parse(response);
   }
 
-  private async request(body: unknown): Promise<Response> {
+  private async request(body: unknown, timeoutMs: number): Promise<Response> {
     let lastError: LLMError | undefined;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -112,7 +116,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             Accept: 'application/json',
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(this.timeoutMs),
+          signal: AbortSignal.timeout(Math.max(1_000, timeoutMs)),
         });
       } catch (error) {
         // AbortSignal.timeout produce un TimeoutError; el resto son fallos de red.

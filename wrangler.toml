@@ -44,8 +44,9 @@ LLM_MODEL = "gpt-4o-mini"
 # herramienta (llamada + resultado), así que 30 son unos 10-12 turnos reales.
 HISTORY_WINDOW = "30"
 
-# Vueltas máximas del bucle agéntico por mensaje.
-MAX_AGENT_ITERATIONS = "5"
+# Vueltas máximas del bucle agéntico por mensaje. Bajado de 5 a 3: cada vuelta es
+# una llamada al modelo, y todas deben caber en el presupuesto de 25 s.
+MAX_AGENT_ITERATIONS = "3"
 
 # Transcripción de notas de voz.
 # "openai" acepta el OGG/Opus de Telegram sin conversión y acierta más en español.

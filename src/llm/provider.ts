@@ -38,10 +38,19 @@ export interface LLMResponse {
   usage: { promptTokens: number; completionTokens: number };
 }
 
+export interface ChatOptions {
+  /** Tope para esta llamada concreta. Lo fija el presupuesto global del mensaje. */
+  timeoutMs?: number;
+}
+
 export interface LLMProvider {
   readonly name: string;
   readonly model: string;
-  chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse>;
+  chat(
+    messages: LLMMessage[],
+    tools?: ToolSchema[],
+    options?: ChatOptions,
+  ): Promise<LLMResponse>;
 }
 
 export type LLMErrorKind =

@@ -1,8 +1,8 @@
-import type { Transcriber } from './provider';
+import type { Transcriber, TranscribeOptions } from './provider';
 import { SttError } from './provider';
 
 const ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
-const TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
  * Transcripción con la API de OpenAI.
@@ -24,7 +24,11 @@ export class OpenAITranscriber implements Transcriber {
     private readonly language: string,
   ) {}
 
-  async transcribe(audio: ArrayBuffer, mimeType: string): Promise<string> {
+  async transcribe(
+    audio: ArrayBuffer,
+    mimeType: string,
+    options?: TranscribeOptions,
+  ): Promise<string> {
     const form = new FormData();
     form.append('file', new Blob([audio], { type: mimeType }), fileNameFor(mimeType));
     form.append('model', this.model);
@@ -38,7 +42,7 @@ export class OpenAITranscriber implements Transcriber {
         // Sin Content-Type a propósito: fetch debe generar el boundary del multipart.
         headers: { Authorization: `Bearer ${this.apiKey}` },
         body: form,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.max(1_000, options?.timeoutMs ?? DEFAULT_TIMEOUT_MS)),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

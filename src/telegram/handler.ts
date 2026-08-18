@@ -1,6 +1,8 @@
 import { ConfigMissingError, executeConfirmed, runAgent } from '../agent';
 import type { Config } from '../config';
 import { DbError } from '../db/client';
+import type { Deadline } from '../lib/deadline';
+import { DeadlineExceededError } from '../lib/deadline';
 import { LLMError } from '../llm/provider';
 import { clearHistory } from '../memory/history';
 import { createTranscriber } from '../stt';
@@ -15,7 +17,11 @@ export interface HandlerContext {
   config: Config;
   telegram: TelegramClient;
   actor: Actor;
+  deadline: Deadline;
 }
+
+/** Tope de la transcripción, acotado además por el presupuesto global. */
+const MAX_STT_MS = 15_000;
 
 const CONFIRM_PREFIX = 'ok:';
 const CANCEL_PREFIX = 'no:';
@@ -83,7 +89,9 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
     const started = Date.now();
     const audio = await ctx.telegram.downloadFile(voice.file_id);
     const transcriber = createTranscriber(ctx.env, ctx.config);
-    const transcript = await transcriber.transcribe(audio, voice.mime_type ?? 'audio/ogg');
+    const transcript = await transcriber.transcribe(audio, voice.mime_type ?? 'audio/ogg', {
+      timeoutMs: ctx.deadline.budgetFor(MAX_STT_MS),
+    });
 
     console.info(
       JSON.stringify({
@@ -151,6 +159,10 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
 
 /** Traduce excepciones a algo que una persona pueda leer en un chat. */
 function describeError(error: unknown): string {
+  if (error instanceof DeadlineExceededError) {
+    console.warn('presupuesto agotado antes de terminar');
+    return error.userMessage;
+  }
   if (error instanceof LLMError) {
     console.error(`llm_error kind=${error.kind} status=${error.status ?? '-'}`, error.message);
     return error.userMessage;

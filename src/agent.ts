@@ -2,6 +2,8 @@ import type { Config } from './config';
 import { Db } from './db/client';
 import { resolveIdentity } from './db/identity';
 import { logToolCall } from './db/logs';
+import type { Deadline } from './lib/deadline';
+import { DeadlineExceededError } from './lib/deadline';
 import { createProvider } from './llm';
 import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
@@ -25,7 +27,12 @@ export interface AgentInput {
 export interface AgentDeps {
   env: Env;
   config: Config;
+  deadline: Deadline;
 }
+
+/** Margen que se reserva para enviar la respuesta antes de que nos corten. */
+const MIN_ROOM_FOR_CALL_MS = 4_000;
+const MAX_LLM_CALL_MS = 20_000;
 
 export type AgentResult =
   | { kind: 'text'; text: string }
@@ -35,7 +42,7 @@ export type AgentResult =
 export class ConfigMissingError extends Error {}
 
 export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<AgentResult> {
-  const { env, config } = deps;
+  const { env, config, deadline } = deps;
   const db = createDb(env);
 
   const identity = await resolveIdentity(env, db, input.from, input.chatId, config.defaultTimezone);
@@ -72,8 +79,16 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const schemas = toolSchemas();
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration++) {
+    // Antes de empezar otra vuelta, comprobar que da tiempo. Lanzarla sabiendo
+    // que no cabe garantiza el silencio que precisamente queremos evitar.
+    if (!deadline.hasRoomFor(MIN_ROOM_FOR_CALL_MS)) {
+      throw new DeadlineExceededError();
+    }
+
     const started = Date.now();
-    const response = await provider.chat(messages, schemas);
+    const response = await provider.chat(messages, schemas, {
+      timeoutMs: deadline.budgetFor(MAX_LLM_CALL_MS),
+    });
 
     console.info(
       JSON.stringify({

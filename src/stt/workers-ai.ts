@@ -17,6 +17,8 @@ export class WorkersAiTranscriber implements Transcriber {
     private readonly language: string,
   ) {}
 
+  // Workers AI corre dentro de Cloudflare y no acepta AbortSignal, así que aquí
+  // el presupuesto de tiempo no es aplicable.
   async transcribe(audio: ArrayBuffer): Promise<string> {
     try {
       // whisper-large-v3-turbo espera el audio en base64, no como array de bytes

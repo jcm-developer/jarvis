@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
 
 import { ConfigError, loadConfig } from './config';
+import { Deadline, DeadlineExceededError } from './lib/deadline';
 import { TelegramClient } from './telegram/client';
 import { claimUpdate, extractActor, isAuthorized, verifyWebhookSecret } from './telegram/guard';
 import { handleUpdate } from './telegram/handler';
 import type { Env, TelegramUpdate } from './types';
+
+/**
+ * Presupuesto total por mensaje. Debe caber holgadamente en el margen que
+ * Cloudflare concede a waitUntil() tras devolver la respuesta.
+ */
+const TOTAL_BUDGET_MS = 25_000;
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -59,40 +66,48 @@ app.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
-  // 4. Procesar dentro de la petición, no en waitUntil().
+  // 4. Responder 200 al instante y procesar en background.
   //
-  //    waitUntil() parecía lo natural (responder 200 al instante y trabajar
-  //    después), pero Cloudflare cancela esas tareas pasado un margen corto tras
-  //    devolver la respuesta. Con el modelo tardando 10-30 s, la tarea moría a
-  //    media llamada: ni respuesta, ni excepción, ni log. Silencio.
+  //    Este punto costó dos iteraciones y conviene dejar escrito por qué está así.
   //
-  //    Awaitando aquí disponemos de toda la vida de la petición, y la espera de
-  //    red no consume tiempo de CPU. El coste es que Telegram puede reintentar si
-  //    tardamos demasiado, y eso ya está cubierto por el dedupe del paso 3.
+  //    Estamos entre dos límites opuestos:
+  //      · Si esperamos a terminar antes de responder, Telegram corta. Se midió
+  //        en producción: reintenta a los ~4 s, y al desconectarse el cliente
+  //        Cloudflare cancela la ejecución. Silencio total.
+  //      · Si procesamos en waitUntil() sin límite, Cloudflare cancela la tarea
+  //        pasado un margen tras la respuesta. También silencio.
+  //
+  //    La salida es responder ya y caber en ese margen. Viable ahora que el
+  //    modelo tarda 2-5 s en vez de los 45 que tardaba NVIDIA. Deadline impone
+  //    el presupuesto y, si no llega, se responde con un mensaje honesto.
   const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const started = Date.now();
+  const deadline = Deadline.in(TOTAL_BUDGET_MS);
 
-  try {
-    await handleUpdate(update, { env, config, telegram, actor });
-  } catch (error) {
-    console.error('fallo procesando update', update.update_id, error);
-    // El usuario merece saber que algo se rompió, en vez de quedarse esperando.
-    await telegram
-      .sendMessage(actor.chatId, 'Algo ha fallado por dentro. Los detalles están en los logs.')
-      .catch((sendError: unknown) => {
-        console.error('además falló avisar al usuario:', sendError);
-      });
-  }
-
-  console.info(
-    JSON.stringify({
-      event: 'update_processed',
-      update_id: update.update_id,
-      duration_ms: Date.now() - started,
-    }),
+  c.executionCtx.waitUntil(
+    handleUpdate(update, { env, config, telegram, actor, deadline })
+      .catch(async (error: unknown) => {
+        console.error('fallo procesando update', update.update_id, error);
+        const text =
+          error instanceof DeadlineExceededError
+            ? error.userMessage
+            : 'Algo ha fallado por dentro. Los detalles están en los logs.';
+        await telegram.sendMessage(actor.chatId, text).catch((sendError: unknown) => {
+          console.error('además falló avisar al usuario:', sendError);
+        });
+      })
+      .finally(() => {
+        console.info(
+          JSON.stringify({
+            event: 'update_processed',
+            update_id: update.update_id,
+            duration_ms: Date.now() - started,
+            budget_left_ms: deadline.remainingMs(),
+          }),
+        );
+      }),
   );
 
-  // Siempre 200: un 5xx solo haría que Telegram reintentase algo ya procesado.
   return c.json({ ok: true });
 });
 
