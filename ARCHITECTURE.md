@@ -359,19 +359,54 @@ export type ToolResult =
 
 | Tool | Descripción | Confirmación |
 |---|---|---|
-| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales. Fechas relativas resueltas contra la TZ del usuario. | No |
+| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales, en ISO o en minutos desde ahora. | No |
 | `list_tasks` | Lista con filtros: status, rango de fechas, prioridad. | No |
-| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. | No |
+| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. Reabre el aviso si cambia una fecha. | No |
 | `complete_task` | Marca como hecha. | No |
 | `delete_task` | Elimina permanentemente. | **Sí** |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
 | `recall` | Busca en memorias. | No |
 
-**Regla de fechas:** el modelo nunca calcula fechas absolutas por su cuenta. El
-system prompt inyecta la fecha/hora actual y la TZ, y `create_task` acepta ISO 8601.
-Ambigüedades ("el martes") se resuelven en el handler, no en el modelo. No hay tool
-`get_current_time`: sería una vuelta más del bucle para un dato que ya viaja en el
-prompt.
+### Regla de fechas
+
+El modelo no calcula fechas. Suena a precaución teórica y no lo es: `gpt-4o-mini`
+fechó una tarea de "en 5 minutos" **al día siguiente** —hora correcta, día equivocado,
+copiado del año-mes-día de otra tarea del historial—, y el aviso se quedó esperando 24
+horas. Tres medidas, en orden de importancia:
+
+1. **Plazos relativos resueltos en el Worker.** `create_task` y `update_task` aceptan
+   `due_in_minutes` y `remind_in_minutes`, y el handler los convierte con la hora real.
+   "En media hora" ya no necesita que el modelo sepa en qué día vive. Si llegan el
+   relativo y el ISO a la vez, gana el relativo: lo calculó quien sí sabe la hora.
+2. **Anclas en el prompt.** Además de la fecha en castellano se inyecta el instante en
+   ISO 8601 con desplazamiento (`2026-08-18T12:27:00+02:00`) y las fechas de hoy y
+   mañana sueltas. El modelo copia formatos mucho mejor que construye fechas.
+3. **Que diga la fecha que guardó.** El prompt le pide repetir en la respuesta la fecha
+   tal como la devolvió la herramienta, para que el usuario detecte el error en el acto.
+
+Las ambigüedades del tipo "el martes" siguen resolviéndose contra la TZ del usuario. No
+hay tool `get_current_time`: sería una vuelta más del bucle para un dato que ya viaja
+en el prompt.
+
+### El system prompt
+
+Personalidad y reglas de negocio, nunca la descripción de las herramientas: eso va
+como JSON Schema en el campo `tools`, y duplicarlo en prosa garantiza que las dos
+versiones se desincronicen.
+
+Tiene tres partes y el orden no es estético:
+
+1. **Qué puede y qué NO puede hacer**, enumerado. Sin esa lista el modelo ofrecía
+   buscar en internet y prometía "estar pendiente" de avisos que no había programado.
+   Declarar los límites sale más barato que arreglar una promesa incumplida.
+2. **Reglas de herramientas y de estilo**: texto plano (Telegram no renderiza nuestro
+   markdown), contar solo lo que la herramienta devolvió, una pregunta de vuelta como
+   máximo, sin halagos.
+3. **Lo volátil, al final**: memorias y contexto temporal. OpenAI cachea el prefijo
+   común entre peticiones y cobra la mitad por esa parte; el prefijo se corta en el
+   primer carácter que difiere, así que la hora —que cambia cada minuto— puesta arriba
+   invalidaría el prompt entero en cada mensaje. Con ~97% de tokens de entrada, eso se
+   nota en la factura.
 
 ### Flujo de confirmación
 

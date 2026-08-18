@@ -4,12 +4,33 @@ import { optionalInt, optionalIsoDate, optionalString, requireString } from './t
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'alta', 2: 'normal', 3: 'baja' };
 
+/** Un año. Tope de los desplazamientos relativos: más allá huele a error del modelo. */
+const MAX_OFFSET_MINUTES = 525_600;
+
+/**
+ * Resuelve un desplazamiento en minutos a una fecha ISO.
+ *
+ * Existe porque el modelo se equivocaba de día. Pedirle "en 5 minutos" en ISO le
+ * obliga a hacer aritmética de calendario, y con eso falla: acertaba la hora y
+ * escribía la fecha de mañana, copiada de otra tarea del historial. El offset lo
+ * calcula el Worker, que sí sabe qué hora es.
+ */
+function resolveOffset(args: Record<string, unknown>, field: string): string | null {
+  const minutes = optionalInt(args, field, 1, MAX_OFFSET_MINUTES);
+  return minutes === null ? null : new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+const OFFSET_HINT =
+  'Minutos desde ahora, para cuando el usuario habla en relativo ("en 5 minutos", ' +
+  '"dentro de media hora"). Preferible a calcular la fecha tú. Manda esto o el ISO, no ambos.';
+
 export const createTask: ToolDefinition = {
   name: 'create_task',
   description:
     'Crea una tarea o recordatorio para el usuario. Úsala cuando pida apuntar algo, ' +
-    'recordarle algo, o mencione algo que tiene que hacer. Si menciona una fecha o ' +
-    'plazo, conviértelo a ISO 8601 usando la fecha actual del contexto.',
+    'recordarle algo, o mencione algo que tiene que hacer. Para una fecha concreta usa ' +
+    'ISO 8601 partiendo de la fecha de hoy del contexto; para un plazo relativo ("en ' +
+    'diez minutos", "esta tarde"), usa los campos en minutos y deja que yo calcule.',
   parameters: {
     type: 'object',
     properties: {
@@ -19,12 +40,14 @@ export const createTask: ToolDefinition = {
         type: 'string',
         description: 'Fecha límite en ISO 8601 con zona horaria, ej. 2026-08-20T09:00:00+02:00.',
       },
+      due_in_minutes: { type: 'integer', description: `Fecha límite. ${OFFSET_HINT}` },
       remind_at: {
         type: 'string',
         description:
           'Cuándo avisar, en ISO 8601, si el usuario pide el aviso a una hora distinta ' +
           'de la fecha límite. Si no se indica, el aviso sale al acercarse due_at.',
       },
+      remind_in_minutes: { type: 'integer', description: `Hora del aviso. ${OFFSET_HINT}` },
       priority: {
         type: 'integer',
         description: 'Prioridad: 1 alta, 2 normal, 3 baja. Por defecto 2.',
@@ -38,8 +61,10 @@ export const createTask: ToolDefinition = {
       user_id: ctx.userId,
       title: requireString(args, 'title', 200),
       notes: optionalString(args, 'notes'),
-      due_at: optionalIsoDate(args, 'due_at'),
-      remind_at: optionalIsoDate(args, 'remind_at'),
+      // El relativo manda sobre el ISO: lo ha calculado el Worker con la hora real,
+      // así que si llegan los dos, el fiable es este.
+      due_at: resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'),
+      remind_at: resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at'),
       priority: optionalInt(args, 'priority', 1, 3) ?? 2,
     });
 
@@ -121,6 +146,7 @@ export const updateTask: ToolDefinition = {
         description:
           'Nueva fecha límite en ISO 8601 con zona horaria. Cadena vacía para quitarle la fecha.',
       },
+      due_in_minutes: { type: 'integer', description: `Nueva fecha límite. ${OFFSET_HINT}` },
       remind_at: {
         type: 'string',
         description:
@@ -128,6 +154,7 @@ export const updateTask: ToolDefinition = {
           'de la fecha límite ("recuérdamelo a las 12:10"). Cadena vacía para volver al ' +
           'aviso normal, el de la fecha límite.',
       },
+      remind_in_minutes: { type: 'integer', description: `Nueva hora del aviso. ${OFFSET_HINT}` },
       priority: { type: 'integer', description: 'Nueva prioridad: 1 alta, 2 normal, 3 baja.' },
       status: {
         type: 'string',
@@ -157,11 +184,18 @@ export const updateTask: ToolDefinition = {
     // Cambiar cualquiera de las dos fechas reabre el aviso. Sin esto, una tarea de
     // la que ya se avisó se aplazaría al día siguiente y el recordatorio no volvería
     // a salir nunca, porque el cron solo mira las que tienen reminded_at a null.
-    if (args['due_at'] !== undefined) {
+    if (args['due_in_minutes'] !== undefined) {
+      patch['due_at'] = resolveOffset(args, 'due_in_minutes');
+      patch['reminded_at'] = null;
+    } else if (args['due_at'] !== undefined) {
       patch['due_at'] = optionalIsoDate(args, 'due_at');
       patch['reminded_at'] = null;
     }
-    if (args['remind_at'] !== undefined) {
+
+    if (args['remind_in_minutes'] !== undefined) {
+      patch['remind_at'] = resolveOffset(args, 'remind_in_minutes');
+      patch['reminded_at'] = null;
+    } else if (args['remind_at'] !== undefined) {
       patch['remind_at'] = optionalIsoDate(args, 'remind_at');
       patch['reminded_at'] = null;
     }
@@ -179,7 +213,8 @@ export const updateTask: ToolDefinition = {
       return {
         ok: false,
         error:
-          'No has indicado qué cambiar. Manda al menos uno de: title, notes, due_at, remind_at, priority o status.',
+          'No has indicado qué cambiar. Manda al menos uno de: title, notes, due_at, ' +
+          'due_in_minutes, remind_at, remind_in_minutes, priority o status.',
       };
     }
 

@@ -59,6 +59,31 @@ export function endOfLocalDay(instant: Date, timezone: string): Date {
   return startOfLocalDay(new Date(start.getTime() + 26 * 60 * 60 * 1000), timezone);
 }
 
+/**
+ * El instante en ISO 8601 con el desplazamiento del usuario:
+ * '2026-08-18T12:27:00+02:00'.
+ *
+ * Va al system prompt como plantilla. El modelo copia formatos mucho mejor que
+ * calcula fechas, y sin un ISO delante escribía el día siguiente.
+ */
+export function isoLocal(instant: Date, timezone: string): string {
+  const p = zonedParts(instant, timezone);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const offset = offsetMs(instant, timezone);
+  const sign = offset < 0 ? '-' : '+';
+  const total = Math.abs(Math.round(offset / 60_000));
+
+  return (
+    `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}` +
+    `${sign}${pad(Math.floor(total / 60))}:${pad(total % 60)}`
+  );
+}
+
+/** 'YYYY-MM-DD' del día local siguiente. Para anclar "mañana" en el prompt. */
+export function localTomorrow(instant: Date, timezone: string): string {
+  return localNow(endOfLocalDay(instant, timezone), timezone).date;
+}
+
 /** 'mar, 19 de agosto' — para encabezar el briefing. */
 export function formatLongDate(instant: Date, timezone: string): string {
   return format(instant, timezone, { weekday: 'long', day: 'numeric', month: 'long' });
