@@ -116,6 +116,18 @@ export function localTomorrow(instant: Date, timezone: string): string {
   return localNow(endOfLocalDay(instant, timezone), timezone).date;
 }
 
+/** 'YYYY-MM-DD' del día local anterior. Dos horas antes de medianoche es ayer. */
+export function localYesterday(instant: Date, timezone: string): string {
+  const beforeMidnight = startOfLocalDay(instant, timezone).getTime() - 2 * 60 * 60 * 1000;
+  return localNow(new Date(beforeMidnight), timezone).date;
+}
+
+/** '17 de agosto a las 09:00' — para hablar de otro día sin sonar a formulario. */
+export function formatDayAndTime(instant: Date, timezone: string): string {
+  const day = format(instant, timezone, { day: 'numeric', month: 'long' });
+  return `${day} a las ${formatTime(instant, timezone)}`;
+}
+
 /** 'mar, 19 de agosto' — para encabezar el briefing. */
 export function formatLongDate(instant: Date, timezone: string): string {
   return format(instant, timezone, { weekday: 'long', day: 'numeric', month: 'long' });

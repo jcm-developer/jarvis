@@ -370,6 +370,16 @@ cinco minutos y distingue dos clases de aviso:
 Se avisa una sola vez por tarea (`reminded_at`), y lo que ya estaba vencido también
 entra, con un tope de 10 por ejecución para que no llegue una avalancha el primer día.
 
+El mensaje está escrito para que suene a persona, no a alarma:
+
+> Acuérdate de llamar a David a las 18:00.
+>
+> Se te ha pasado pagar la luz, era ayer a las 09:00.
+
+Lo compone el Worker, sin pasar por el modelo: cero tokens y no puede inventarse una
+tarea. La hora solo se dice si aporta algo, los días van con nombre (ayer, mañana)
+y la frase de entrada varía entre tareas.
+
 Que el aviso sea un campo de la tarea y no otra tarea importa: sin `remind_at`, un
 "llamo a David a las 17:30, recuérdamelo a las 12:10" acababa en dos filas, la tarea y
 un "recordar llamar a David". Una sola cosa que hacer, una sola fila.

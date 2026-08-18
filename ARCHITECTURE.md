@@ -705,6 +705,38 @@ una sola cosa que hacer.
   Sin eso, aplazar una tarea de la que ya se avisó la dejaría sin recordatorio para
   siempre: el cron solo mira las que lo tienen a null.
 
+### Cómo suenan los avisos
+
+El texto se escribe en código, no con el modelo, pero eso no es excusa para que suene
+a máquina. La primera versión decía `Recordatorio: "Llamar a David a las seis" venció
+a las 13:25` y en el chat se leía como una alarma de sistema: comillas alrededor del
+título, el verbo "vencer" y la hora repetida aunque fuera la de ese mismo instante.
+
+Ahora sale como lo diría una persona:
+
+```
+Acuérdate de llamar a David a las 18:00.
+Oye, acuérdate de llamar a mamá.
+Se te ha pasado pagar la luz, era ayer a las 09:00.
+
+Tienes tres cosas encima:
+
+- pagar la luz ayer a las 09:00 (se te ha pasado)
+- llamar a David a las 18:00
+- sacar la basura
+```
+
+Cuatro detalles que hacen la diferencia, y ninguno necesita un LLM:
+
+- **La hora solo se dice si aporta.** Nada si el aviso es para ahora mismo, nada si el
+  título ya la lleva ("Llamar a David a las seis" con un "a las 13:25" detrás confunde
+  más que ayuda).
+- **Días con nombre**: "ayer", "mañana", "el 20 de agosto a las 09:00". No `20 ago, 09:00`.
+- **Un aviso a la hora pedida no es un incumplimiento.** "Vencido" se reserva para lo
+  que de verdad se pasó hace rato.
+- **La frase de entrada varía** entre tareas, elegida por el id, no al azar: el mismo
+  aviso repetido se lee igual, y dos avisos distintos no suenan calcados.
+
 Los mensajes proactivos se guardan en `messages` como turnos del asistente. Sin eso,
 un "hecho" o un "posponlo" como respuesta al aviso no tendría referente en el
 contexto y el modelo preguntaría de qué se le habla.

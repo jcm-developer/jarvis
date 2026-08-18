@@ -2,7 +2,13 @@ import type { Db } from '../db/client';
 import type { CronTarget } from '../db/identity';
 import { saveTurns } from '../db/messages';
 import type { TaskRow } from '../db/types';
-import { formatShortDateTime, formatTime, localNow } from '../lib/localtime';
+import {
+  formatDayAndTime,
+  formatTime,
+  localNow,
+  localTomorrow,
+  localYesterday,
+} from '../lib/localtime';
 import type { TelegramClient } from '../telegram/client';
 
 /**
@@ -117,33 +123,88 @@ function alarmTime(task: TaskRow): number {
   return iso ? new Date(iso).getTime() : 0;
 }
 
+/**
+ * El texto del aviso, escrito como lo escribiría una persona.
+ *
+ * La primera versión era una plantilla —`Recordatorio: "X" venció a las 13:25`— y en
+ * el chat se leía como una alarma de sistema: comillas alrededor del título, el verbo
+ * "vencer" y la hora repetida aunque fuese la de ahora mismo. Un aviso que llega a la
+ * hora pedida no es un incumplimiento, así que ya no se anuncia como tal.
+ *
+ * Se compone aquí y no con el modelo: cuesta cero tokens, no puede inventarse una
+ * tarea y no depende de que el LLM esté disponible cuando salta el cron.
+ */
+const OPENERS = ['Acuérdate de', 'No te olvides de', 'Oye, acuérdate de', 'Recuerda'];
+
+const COUNT_WORDS = ['', 'una', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho'];
+
+/** Margen dentro del cual la hora es "ahora" y no hace falta decirla. */
+const IMMINENT_MS = 20 * 60 * 1000;
+
 function buildReminderText(tasks: TaskRow[], timezone: string, now: Date): string {
   if (tasks.length === 1) {
     const task = tasks[0]!;
-    const label = dueLabel(task, timezone, now);
-    // Una tarea con aviso propio y sin fecha límite no tiene nada que añadir: el
-    // usuario pidió que le avisáramos ahora, y ya está.
-    return label ? `Recordatorio: "${task.title}" ${label}.` : `Recordatorio: "${task.title}".`;
+    const overdue = isOverdue(task, now);
+    const when = whenSuffix(task, timezone, now);
+
+    if (overdue) {
+      return `Se te ha pasado ${lowerFirst(task.title)}${when ? `, era ${when}` : ''}.`;
+    }
+
+    // El saludo se elige por el id de la tarea: varía entre tareas y no cambia si el
+    // mismo aviso se repite, que quedaría raro.
+    const opener = OPENERS[hash(task.id) % OPENERS.length]!;
+    const connector = opener.endsWith('de') ? '' : ':';
+    return `${opener}${connector} ${lowerFirst(task.title)}${when ? ` ${when}` : ''}.`;
   }
 
+  const count = COUNT_WORDS[tasks.length] ?? String(tasks.length);
   return [
-    'Recordatorio de lo que tienes encima:',
+    `Tienes ${count} cosas encima:`,
     '',
     ...tasks.map((task) => {
-      const label = dueLabel(task, timezone, now);
-      return label ? `- ${task.title} (${label})` : `- ${task.title}`;
+      const when = whenSuffix(task, timezone, now);
+      const mark = isOverdue(task, now) ? ' (se te ha pasado)' : '';
+      return `- ${lowerFirst(task.title)}${when ? ` ${when}` : ''}${mark}`;
     }),
   ].join('\n');
 }
 
-function dueLabel(task: TaskRow, timezone: string, now: Date): string | null {
+function isOverdue(task: TaskRow, now: Date): boolean {
+  return task.due_at !== null && new Date(task.due_at).getTime() < now.getTime() - IMMINENT_MS;
+}
+
+/**
+ * "a las 18:00", "ayer a las 09:00", "el 20 de agosto a las 09:00" o nada.
+ *
+ * Devuelve nada cuando la hora no aporta: si es dentro del margen de ahora mismo, o
+ * si el propio título ya la lleva —"Llamar a David a las seis" con un "a las 13:25"
+ * detrás es más confuso que decir solo el título—.
+ */
+function whenSuffix(task: TaskRow, timezone: string, now: Date): string | null {
   if (!task.due_at) return null;
+  if (/\ba\s+las?\s+/i.test(task.title)) return null;
 
   const due = new Date(task.due_at);
-  const sameDay = localNow(due, timezone).date === localNow(now, timezone).date;
-  const when = sameDay
-    ? `a las ${formatTime(due, timezone)}`
-    : `el ${formatShortDateTime(due, timezone)}`;
+  if (Math.abs(due.getTime() - now.getTime()) <= IMMINENT_MS) return null;
 
-  return due.getTime() < now.getTime() ? `venció ${when}` : `vence ${when}`;
+  const day = localNow(due, timezone).date;
+  const hour = formatTime(due, timezone);
+
+  if (day === localNow(now, timezone).date) return `a las ${hour}`;
+  if (day === localYesterday(now, timezone)) return `ayer a las ${hour}`;
+  if (day === localTomorrow(now, timezone)) return `mañana a las ${hour}`;
+  return `el ${formatDayAndTime(due, timezone)}`;
+}
+
+/** "Llamar a David" → "llamar a David", que es como se dice dentro de una frase. */
+function lowerFirst(title: string): string {
+  return title.charAt(0).toLowerCase() + title.slice(1);
+}
+
+/** Hash barato y estable. Solo se usa para elegir una frase, no para nada sensible. */
+function hash(value: string): number {
+  let total = 0;
+  for (let i = 0; i < value.length; i++) total = (total + value.charCodeAt(i)) % 997;
+  return total;
 }
