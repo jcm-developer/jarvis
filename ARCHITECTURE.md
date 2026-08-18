@@ -68,8 +68,8 @@ Telegram
 │  [7] Persistencia + sendMessage                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 
-Cron Trigger (cada hora, UTC)  ──▶  ¿toca briefing en hora local?  ──▶ sendMessage
-                               └─▶  tareas que vencen en 1 h        ──▶ sendMessage
+Cron Trigger (cada 5 min, UTC) ──▶  ¿toca briefing en hora local?  ──▶ sendMessage
+                               └─▶  ¿toca algún aviso ya?           ──▶ sendMessage
 ```
 
 ---
@@ -191,6 +191,7 @@ create table tasks (
   title           text not null,
   notes           text,
   due_at          timestamptz,
+  remind_at       timestamptz,             -- cuándo avisar, si no es al vencer
   priority        smallint not null default 2 check (priority between 1 and 3), -- 1 alta
   status          text not null default 'pending'
                     check (status in ('pending','done','cancelled')),
@@ -200,6 +201,7 @@ create table tasks (
   updated_at      timestamptz not null default now()
 );
 create index on tasks (user_id, status, due_at);
+create index on tasks (user_id, status, remind_at);
 
 -- Observabilidad
 create table tool_call_logs (
@@ -357,9 +359,9 @@ export type ToolResult =
 
 | Tool | Descripción | Confirmación |
 |---|---|---|
-| `create_task` | Crea una tarea. Fechas relativas resueltas contra la TZ del usuario. | No |
+| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales. Fechas relativas resueltas contra la TZ del usuario. | No |
 | `list_tasks` | Lista con filtros: status, rango de fechas, prioridad. | No |
-| `update_task` | Cambia fecha, título, notas, prioridad o estado de una tarea existente. | No |
+| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. | No |
 | `complete_task` | Marca como hecha. | No |
 | `delete_task` | Elimina permanentemente. | **Sí** |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
@@ -507,7 +509,7 @@ en el presupuesto. Cuando pasa, el bot lo dice y pide trocear.
 | Workers CPU | 10 ms/petición | **No** — la espera de red (LLM, Supabase) no cuenta como CPU |
 | Workers AI | ~10.000 Neurons/día | No aplica: la transcripción va por OpenAI. Solo cuenta con `STT_PROVIDER = "workers-ai"` |
 | KV escrituras | 1.000/día | Justo. Una por mensaje (dedupe) más una al día (marca del briefing); no añadir más |
-| Cron triggers | Incluidos | No |
+| Cron triggers | Incluidos, hasta 1 min de granularidad | No. Cada 5 min son 288 invocaciones al día |
 | Supabase | 500 MB | No |
 | OpenAI | Créditos de pago, sin cola | No aprieta. `gpt-4o-mini` sale a céntimos al mes con este volumen |
 | `waitUntil` tras responder | ~30 s, y luego cancela | **Sí** — es el techo que marca todo el diseño |
@@ -548,8 +550,14 @@ código no se toca. Está diseñado así a propósito.
 
 ## 12. Proactividad: el cron
 
-Un Cron Trigger cada hora (`0 * * * *`) y dos trabajos independientes por usuario,
-cada uno con su `try`: que falle un aviso no debe dejar al usuario sin el otro.
+Un Cron Trigger cada cinco minutos (`*/5 * * * *`) y dos trabajos independientes por
+usuario, cada uno con su `try`: que falle un aviso no debe dejar al usuario sin el otro.
+
+**Empezó siendo cada hora en punto y no servía.** Un "recuérdamelo a las 12:10" pedido
+en un mensaje de las 12:07 no podía salir antes de las 13:00, casi una hora tarde: la
+precisión de un aviso no puede ser peor que el periodo del cron. Cada cinco minutos son
+288 invocaciones al día frente a las 100.000 del plan free, y no añaden ni una escritura
+de KV, porque lo único que se escribe ahí es la marca del briefing, una vez al día.
 
 El `scheduled` **awaita** su trabajo en vez de mandarlo a `waitUntil()`. Aquí no hay
 respuesta que devolver, así que no existe el margen corto que obliga a la gimnasia
@@ -581,22 +589,35 @@ invierno y las 8 en verano.
 - Contenido: vencidas, lo que vence hoy con su hora, y las de prioridad alta sin
   fecha. Las pendientes sin fecha ni prioridad no entran: es el día, no el inventario.
 
-### Recordatorios de vencimiento
+### Recordatorios
 
-Cada ejecución busca tareas `pending` que vencen en la próxima hora y que no tienen
-`reminded_at`. La ventana es de una hora porque el cron corre cada hora: más corta
-dejaría caer entre dos disparos lo que vence a y media.
+Hay **dos clases de aviso** y no se miden con la misma vara:
 
-- `reminded_at` (columna que estaba en el esquema desde la Fase 2) es lo que evita
-  repetir el aviso cada hora hasta que la tarea se complete.
+| Clase | Campo | Cuándo sale | Por qué |
+|---|---|---|---|
+| A la hora pedida | `remind_at` | En los 5 min siguientes a esa hora | "Recuérdamelo a las 12:10" tiene que llegar a las 12:10 |
+| Antes de vencer | `due_at` sin `remind_at` | 1 h antes del vencimiento | Avisar justo al vencer no da margen para nada |
+
+Son dos consultas en paralelo, no una con `or`: los conjuntos son disjuntos —una exige
+`remind_at`, la otra que sea nulo—, así que no hay nada que deduplicar y cada filtro usa
+sintaxis PostgREST ya probada en el resto del código. Aun así el merge deduplica por id,
+que es barato y evita que un cambio futuro en un filtro se traduzca en avisos repetidos.
+
+`remind_at` existe para no convertir un aviso en una tarea aparte. Sin ese campo, "llamo
+a David a las 17:30, recuérdamelo a las 12:10" solo se podía representar creando una
+segunda tarea "recordar llamar a David", que es lo que hacía el modelo: dos filas para
+una sola cosa que hacer.
+
+- `reminded_at` es lo que evita repetir el aviso en cada disparo hasta que la tarea se
+  complete.
 - **Se marca después de enviar, nunca antes.** Si el envío falla, la tarea sigue sin
-  marcar y el aviso se reintenta a la hora siguiente. Al revés, un 500 de Telegram
-  se convertiría en un recordatorio que nunca llega.
+  marcar y el aviso se reintenta al disparo siguiente. Al revés, un 500 de Telegram se
+  convertiría en un recordatorio que nunca llega.
 - Tope de 10 por ejecución. La primera vez que esto corre, todo lo vencido de antes
   entra en el lote, y no queremos que llegue como una avalancha.
-- **`update_task` pone `reminded_at` a null cuando cambia la fecha.** Sin eso, aplazar
-  una tarea de la que ya se avisó la dejaría sin recordatorio para siempre: el cron
-  solo mira las que lo tienen a null.
+- **`update_task` pone `reminded_at` a null cuando cambia cualquiera de las dos fechas.**
+  Sin eso, aplazar una tarea de la que ya se avisó la dejaría sin recordatorio para
+  siempre: el cron solo mira las que lo tienen a null.
 
 Los mensajes proactivos se guardan en `messages` como turnos del asistente. Sin eso,
 un "hecho" o un "posponlo" como respuesta al aviso no tendría referente en el

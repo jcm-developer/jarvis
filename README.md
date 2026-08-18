@@ -114,6 +114,9 @@ Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" | Select-O
 
 Supabase → SQL Editor → pegar [supabase/schema.sql](supabase/schema.sql) → Run.
 
+Es idempotente y se puede reejecutar: es como llegan los cambios de esquema de las fases
+siguientes (la última, `remind_at` en `tasks`, para los avisos a una hora concreta).
+
 ### 7. Probar
 
 `/start`, `/ping`, o cualquier texto.
@@ -144,7 +147,7 @@ npm run deploy
 ```bash
 npx wrangler dev --test-scheduled
 # en otra terminal
-curl.exe "http://localhost:8787/__scheduled?cron=0+*+*+*+*"
+curl.exe "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
 ```
 
 Cada ejecución deja una línea `cron_run` en los logs con cuántos usuarios miró, y
@@ -271,7 +274,7 @@ descritas en prosa dentro del prompt, que duplicaría la fuente de verdad.
 |---|---|---|
 | `create_task` | Crea tarea con fecha, prioridad y notas | No |
 | `list_tasks` | Filtra por estado y vencimiento | No |
-| `update_task` | Cambia fecha, título, notas, prioridad o estado | No |
+| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado | No |
 | `complete_task` | Marca como hecha | No |
 | `delete_task` | Borra permanentemente | **Sí** |
 | `remember` | Guarda un dato duradero del usuario | No |
@@ -351,10 +354,20 @@ BRIEFING_HOUR = "8"   # hora local, 0-23
 El texto se compone en código, sin pasar por el modelo: es una lista de tareas con
 fechas, y así no cuesta tokens ni puede inventarse una tarea que no existe.
 
-**Recordatorios de vencimiento** ([src/cron/reminders.ts](src/cron/reminders.ts)).
-Cada hora se buscan las tareas que vencen en los próximos 60 minutos y se avisa una
-sola vez por tarea (`reminded_at`). Lo que ya estaba vencido también entra, con un
-tope de 10 por ejecución para que no llegue una avalancha el primer día.
+**Recordatorios** ([src/cron/reminders.ts](src/cron/reminders.ts)). El cron corre cada
+cinco minutos y distingue dos clases de aviso:
+
+| Pides | Campo | Te llega |
+|---|---|---|
+| "recuérdamelo a las 12:10" | `remind_at` | A las 12:10 (dentro de esos 5 minutos) |
+| una tarea con fecha límite | `due_at` | Una hora antes de vencer |
+
+Se avisa una sola vez por tarea (`reminded_at`), y lo que ya estaba vencido también
+entra, con un tope de 10 por ejecución para que no llegue una avalancha el primer día.
+
+Que el aviso sea un campo de la tarea y no otra tarea importa: sin `remind_at`, un
+"llamo a David a las 17:30, recuérdamelo a las 12:10" acababa en dos filas, la tarea y
+un "recordar llamar a David". Una sola cosa que hacer, una sola fila.
 
 **La hora local, calculada de verdad** ([src/lib/localtime.ts](src/lib/localtime.ts)).
 El cron de Cloudflare dispara en UTC y España cambia de horario dos veces al año: un
@@ -365,9 +378,9 @@ duran 23 y 25 horas.
 Los avisos se guardan en el historial como mensajes del asistente. Sin eso, contestar
 "hecho" a un recordatorio no tendría referente y el modelo preguntaría de qué le hablas.
 
-No hace falta tocar nada para que esto funcione: ni secrets nuevos, ni cambios en el
-esquema — `reminded_at` estaba previsto desde la Fase 2. Solo el trigger de
-[wrangler.toml](wrangler.toml), que ya va activado.
+No hacen falta secrets nuevos. El trigger de [wrangler.toml](wrangler.toml) ya va
+activado, y la columna `remind_at` se añade reejecutando
+[supabase/schema.sql](supabase/schema.sql), que es idempotente.
 
 ## Varias cosas en un mensaje
 

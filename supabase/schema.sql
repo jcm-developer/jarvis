@@ -59,6 +59,7 @@ create table if not exists tasks (
   title          text not null,
   notes          text,
   due_at         timestamptz,
+  remind_at      timestamptz,   -- cuándo avisar, si no es al vencer
   priority       smallint not null default 2 check (priority between 1 and 3), -- 1 = alta
   status         text not null default 'pending'
                    check (status in ('pending','done','cancelled')),
@@ -69,6 +70,12 @@ create table if not exists tasks (
 );
 create index if not exists tasks_user_status_due_idx
   on tasks (user_id, status, due_at);
+create index if not exists tasks_user_status_remind_idx
+  on tasks (user_id, status, remind_at);
+
+-- Para bases de datos creadas antes de que existiera remind_at: `create table if
+-- not exists` no añade columnas a una tabla que ya está, así que hace falta esto.
+alter table tasks add column if not exists remind_at timestamptz;
 
 -- Observabilidad -------------------------------------------------------------
 -- Sin esto, entender por qué el agente hizo algo raro es imposible.

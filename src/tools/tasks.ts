@@ -19,6 +19,12 @@ export const createTask: ToolDefinition = {
         type: 'string',
         description: 'Fecha límite en ISO 8601 con zona horaria, ej. 2026-08-20T09:00:00+02:00.',
       },
+      remind_at: {
+        type: 'string',
+        description:
+          'Cuándo avisar, en ISO 8601, si el usuario pide el aviso a una hora distinta ' +
+          'de la fecha límite. Si no se indica, el aviso sale al acercarse due_at.',
+      },
       priority: {
         type: 'integer',
         description: 'Prioridad: 1 alta, 2 normal, 3 baja. Por defecto 2.',
@@ -33,6 +39,7 @@ export const createTask: ToolDefinition = {
       title: requireString(args, 'title', 200),
       notes: optionalString(args, 'notes'),
       due_at: optionalIsoDate(args, 'due_at'),
+      remind_at: optionalIsoDate(args, 'remind_at'),
       priority: optionalInt(args, 'priority', 1, 3) ?? 2,
     });
 
@@ -114,6 +121,13 @@ export const updateTask: ToolDefinition = {
         description:
           'Nueva fecha límite en ISO 8601 con zona horaria. Cadena vacía para quitarle la fecha.',
       },
+      remind_at: {
+        type: 'string',
+        description:
+          'Cuándo avisar, en ISO 8601, cuando el usuario pide el aviso a una hora distinta ' +
+          'de la fecha límite ("recuérdamelo a las 12:10"). Cadena vacía para volver al ' +
+          'aviso normal, el de la fecha límite.',
+      },
       priority: { type: 'integer', description: 'Nueva prioridad: 1 alta, 2 normal, 3 baja.' },
       status: {
         type: 'string',
@@ -140,11 +154,15 @@ export const updateTask: ToolDefinition = {
       patch['priority'] = optionalInt(args, 'priority', 1, 3) ?? 2;
     }
 
+    // Cambiar cualquiera de las dos fechas reabre el aviso. Sin esto, una tarea de
+    // la que ya se avisó se aplazaría al día siguiente y el recordatorio no volvería
+    // a salir nunca, porque el cron solo mira las que tienen reminded_at a null.
     if (args['due_at'] !== undefined) {
       patch['due_at'] = optionalIsoDate(args, 'due_at');
-      // Mover la fecha reabre el aviso. Sin esto, una tarea de la que ya se avisó
-      // se aplazaría al día siguiente y el recordatorio no volvería a salir nunca,
-      // porque el cron solo mira las que tienen reminded_at a null.
+      patch['reminded_at'] = null;
+    }
+    if (args['remind_at'] !== undefined) {
+      patch['remind_at'] = optionalIsoDate(args, 'remind_at');
       patch['reminded_at'] = null;
     }
 
@@ -161,7 +179,7 @@ export const updateTask: ToolDefinition = {
       return {
         ok: false,
         error:
-          'No has indicado qué cambiar. Manda al menos uno de: title, notes, due_at, priority o status.',
+          'No has indicado qué cambiar. Manda al menos uno de: title, notes, due_at, remind_at, priority o status.',
       };
     }
 
@@ -264,6 +282,9 @@ function summarize(task: TaskRow, timezone: string) {
     notes: task.notes,
     due: task.due_at ? formatDate(task.due_at, timezone) : null,
     due_iso: task.due_at,
+    // Solo cuando hay un aviso propio: en una lista de veinte tareas, un campo más
+    // por fila son tokens en cada mensaje siguiente.
+    ...(task.remind_at ? { remind: formatDate(task.remind_at, timezone) } : {}),
     priority: PRIORITY_LABELS[task.priority] ?? 'normal',
     status: task.status,
   };

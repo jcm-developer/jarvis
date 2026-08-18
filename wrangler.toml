@@ -74,8 +74,13 @@ binding = "AI"
 [observability]
 enabled = true
 
-# Briefing y recordatorios (Fase 5). El cron dispara cada hora EN UTC: la hora
-# local del usuario se calcula en el código (src/lib/localtime.ts), porque España
-# cambia de horario dos veces al año y un cron fijo se descuadraría medio año.
+# Briefing y recordatorios (Fase 5). Cada cinco minutos, no cada hora: un aviso
+# pedido para las 12:10 tiene que llegar a las 12:10, y con el cron en punto lo
+# antes que podía salir era la hora siguiente. Son 288 invocaciones al día, nada
+# frente a las 100.000 del plan free, y el briefing sigue saliendo una vez al día.
+#
+# Dispara EN UTC: la hora local del usuario se calcula en el código
+# (src/lib/localtime.ts), porque España cambia de horario dos veces al año y un
+# cron fijo se descuadraría medio año.
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
