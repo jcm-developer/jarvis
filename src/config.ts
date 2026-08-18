@@ -21,7 +21,7 @@ export interface Config {
 }
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
-  openai: 'gpt-4o-mini',
+  openai: 'gpt-4.1-mini',
   groq: 'llama-3.3-70b-versatile',
   nvidia: 'meta/llama-3.3-70b-instruct',
 };

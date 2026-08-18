@@ -21,7 +21,7 @@ como base de datos.
 | Decisión | Elección | Motivo |
 |---|---|---|
 | Plan Cloudflare | **Free** | Uso personal. 200 OK inmediato y trabajo en `waitUntil()` acotado (ver §11). Migrable a Queues sin rediseñar. |
-| Proveedor LLM | **OpenAI** (`gpt-4o-mini`) tras capa de abstracción | Se empezó con NVIDIA NIM por su free tier y no aguantó producción: encolaba las peticiones y un saludo se iba de 45 s. La capa se queda: el motivo por el que existe sigue vigente. |
+| Proveedor LLM | **OpenAI** (`gpt-4.1-mini`) tras capa de abstracción | Se empezó con NVIDIA NIM por su free tier y no aguantó producción: encolaba las peticiones y un saludo se iba de 45 s. La capa se queda: el motivo por el que existe sigue vigente. |
 | STT | **OpenAI Whisper** (`whisper-1`) | Acepta el OGG/Opus de Telegram sin convertir y acierta más en español. Workers AI queda como alternativa gratis por env var. |
 | DB | **Supabase** | Postgres gestionado + free tier + REST. |
 | Lenguaje | **TypeScript** | Tipado en los contratos de tools, que es donde más duele el error. |
@@ -302,7 +302,7 @@ API key; el agente no se entera.
 
 | `LLM_PROVIDER` | Base URL | Modelo en uso / sugerido | Secret |
 |---|---|---|---|
-| `openai` (**en producción**) | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `openai` (**en producción**) | `https://api.openai.com/v1` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
 | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` | `NVIDIA_API_KEY` |
 
@@ -412,8 +412,20 @@ modelo qué id tiene que usar con `update_task`, así que se corrige en la vuelt
 siguiente del bucle. Tiene escape: `force: true` para cuando de verdad son dos cosas
 distintas. Cuesta un SELECT antes del INSERT, que a esta escala no se nota.
 
-Si aun así el modelo sigue desobedeciendo en algo que importe, la salida es subir de
-modelo: `LLM_MODEL = "gpt-4.1-mini"` es una var de `wrangler.toml`, sin tocar código.
+Los guardarraíles se quedan, pero la conclusión práctica fue **cambiar de modelo**.
+`gpt-4o-mini` era el problema tanto como el diseño, así que en producción va
+`gpt-4.1-mini`.
+
+| Modelo | Entrada | Entrada cacheada | Salida |
+|---|---|---|---|
+| `gpt-4o-mini` | 0,15 $/M | 0,075 $/M | 0,60 $/M |
+| `gpt-4.1-mini` | 0,40 $/M | 0,10 $/M | 1,60 $/M |
+
+De lista es 2,7 veces más caro; en la práctica, mucho menos. Nuestra carga es ~97%
+tokens de entrada y la mayor parte es el prefijo estable —prompt y esquemas de
+herramientas—, que va al precio cacheado: ahí la diferencia es del 33%. La salida son
+30-60 tokens por respuesta y no mueve la aguja. A un volumen de uso personal el salto
+es de unos pocos euros al mes, y cambiarlo son dos líneas de `wrangler.toml`.
 
 ### El system prompt
 
@@ -504,7 +516,7 @@ NVIDIA_API_KEY            # opcional, solo si LLM_PROVIDER = "nvidia"
 
 # Vars (wrangler.toml) — se SOBRESCRIBEN en cada deploy
 LLM_PROVIDER = "openai"
-LLM_MODEL    = "gpt-4o-mini"
+LLM_MODEL    = "gpt-4.1-mini"
 STT_PROVIDER = "openai"       # o "workers-ai" (gratis, dentro de Cloudflare)
 STT_MODEL    = "whisper-1"
 STT_LANGUAGE = "es"           # fijarlo acierta más que autodetectar
@@ -573,7 +585,7 @@ en el presupuesto. Cuando pasa, el bot lo dice y pide trocear.
 | KV escrituras | 1.000/día | Justo. Una por mensaje (dedupe) más una al día (marca del briefing); no añadir más |
 | Cron triggers | Incluidos, hasta 1 min de granularidad | No. Cada 5 min son 288 invocaciones al día |
 | Supabase | 500 MB | No |
-| OpenAI | Créditos de pago, sin cola | No aprieta. `gpt-4o-mini` sale a céntimos al mes con este volumen |
+| OpenAI | Créditos de pago, sin cola | No aprieta: unos pocos euros al mes a este volumen (ver §6) |
 | `waitUntil` tras responder | ~30 s, y luego cancela | **Sí** — es el techo que marca todo el diseño |
 
 ### El tiempo: dos límites opuestos (Fases 1 y 3)

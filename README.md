@@ -239,7 +239,7 @@ y cambiar entre ellos son dos líneas de `wrangler.toml` más su API key:
 
 ```toml
 LLM_PROVIDER = "openai"
-LLM_MODEL = "gpt-4o-mini"
+LLM_MODEL = "gpt-4.1-mini"
 ```
 
 Eso es lo que corre en producción. Se empezó con NVIDIA NIM por su free tier y hubo
@@ -247,6 +247,11 @@ que abandonarlo: encolaba las peticiones gratuitas y un simple saludo se iba de 
 más de lo que aguanta cualquier montaje sobre el plan free (ver
 [ARCHITECTURE.md §11](ARCHITECTURE.md)). Con OpenAI la misma respuesta tarda 2-5 s.
 `groq` (`llama-3.3-70b-versatile`) y `nvidia` siguen soportados como alternativa.
+
+Dentro de OpenAI se empezó con `gpt-4o-mini` y se cambió a `gpt-4.1-mini` porque el
+primero se saltaba las instrucciones: duplicaba tareas y fechaba los avisos al día
+siguiente con las reglas delante. Es más caro de lista, pero casi todo lo que
+gastamos es prefijo cacheado, donde la diferencia baja al 33%.
 
 Se usa `fetch` directo en lugar del SDK de OpenAI para no engordar el bundle.
 Incluye timeout de 20 s por llamada —recortado por el presupuesto del mensaje—, un
