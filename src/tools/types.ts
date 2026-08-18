@@ -5,6 +5,14 @@ export interface ToolContext {
   conversationId: string;
   timezone: string;
   db: Db;
+  /**
+   * El mensaje que ha escrito el usuario en este turno.
+   *
+   * Los handlers lo leen para resolver los plazos relativos ellos mismos, porque
+   * el modelo se equivoca de día y no hay prompt que lo arregle. Vacío cuando la
+   * acción viene de un botón de confirmación, donde no hay texto nuevo.
+   */
+  userMessage: string;
 }
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -70,6 +78,12 @@ export function optionalString(
     throw new ToolValidationError(`El campo "${field}" debe ser texto.`);
   }
   return value.trim().slice(0, maxLength);
+}
+
+export function optionalBoolean(args: Record<string, unknown>, field: string): boolean {
+  const value = args[field];
+  // Los modelos mandan booleanos como texto con la misma facilidad que como bool.
+  return value === true || value === 'true';
 }
 
 export function optionalInt(

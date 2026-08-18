@@ -1,6 +1,7 @@
 import type { TaskRow } from '../db/types';
+import { parseRelativeMinutes } from '../lib/relative-time';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
-import { optionalInt, optionalIsoDate, optionalString, requireString } from './types';
+import { optionalBoolean, optionalInt, optionalIsoDate, optionalString, requireString } from './types';
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'alta', 2: 'normal', 3: 'baja' };
 
@@ -18,6 +19,45 @@ const MAX_OFFSET_MINUTES = 525_600;
 function resolveOffset(args: Record<string, unknown>, field: string): string | null {
   const minutes = optionalInt(args, field, 1, MAX_OFFSET_MINUTES);
   return minutes === null ? null : new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+/** Margen que se le perdona al modelo antes de corregirle un plazo relativo. */
+const DRIFT_TOLERANCE_MS = 10 * 60 * 1000;
+
+/**
+ * Corrige la fecha cuando el usuario ha dicho un plazo y el modelo se ha ido lejos.
+ *
+ * Las reglas del prompt no bastaron: `gpt-4o-mini` seguía fechando "avísame en 3
+ * minutos" al día siguiente, incluso teniendo un campo en minutos para no calcular
+ * nada. El plazo del mensaje del usuario es la fuente auténtica, así que gana él.
+ *
+ * Solo corrige cuando la desviación pasa de diez minutos: si el modelo acertó, no
+ * hay nada que tocar.
+ */
+function honourUserDeadline(
+  chosen: string | null,
+  ctx: ToolContext,
+  field: string,
+): string | null {
+  const minutes = parseRelativeMinutes(ctx.userMessage);
+  if (minutes === null) return chosen;
+
+  const target = Date.now() + minutes * 60_000;
+  if (chosen !== null && Math.abs(new Date(chosen).getTime() - target) <= DRIFT_TOLERANCE_MS) {
+    return chosen;
+  }
+
+  const corrected = new Date(target).toISOString();
+  console.warn(
+    JSON.stringify({
+      event: 'deadline_corrected',
+      field,
+      user_minutes: minutes,
+      model_value: chosen,
+      corrected_to: corrected,
+    }),
+  );
+  return corrected;
 }
 
 const OFFSET_HINT =
@@ -52,25 +92,122 @@ export const createTask: ToolDefinition = {
         type: 'integer',
         description: 'Prioridad: 1 alta, 2 normal, 3 baja. Por defecto 2.',
       },
+      force: {
+        type: 'boolean',
+        description:
+          'Solo si te he dicho que ya existe una tarea parecida y de verdad es otra cosa ' +
+          'distinta. No lo mandes por defecto.',
+      },
     },
     required: ['title'],
   },
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
+    const title = cleanTitle(requireString(args, 'title', 200));
+
+    // El relativo manda sobre el ISO: lo ha calculado el Worker con la hora real.
+    // Y por encima de los dos, el plazo que dijo el usuario.
+    let dueAt = resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at');
+    let remindAt = resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at');
+
+    // Si el usuario pidió un plazo y el modelo no puso ninguna fecha, es un aviso.
+    if (dueAt === null && remindAt === null) {
+      remindAt = honourUserDeadline(null, ctx, 'remind_at');
+    } else if (remindAt !== null) {
+      remindAt = honourUserDeadline(remindAt, ctx, 'remind_at');
+    } else {
+      dueAt = honourUserDeadline(dueAt, ctx, 'due_at');
+    }
+
+    if (!optionalBoolean(args, 'force')) {
+      const duplicate = await findSimilarPending(title, ctx);
+      if (duplicate) {
+        // Error en vez de fila nueva. El modelo ignora la regla del prompt que le
+        // dice que actualice en vez de duplicar, así que aquí no se le pide: no se
+        // le deja, y el error le explica qué hacer con el id en la mano.
+        return {
+          ok: false,
+          error:
+            `Ya existe la tarea "${duplicate.title}" (id ${duplicate.id}). No crees otra: ` +
+            'usa update_task con ese id para cambiarle la fecha o ponerle hora de aviso. ' +
+            'Si de verdad es algo distinto, repite la llamada con force=true.',
+        };
+      }
+    }
+
     const task = await ctx.db.insert<TaskRow>('tasks', {
       user_id: ctx.userId,
-      title: requireString(args, 'title', 200),
+      title,
       notes: optionalString(args, 'notes'),
-      // El relativo manda sobre el ISO: lo ha calculado el Worker con la hora real,
-      // así que si llegan los dos, el fiable es este.
-      due_at: resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'),
-      remind_at: resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at'),
+      due_at: dueAt,
+      remind_at: remindAt,
       priority: optionalInt(args, 'priority', 1, 3) ?? 2,
     });
 
     return { ok: true, data: summarize(task, ctx.timezone) };
   },
 };
+
+/**
+ * Quita el "recordar" del título.
+ *
+ * El prompt prohíbe los títulos tipo "Recordar llamar a David" y el modelo los
+ * escribe igual. La tarea es llamar a David; recordarlo es lo que hace el cron.
+ */
+function cleanTitle(title: string): string {
+  const cleaned = title.replace(
+    /^\s*(?:recordatorio(?:\s+de)?|recordarme|recordar|acordarme(?:\s+de)?|avisarme(?:\s+de)?|avisar(?:\s+de)?)\s+(?:que\s+)?/i,
+    '',
+  );
+  if (cleaned.length === 0) return title;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+/**
+ * Busca una tarea pendiente que hable de lo mismo.
+ *
+ * Compara palabras significativas, no cadenas: "Recordar llamar a David" y "Llamar
+ * a David a las seis" no se parecen como texto y son la misma cosa. Basta con que
+ * las palabras del título más corto estén todas en el otro.
+ */
+async function findSimilarPending(title: string, ctx: ToolContext): Promise<TaskRow | null> {
+  const words = significantWords(title);
+  if (words.length === 0) return null;
+
+  const pending = await ctx.db.select<TaskRow>('tasks', {
+    columns: 'id,title',
+    filters: { user_id: `eq.${ctx.userId}`, status: 'eq.pending' },
+    order: 'created_at.desc',
+    limit: 50,
+  });
+
+  for (const candidate of pending) {
+    const other = significantWords(candidate.title);
+    if (other.length === 0) continue;
+    const [shorter, longer] = words.length <= other.length ? [words, other] : [other, words];
+
+    // Con una sola palabra en común no basta: "comprar pan" y "comprar leche"
+    // comparten "comprar" y son dos recados distintos. Ahí se exige que sean el
+    // mismo título; a partir de dos palabras, que las del corto estén en el largo.
+    const same =
+      shorter.length === 1
+        ? longer.length === 1 && longer[0] === shorter[0]
+        : shorter.every((word) => longer.includes(word));
+
+    if (same) return candidate;
+  }
+  return null;
+}
+
+/** Palabras de cuatro letras o más, sin acentos: las que distinguen una tarea. */
+function significantWords(title: string): string[] {
+  return title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= 4);
+}
 
 export const listTasks: ToolDefinition = {
   name: 'list_tasks',
@@ -184,19 +321,21 @@ export const updateTask: ToolDefinition = {
     // Cambiar cualquiera de las dos fechas reabre el aviso. Sin esto, una tarea de
     // la que ya se avisó se aplazaría al día siguiente y el recordatorio no volvería
     // a salir nunca, porque el cron solo mira las que tienen reminded_at a null.
-    if (args['due_in_minutes'] !== undefined) {
-      patch['due_at'] = resolveOffset(args, 'due_in_minutes');
-      patch['reminded_at'] = null;
-    } else if (args['due_at'] !== undefined) {
-      patch['due_at'] = optionalIsoDate(args, 'due_at');
+    if (args['due_in_minutes'] !== undefined || args['due_at'] !== undefined) {
+      const chosen =
+        resolveOffset(args, 'due_in_minutes') ??
+        (args['due_at'] !== undefined ? optionalIsoDate(args, 'due_at') : null);
+      // Solo se corrige lo que el modelo ha tocado: aquí no se inventan fechas que
+      // el usuario no ha pedido cambiar.
+      patch['due_at'] = chosen === null ? null : honourUserDeadline(chosen, ctx, 'due_at');
       patch['reminded_at'] = null;
     }
 
-    if (args['remind_in_minutes'] !== undefined) {
-      patch['remind_at'] = resolveOffset(args, 'remind_in_minutes');
-      patch['reminded_at'] = null;
-    } else if (args['remind_at'] !== undefined) {
-      patch['remind_at'] = optionalIsoDate(args, 'remind_at');
+    if (args['remind_in_minutes'] !== undefined || args['remind_at'] !== undefined) {
+      const chosen =
+        resolveOffset(args, 'remind_in_minutes') ??
+        (args['remind_at'] !== undefined ? optionalIsoDate(args, 'remind_at') : null);
+      patch['remind_at'] = chosen === null ? null : honourUserDeadline(chosen, ctx, 'remind_at');
       patch['reminded_at'] = null;
     }
 

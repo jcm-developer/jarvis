@@ -61,6 +61,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     conversationId: identity.conversationId,
     timezone: identity.timezone,
     db,
+    userMessage: input.text,
   };
 
   // Turnos nuevos de esta interacción. Se persisten de golpe al final, no a
@@ -223,6 +224,8 @@ export async function executeConfirmed(
     conversationId: identity.conversationId,
     timezone: identity.timezone,
     db,
+    // Sin mensaje nuevo: esto viene de un botón de confirmación.
+    userMessage: '',
   };
 
   const failures: string[] = [];

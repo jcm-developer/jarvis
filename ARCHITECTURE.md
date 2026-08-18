@@ -86,7 +86,8 @@ jarvis/
 │  │
 │  ├─ lib/
 │  │  ├─ deadline.ts           # presupuesto de tiempo compartido del mensaje
-│  │  └─ localtime.ts          # hora local del usuario (Intl, cambios de hora)
+│  │  ├─ localtime.ts          # hora local del usuario (Intl, cambios de hora)
+│  │  └─ relative-time.ts      # "en 5 minutos" leído del mensaje del usuario
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
@@ -359,7 +360,7 @@ export type ToolResult =
 
 | Tool | Descripción | Confirmación |
 |---|---|---|
-| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales, en ISO o en minutos desde ahora. | No |
+| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales, en ISO o en minutos desde ahora. Rechaza duplicados. | No |
 | `list_tasks` | Lista con filtros: status, rango de fechas, prioridad. | No |
 | `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. Reabre el aviso si cambia una fecha. | No |
 | `complete_task` | Marca como hecha. | No |
@@ -372,21 +373,47 @@ export type ToolResult =
 El modelo no calcula fechas. Suena a precaución teórica y no lo es: `gpt-4o-mini`
 fechó una tarea de "en 5 minutos" **al día siguiente** —hora correcta, día equivocado,
 copiado del año-mes-día de otra tarea del historial—, y el aviso se quedó esperando 24
-horas. Tres medidas, en orden de importancia:
+horas. Cuatro medidas, en orden inverso al que se probaron:
 
-1. **Plazos relativos resueltos en el Worker.** `create_task` y `update_task` aceptan
-   `due_in_minutes` y `remind_in_minutes`, y el handler los convierte con la hora real.
-   "En media hora" ya no necesita que el modelo sepa en qué día vive. Si llegan el
-   relativo y el ISO a la vez, gana el relativo: lo calculó quien sí sabe la hora.
-2. **Anclas en el prompt.** Además de la fecha en castellano se inyecta el instante en
+1. **El plazo del usuario manda, y lo aplica el handler.** `lib/relative-time.ts` lee
+   "en 5 minutos", "dentro de media hora" o "en un par de horas" del propio mensaje y
+   corrige la fecha que haya puesto el modelo cuando se desvía más de diez minutos.
+   Esta es la única medida que resolvió el problema; las tres siguientes no bastaron.
+2. **Plazos relativos como parámetro.** `create_task` y `update_task` aceptan
+   `due_in_minutes` y `remind_in_minutes`. Cuando el modelo los usa, no hay aritmética
+   de calendario que pueda salir mal. El problema es que muchas veces no los usa.
+3. **Anclas en el prompt.** Además de la fecha en castellano se inyecta el instante en
    ISO 8601 con desplazamiento (`2026-08-18T12:27:00+02:00`) y las fechas de hoy y
-   mañana sueltas. El modelo copia formatos mucho mejor que construye fechas.
-3. **Que diga la fecha que guardó.** El prompt le pide repetir en la respuesta la fecha
+   mañana sueltas. Ayuda, pero no es suficiente por sí solo.
+4. **Que diga la fecha que guardó.** El prompt le pide repetir en la respuesta la fecha
    tal como la devolvió la herramienta, para que el usuario detecte el error en el acto.
 
 Las ambigüedades del tipo "el martes" siguen resolviéndose contra la TZ del usuario. No
 hay tool `get_current_time`: sería una vuelta más del bucle para un dato que ya viaja
 en el prompt.
+
+### Guardarraíles en los handlers
+
+La lección de la fase de pruebas, y probablemente la más importante del proyecto:
+**una regla que el modelo tiene que cumplir voluntariamente no es una garantía.** Con
+`gpt-4o-mini` se documentaron tres reglas explícitas —no dupliques tareas, no titules
+"Recordar X", usa los campos en minutos— y las tres se incumplieron en el mismo turno,
+con el prompt nuevo ya en producción. Lo que el sistema no puede permitirse se hace
+cumplir en código, y el prompt se queda como ayuda, no como control.
+
+| Guardarraíl | Qué impide |
+|---|---|
+| El plazo del mensaje corrige la fecha del modelo | Avisos fechados mañana |
+| `create_task` limpia los títulos "Recordar X" / "Avisar de X" | Tareas que se llaman como su propio aviso |
+| `create_task` rechaza una tarea que repite las palabras de otra pendiente, y devuelve el id de la existente | Filas duplicadas para la misma cosa |
+
+El rechazo del duplicado no es un `throw`: es un `{ok: false, error}` que le dice al
+modelo qué id tiene que usar con `update_task`, así que se corrige en la vuelta
+siguiente del bucle. Tiene escape: `force: true` para cuando de verdad son dos cosas
+distintas. Cuesta un SELECT antes del INSERT, que a esta escala no se nota.
+
+Si aun así el modelo sigue desobedeciendo en algo que importe, la salida es subir de
+modelo: `LLM_MODEL = "gpt-4.1-mini"` es una var de `wrangler.toml`, sin tocar código.
 
 ### El system prompt
 

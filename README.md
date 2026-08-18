@@ -272,7 +272,7 @@ descritas en prosa dentro del prompt, que duplicaría la fuente de verdad.
 
 | Tool | Qué hace | Confirmación |
 |---|---|---|
-| `create_task` | Crea tarea con fecha, prioridad y notas | No |
+| `create_task` | Crea tarea con fecha límite, hora de aviso, prioridad y notas | No |
 | `list_tasks` | Filtra por estado y vencimiento | No |
 | `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado | No |
 | `complete_task` | Marca como hecha | No |
