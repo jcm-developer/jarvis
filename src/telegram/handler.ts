@@ -20,8 +20,9 @@ export interface HandlerContext {
   deadline: Deadline;
 }
 
-/** Tope de la transcripción, acotado además por el presupuesto global. */
-const MAX_STT_MS = 15_000;
+/** Topes por paso, acotados además por el presupuesto global. */
+const MAX_DOWNLOAD_MS = 8_000;
+const MAX_STT_MS = 12_000;
 
 const CONFIRM_PREFIX = 'ok:';
 const CANCEL_PREFIX = 'no:';
@@ -87,12 +88,18 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
 
   try {
     const started = Date.now();
-    const audio = await ctx.telegram.downloadFile(voice.file_id);
+    const audio = await ctx.telegram.downloadFile(
+      voice.file_id,
+      ctx.deadline.budgetFor(MAX_DOWNLOAD_MS),
+    );
+    const downloaded = Date.now();
+
     const transcriber = createTranscriber(ctx.env, ctx.config);
     const transcript = await transcriber.transcribe(audio, voice.mime_type ?? 'audio/ogg', {
       timeoutMs: ctx.deadline.budgetFor(MAX_STT_MS),
     });
 
+    // Desglosado por etapas: cuando algo se pasa de presupuesto, esto dice dónde.
     console.info(
       JSON.stringify({
         event: 'transcription',
@@ -100,7 +107,9 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
         audio_seconds: voice.duration,
         bytes: audio.byteLength,
         chars: transcript.length,
-        duration_ms: Date.now() - started,
+        download_ms: downloaded - started,
+        stt_ms: Date.now() - downloaded,
+        budget_left_ms: ctx.deadline.remainingMs(),
       }),
     );
 

@@ -2,6 +2,10 @@ import type { TelegramFile } from '../types';
 
 const API_BASE = 'https://api.telegram.org';
 
+/** Toda llamada a Telegram va acotada: el margen de waitUntil son 30 s en total. */
+const API_TIMEOUT_MS = 8_000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10_000;
+
 export type ChatAction = 'typing' | 'upload_voice' | 'record_voice';
 
 export interface InlineKeyboardButton {
@@ -40,6 +44,8 @@ export class TelegramClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      // Sin esto una llamada colgada consume sola el margen de waitUntil.
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
 
     const body = (await response.json()) as TelegramApiResponse<T>;
@@ -92,14 +98,14 @@ export class TelegramClient {
   }
 
   /** Resuelve el file_id y descarga el contenido. Usado para las notas de voz. */
-  async downloadFile(fileId: string): Promise<ArrayBuffer> {
+  async downloadFile(fileId: string, timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS): Promise<ArrayBuffer> {
     const file = await this.getFile(fileId);
     if (!file.file_path) {
       throw new TelegramError('getFile', undefined, 'la respuesta no traía file_path');
     }
 
     const response = await fetch(this.fileUrl(file.file_path), {
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(Math.max(1_000, timeoutMs)),
     });
     if (!response.ok) {
       throw new TelegramError('downloadFile', response.status, 'no se pudo descargar el fichero');

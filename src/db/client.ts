@@ -30,7 +30,8 @@ export interface SelectOptions {
   columns?: string;
 }
 
-const TIMEOUT_MS = 10_000;
+/** Bajo a propósito: varias consultas seguidas deben caber en el presupuesto global. */
+const TIMEOUT_MS = 6_000;
 
 export class Db {
   private readonly restUrl: string;

@@ -8,10 +8,17 @@ import { handleUpdate } from './telegram/handler';
 import type { Env, TelegramUpdate } from './types';
 
 /**
- * Presupuesto total por mensaje. Debe caber holgadamente en el margen que
- * Cloudflare concede a waitUntil() tras devolver la respuesta.
+ * Presupuesto total por mensaje.
+ *
+ * Cloudflare concede 30 s a waitUntil() tras devolver la respuesta, compartidos
+ * entre todas las tareas, y después las cancela sin más. 20 s deja margen para
+ * enviar el mensaje de error si algún paso se pasa, en vez de morir en silencio.
+ *
+ * Si esto se queda corto de forma habitual, la salida no es subirlo: es
+ * Cloudflare Queues ($5/mes), que desacopla el trabajo de la petición y trae
+ * reintentos. Afectaría solo a este fichero.
  */
-const TOTAL_BUDGET_MS = 25_000;
+const TOTAL_BUDGET_MS = 20_000;
 
 const app = new Hono<{ Bindings: Env }>();
 
