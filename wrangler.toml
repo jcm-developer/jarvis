@@ -15,7 +15,7 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put TELEGRAM_BOT_TOKEN
 #   wrangler secret put TELEGRAM_WEBHOOK_SECRET
 #   wrangler secret put ALLOWED_TELEGRAM_IDS   # tu telegram user id, separados por coma
-#   wrangler secret put NVIDIA_API_KEY
+#   wrangler secret put OPENAI_API_KEY      # modelo y transcripción, la misma clave
 #   wrangler secret put SUPABASE_URL
 #   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 #

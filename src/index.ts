@@ -11,7 +11,7 @@ import type { Env, TelegramUpdate } from './types';
  * Presupuesto total por mensaje.
  *
  * Cloudflare concede 30 s a waitUntil() tras devolver la respuesta, compartidos
- * entre todas las tareas, y después las cancela sin más. 20 s deja margen para
+ * entre todas las tareas, y después las cancela sin más. 27 s deja margen para
  * enviar el mensaje de error si algún paso se pasa, en vez de morir en silencio.
  *
  * Si esto se queda corto de forma habitual, la salida no es subirlo: es

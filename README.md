@@ -59,7 +59,7 @@ Tras el primer deploy: **Worker → Settings → Variables and Secrets → Add**
 | `TELEGRAM_BOT_TOKEN` | el de BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | cadena aleatoria larga (ver abajo) |
 | `ALLOWED_TELEGRAM_IDS` | tu user id, varios separados por coma |
-| `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/models) → un modelo → *Get API Key* |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → *Create new secret key*. Sirve para el modelo y para transcribir |
 | `SUPABASE_URL` | Supabase → Project Settings → API → *Project URL* |
 | `SUPABASE_SERVICE_ROLE_KEY` | ídem → *service_role*. Se salta RLS: trátala como la llave maestra |
 
@@ -216,17 +216,24 @@ Cada update pasa por cuatro filtros antes de procesarse:
 Conversación real contra un LLM, con memoria de los últimos turnos.
 
 **Capa de proveedor** ([src/llm/](src/llm/)). Nada fuera de ese directorio sabe qué
-proveedor está activo. NVIDIA NIM y Groq hablan el formato de OpenAI, así que
+proveedor está activo. OpenAI, Groq y NVIDIA hablan el mismo formato, así que
 comparten un único adaptador ([openai-compatible.ts](src/llm/providers/openai-compatible.ts))
 y cambiar entre ellos son dos líneas de `wrangler.toml` más su API key:
 
 ```toml
-LLM_PROVIDER = "groq"
-LLM_MODEL = "llama-3.3-70b-versatile"
+LLM_PROVIDER = "openai"
+LLM_MODEL = "gpt-4o-mini"
 ```
 
+Eso es lo que corre en producción. Se empezó con NVIDIA NIM por su free tier y hubo
+que abandonarlo: encolaba las peticiones gratuitas y un simple saludo se iba de 45 s,
+más de lo que aguanta cualquier montaje sobre el plan free (ver
+[ARCHITECTURE.md §11](ARCHITECTURE.md)). Con OpenAI la misma respuesta tarda 2-5 s.
+`groq` (`llama-3.3-70b-versatile`) y `nvidia` siguen soportados como alternativa.
+
 Se usa `fetch` directo en lugar del SDK de OpenAI para no engordar el bundle.
-Incluye timeout de 45 s, un reintento ante 429 y 5xx, y limpieza de los bloques
+Incluye timeout de 20 s por llamada —recortado por el presupuesto del mensaje—, un
+reintento ante 429 y 5xx, y limpieza de los bloques
 `<think>` que emiten los modelos de razonamiento.
 
 **Memoria de corto plazo.** Ventana deslizante de `HISTORY_WINDOW` mensajes. Nació
@@ -261,7 +268,7 @@ vueltas: el modelo pide herramientas, se ejecutan, el resultado vuelve como mens
 `{ok:false, error}` para que se corrija solo, en vez de romper la conversación.
 
 **Confirmación humana.** `delete_task` no se ejecuta: la acción queda en KV con TTL
-de 5 minutos y el usuario recibe botones. Confirmar la consume — pulsar dos veces no
+de 15 minutos y el usuario recibe botones. Confirmar la consume — pulsar dos veces no
 la ejecuta dos veces. El texto del botón incluye el título real de la tarea, porque
 nadie revisa un uuid.
 

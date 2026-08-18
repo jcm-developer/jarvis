@@ -20,9 +20,9 @@ como base de datos.
 
 | Decisión | Elección | Motivo |
 |---|---|---|
-| Plan Cloudflare | **Free** | Uso personal. Procesamiento dentro de la petición (ver §4). Migrable a Queues sin rediseñar. |
-| Proveedor LLM | **NVIDIA NIM** tras capa de abstracción | Free tier para empezar; el free tier se agota y hay que poder cambiar por env var. |
-| STT | **Workers AI Whisper** | Corre en el mismo Worker. Sin API key extra, sin salto de red. |
+| Plan Cloudflare | **Free** | Uso personal. 200 OK inmediato y trabajo en `waitUntil()` acotado (ver §11). Migrable a Queues sin rediseñar. |
+| Proveedor LLM | **OpenAI** (`gpt-4o-mini`) tras capa de abstracción | Se empezó con NVIDIA NIM por su free tier y no aguantó producción: encolaba las peticiones y un saludo se iba de 45 s. La capa se queda: el motivo por el que existe sigue vigente. |
+| STT | **OpenAI Whisper** (`whisper-1`) | Acepta el OGG/Opus de Telegram sin convertir y acierta más en español. Workers AI queda como alternativa gratis por env var. |
 | DB | **Supabase** | Postgres gestionado + free tier + REST. |
 | Lenguaje | **TypeScript** | Tipado en los contratos de tools, que es donde más duele el error. |
 
@@ -41,12 +41,12 @@ Telegram
 │      ├─ whitelist de telegram_user_id                                    │
 │      └─ dedupe update_id en KV (TTL 24h)                                 │
 │                                                                          │
-│  [2] Procesamiento DENTRO de la petición (await, no waitUntil)           │
-│      el 200 OK se devuelve al terminar; ver §4                           │
+│  [2] 200 OK inmediato + procesamiento en ctx.waitUntil()                 │
+│      acotado por un presupuesto global de 27 s; ver §11                  │
 │                                                                          │
 │  [3] Normalización de entrada                                            │
 │      ├─ texto      → tal cual                                            │
-│      ├─ voz/audio  → getFile → descarga OGG → Workers AI Whisper → texto │
+│      ├─ voz/audio  → getFile → descarga OGG → Whisper (OpenAI)  → texto  │
 │      └─ otro       → respuesta "no soportado aún"                        │
 │                                                                          │
 │  [4] sendChatAction("typing")                                            │
@@ -54,7 +54,7 @@ Telegram
 │  [5] Construcción del contexto                                           │
 │      system prompt + memorias + últimos N mensajes + mensaje actual       │
 │                                                                          │
-│  [6] Loop agéntico (máx 5 iteraciones)                                   │
+│  [6] Loop agéntico (máx 3 iteraciones)                                   │
 │      ┌──────────────────────────────────────────┐                        │
 │      │ LLM.chat(messages, tools)                │                        │
 │      │   ├─ finish_reason=stop      → salir     │                        │
@@ -264,15 +264,16 @@ el cron, no un rediseño.
 
 ## 6. Capa de abstracción del LLM
 
-El punto que evita quedarnos atrapados en NVIDIA cuando se agote su free tier.
+El punto que permitió cambiar de proveedor sin tocar `agent.ts` cuando NVIDIA no
+aguantó. Ya se ha usado en serio una vez, así que se queda.
 
 ```ts
 // src/llm/provider.ts
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
 }
 
 export interface LLMResponse {
@@ -284,30 +285,40 @@ export interface LLMResponse {
 
 export interface LLMProvider {
   readonly name: string;
-  chat(messages: LLMMessage[], tools: ToolSchema[]): Promise<LLMResponse>;
+  readonly model: string;
+  chat(messages: LLMMessage[], tools?: ToolSchema[], options?: ChatOptions): Promise<LLMResponse>;
 }
 ```
 
-Selección en runtime por `LLM_PROVIDER` (`nvidia` | `groq` | `gemini`).
-Cambiar de proveedor = cambiar una variable, no tocar `agent.ts`.
+Selección en runtime por `LLM_PROVIDER`. Cambiar de proveedor son dos vars más su
+API key; el agente no se entera.
 
-### NVIDIA NIM
+| `LLM_PROVIDER` | Base URL | Modelo en uso / sugerido | Secret |
+|---|---|---|---|
+| `openai` (**en producción**) | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| `nvidia` | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` | `NVIDIA_API_KEY` |
 
-- Base URL: `https://integrate.api.nvidia.com/v1`
-- Es OpenAI-compatible → se usa el SDK `openai` con `baseURL` sobrescrito.
-- **Modelo por defecto:** `meta/llama-3.3-70b-instruct`
-- **Alternativa:** `nvidia/llama-3.3-nemotron-super-49b-v1`
+Los tres hablan el formato de OpenAI, así que comparten un único adaptador
+([openai-compatible.ts](src/llm/providers/openai-compatible.ts)) escrito con
+`fetch` directo: el SDK `openai` no entra en el bundle del Worker por peso y
+dependencias de Node. El adaptador reintenta una vez ante 429 y 5xx, nunca ante
+timeout (duplicaría el peor caso cuando ya vamos tarde) y limpia los bloques
+`<think>` que emiten los modelos de razonamiento.
 
-> **Restricción importante.** No todos los modelos del catálogo NIM soportan
-> `tools`. Si se cambia el modelo hay que verificar antes que soporte function
-> calling, o el agente deja de funcionar entero. Rate limit del free tier
-> ~40 req/min y créditos finitos.
+Gemini queda fuera a propósito: su API nativa no es compatible y necesitaría su
+propio adaptador.
 
-### Planes B / C
+> **Al cambiar de modelo, dos comprobaciones.** Que soporte function calling, o la
+> Fase 2 entera deja de funcionar. Y en OpenAI, evitar la serie "o" de
+> razonamiento: rechaza `max_tokens` y `temperature`, que el adaptador siempre manda.
 
-`groq` (rápido, free tier generoso) y `gemini` (free tier muy generoso, 15 RPM).
-Ambos implementan la misma interfaz. Groq es además OpenAI-compatible, así que
-su adaptador es casi idéntico al de NVIDIA.
+### Por qué se abandonó NVIDIA NIM
+
+Era la elección inicial por su free tier. En producción, su cola de peticiones
+gratuitas hacía que un simple saludo tardara más de 45 s. Con ese tiempo no cabe
+ninguna arquitectura sobre el plan free de Workers: es lo que forzó el diseño de
+§11. Con OpenAI la misma respuesta tarda 2-5 s y el problema desapareció.
 
 ---
 
@@ -330,7 +341,7 @@ export interface ToolContext {
   userId: string;
   conversationId: string;
   timezone: string;
-  db: SupabaseClient;
+  db: Db;                           // cliente PostgREST propio, no el SDK
 }
 
 export type ToolResult =
@@ -348,17 +359,19 @@ export type ToolResult =
 | `delete_task` | Elimina permanentemente. | **Sí** |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
 | `recall` | Busca en memorias. | No |
-| `get_current_time` | Fecha/hora actual en la TZ del usuario. | No |
 
 **Regla de fechas:** el modelo nunca calcula fechas absolutas por su cuenta. El
 system prompt inyecta la fecha/hora actual y la TZ, y `create_task` acepta ISO 8601.
-Ambigüedades ("el martes") se resuelven en el handler, no en el modelo.
+Ambigüedades ("el martes") se resuelven en el handler, no en el modelo. No hay tool
+`get_current_time`: sería una vuelta más del bucle para un dato que ya viaja en el
+prompt.
 
 ### Flujo de confirmación
 
 1. El modelo pide `delete_task({id})`.
 2. El agente detecta `requiresConfirmation` y **no ejecuta**.
-3. Se guarda la tool call pendiente en KV (`pending:<chat_id>`, TTL 5 min).
+3. Se guarda la tool call pendiente en KV (TTL 15 min). Confirmar la consume:
+   pulsar dos veces no ejecuta dos veces.
 4. Se envía inline keyboard: `✅ Confirmar` / `❌ Cancelar`.
 5. El `callback_query` recupera la llamada pendiente y ejecuta o descarta.
 
@@ -372,8 +385,9 @@ e irreversible. El modelo se equivoca; la confirmación lo contiene.
 ```
 messages = [system, ...memorias, ...historial, userMessage]
 
-para i en 1..MAX_ITERATIONS (5):
-    res = llm.chat(messages, toolSchemas)
+para i en 1..MAX_AGENT_ITERATIONS (3):
+    si no queda presupuesto de tiempo: cortar con un mensaje honesto
+    res = llm.chat(messages, toolSchemas, {timeoutMs: lo que quede, máx 15 s})
     si res.finishReason != 'tool_calls': devolver res.content
     messages.push(assistant con tool_calls)
     para cada tc en res.toolCalls:
@@ -386,7 +400,8 @@ si se agotan las iteraciones: pedir al modelo una respuesta final sin tools
 ```
 
 **Por qué el límite:** sin tope, un modelo confundido llama tools en bucle y
-quema el free tier en una sola conversación.
+quema la cuota en una sola conversación. Bajado de 5 a 3 porque cada vuelta es una
+llamada al modelo y las tres deben caber en el presupuesto de tiempo del mensaje.
 
 **Errores de tool:** nunca se propagan como excepción al usuario. Se devuelven al
 modelo como `{ok:false, error}` para que se autocorrija o lo explique.
@@ -402,8 +417,8 @@ modelo como `{ok:false, error}` para que se autocorrija o lo explique.
 | Fuga de credenciales | Todo en `wrangler secret put`. `wrangler.toml` no contiene secretos y va a git. |
 | Acceso directo a la DB | RLS activa en todas las tablas. Solo `service_role`, solo desde el Worker. |
 | Doble ejecución por reintento | Dedupe de `update_id` en KV, TTL 24h. |
-| Prompt injection vía contenido | Los handlers validan sus argumentos con Zod; nunca se construye SQL desde texto del modelo. |
-| Agotamiento de cuota | Contador diario de llamadas LLM por usuario en KV. |
+| Prompt injection vía contenido | Los handlers validan a mano los argumentos del modelo (`tools/types.ts`); nunca se construye SQL desde texto del modelo. Sin Zod: son seis herramientas y no justifica la dependencia. |
+| Agotamiento de cuota | La whitelist es la defensa real, y `MAX_AGENT_ITERATIONS` acota el gasto por mensaje. No hay contador diario: con un solo usuario autorizado no hay a quién limitar. |
 
 ### Variables de entorno
 
@@ -412,19 +427,24 @@ modelo como `{ok:false, error}` para que se autocorrija o lo explique.
 TELEGRAM_BOT_TOKEN
 TELEGRAM_WEBHOOK_SECRET
 ALLOWED_TELEGRAM_IDS      # secret, no var: el repo es público
-NVIDIA_API_KEY
-GROQ_API_KEY              # opcional
+OPENAI_API_KEY            # LLM y transcripción, la misma clave
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
+GROQ_API_KEY              # opcional, solo si LLM_PROVIDER = "groq"
+NVIDIA_API_KEY            # opcional, solo si LLM_PROVIDER = "nvidia"
 
 # Vars (wrangler.toml) — se SOBRESCRIBEN en cada deploy
-LLM_PROVIDER = "nvidia"
-LLM_MODEL    = "meta/llama-3.3-70b-instruct"
+LLM_PROVIDER = "openai"
+LLM_MODEL    = "gpt-4o-mini"
+STT_PROVIDER = "openai"       # o "workers-ai" (gratis, dentro de Cloudflare)
+STT_MODEL    = "whisper-1"
+STT_LANGUAGE = "es"           # fijarlo acierta más que autodetectar
 DEFAULT_TIMEZONE     = "Europe/Madrid"
-MAX_AGENT_ITERATIONS = "5"
-HISTORY_WINDOW       = "20"   # filas de `messages`, no intercambios: un turno con
+BRIEFING_HOUR        = "8"    # hora LOCAL del briefing diario, 0-23
+MAX_AGENT_ITERATIONS = "3"
+HISTORY_WINDOW       = "30"   # filas de `messages`, no intercambios: un turno con
                               # herramientas gasta cuatro o cinco
-
+LOG_LEVEL            = "info"
 ```
 
 > Editar una var en el dashboard no sirve: el siguiente push la revierte al valor
@@ -455,12 +475,22 @@ crons = ["0 * * * *"]             # briefing y recordatorios
 
 1. `message.voice.file_id` → `getFile` → `https://api.telegram.org/file/bot<token>/<path>`
 2. Descarga (`ArrayBuffer`). Límite duro: **rechazar > 20 MB** (tope de la API de Telegram).
-3. `env.AI.run('@cf/openai/whisper-large-v3-turbo', { audio: [...bytes] })`
+3. Transcripción, con el proveedor que diga `STT_PROVIDER`:
+   - `openai` (en producción): `POST /audio/transcriptions` con `whisper-1`. Acepta el
+     OGG/Opus de Telegram sin convertir y acierta más en español.
+   - `workers-ai`: `env.AI.run('@cf/openai/whisper-large-v3-turbo', ...)`. Gratis y sin
+     salto de red, pero peor con audio de móvil en español.
 4. Transcripción → misma ruta que un mensaje de texto, con `source='voice'`.
 5. Se guarda `transcript_raw` para depurar cuando el agente entienda algo raro.
 
 Si la transcripción viene vacía o falla, se responde pidiendo repetir — nunca se
 manda una cadena vacía al LLM.
+
+**Reparto del presupuesto** (topes que cada paso pide al `Deadline`, no fijos):
+descarga 15 s, transcripción 10 s, cada llamada al modelo 15 s. El paso peor
+escalado es la descarga: el servidor de ficheros de Telegram tarda varios segundos
+con notas de voz largas, y por encima de ~20 s de audio el mensaje puede no caber
+en el presupuesto. Cuando pasa, el bot lo dice y pide trocear.
 
 ---
 
@@ -470,35 +500,40 @@ manda una cadena vacía al LLM.
 |---|---|---|
 | Workers requests | 100.000/día | No |
 | Workers CPU | 10 ms/petición | **No** — la espera de red (LLM, Supabase) no cuenta como CPU |
-| Workers AI | ~10.000 Neurons/día | No para uso personal |
-| KV escrituras | 1.000/día | Justo. Queda una por mensaje (dedupe) desde que el historial se fue a Supabase; no añadir más |
+| Workers AI | ~10.000 Neurons/día | No aplica: la transcripción va por OpenAI. Solo cuenta con `STT_PROVIDER = "workers-ai"` |
+| KV escrituras | 1.000/día | Justo. Una por mensaje (dedupe) más una al día (marca del briefing); no añadir más |
 | Cron triggers | Incluidos | No |
 | Supabase | 500 MB | No |
-| NVIDIA NIM | Créditos finitos, ~40 req/min | **Sí, es el cuello de botella real** |
-| `waitUntil` tras responder | Margen corto, y luego cancela | **Sí** — nos costó un fallo intermitente |
+| OpenAI | Créditos de pago, sin cola | No aprieta. `gpt-4o-mini` sale a céntimos al mes con este volumen |
+| `waitUntil` tras responder | ~30 s, y luego cancela | **Sí** — es el techo que marca todo el diseño |
 
-### El fallo de `waitUntil` (Fase 1)
+### El tiempo: dos límites opuestos (Fases 1 y 3)
 
-El diseño original respondía `200 OK` al instante y procesaba en `ctx.waitUntil()`,
-para no agotar el timeout de Telegram. En producción apareció esto:
+Este punto costó dos iteraciones y es la restricción que más ha moldeado el código.
+Estamos entre dos paredes:
+
+- **Si esperamos a terminar antes de responder, corta Telegram.** Medido en
+  producción: reintenta a los ~4 s y, al desconectarse el cliente, Cloudflare cancela
+  la ejecución. Silencio total.
+- **Si procesamos en `waitUntil()` sin control, corta Cloudflare.** Pasado un margen
+  tras la respuesta las tareas mueren así:
 
 ```
 (warn) waitUntil() tasks did not complete within the allowed time
 after invocation end and have been cancelled.
 ```
 
-Cloudflare cancela esas tareas pasado un margen corto tras devolver la respuesta.
-Con el modelo tardando 10-30 s, la tarea moría a media llamada: **sin respuesta, sin
-excepción y sin log**. Un fallo intermitente y silencioso, el peor tipo — desde
-Telegram solo se veía que "a veces no contesta".
+Con NVIDIA tardando 45 s no había hueco entre ambas paredes: se probó a *awaitar* el
+procesamiento y respondía Telegram cortando antes. Al pasar a OpenAI la respuesta bajó
+a 2-5 s y sí cabe, así que el diseño actual es **200 OK inmediato + trabajo en
+`ctx.waitUntil()`** con un presupuesto global de **27 s**
+([src/lib/deadline.ts](src/lib/deadline.ts)) que deja margen para enviar un mensaje de
+error honesto si algún paso se pasa. Cada paso pide al `Deadline` lo que queda del
+reloj en vez de fijar su propio tope: tres pasos de 20 s cumplen sus timeouts
+individuales y aun así se salen del presupuesto conjunto.
 
-**Solución:** el handler *awaita* el procesamiento y responde 200 al terminar. Dispone
-de toda la vida de la petición, y la espera de red no consume CPU, que es lo que
-limita el plan free. A cambio Telegram puede reintentar si tardamos mucho, y eso ya
-lo cubre el dedupe de `update_id`.
-
-Ese es exactamente el motivo por el que el dedupe estaba desde el día 1: sin él, este
-cambio no habría sido viable.
+El dedupe de `update_id` estaba desde el día 1 y por eso esto es viable: si Telegram
+reintenta un update que ya estamos procesando, no se ejecuta dos veces.
 
 **Ruta de migración si aprieta:** el paso a Workers Paid ($5/mes) habilita Queues
 con reintentos y dead-letter queue. El cambio afecta solo a `index.ts`; el resto del
