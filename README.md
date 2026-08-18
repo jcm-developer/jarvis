@@ -4,7 +4,7 @@ Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base
 
 Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 3** — tareas, memoria y notas de voz. Le hablas y ejecuta.
+**Estado: Fase 4** — tareas, memoria y notas de voz, con el historial en Supabase. Le hablas y ejecuta.
 
 Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
 
@@ -229,9 +229,8 @@ Se usa `fetch` directo en lugar del SDK de OpenAI para no engordar el bundle.
 Incluye timeout de 45 s, un reintento ante 429 y 5xx, y limpieza de los bloques
 `<think>` que emiten los modelos de razonamiento.
 
-**Memoria de corto plazo** ([src/memory/history.ts](src/memory/history.ts)). Ventana
-deslizante de `HISTORY_WINDOW` turnos en KV, con TTL de 7 días. Es **interina**: en
-la Fase 4 la sustituye la tabla `messages` de Supabase.
+**Memoria de corto plazo.** Ventana deslizante de `HISTORY_WINDOW` mensajes. Nació
+en KV con TTL de 7 días como solución interina; en la Fase 4 se mudó a Supabase.
 
 **Errores legibles.** Cuota agotada, clave inválida o timeout llegan a Telegram como
 una frase clara, no como silencio ni como un volcado de stack.
@@ -294,6 +293,26 @@ bastante la precisión en audio de móvil.
 Una transcripción vacía **nunca** llega al modelo: se responde pidiendo repetir. Si
 no, el agente improvisaría sobre una cadena vacía.
 
+## Qué hace la Fase 4
+
+El historial deja KV y pasa a la tabla `messages`
+([src/db/messages.ts](src/db/messages.ts)). No es un cambio cosmético: el plan free
+da 1.000 escrituras de KV al día y el historial gastaba una por mensaje, compitiendo
+con el dedupe de `update_id`. Ahora KV solo guarda lo efímero — dedupe,
+confirmaciones pendientes y la caché de identidades.
+
+Se persiste el turno **completo**: el mensaje del usuario, el `assistant` con sus
+`tool_calls` y cada resultado `tool`. Y de una sola vez al final del turno, en un
+INSERT con varias filas: guardar a medias dejaría un `assistant` con `tool_calls` sin
+sus resultados, que es contexto que la API rechaza con un 400.
+
+Cada fila lleva `source` (`text` o `voice`) y, en los audios, la transcripción cruda.
+Cuando el agente entiende algo raro, lo primero que se mira es si venía de un audio.
+
+`/reset` borra las filas de la conversación de verdad. La auditoría de lo que el
+agente *hizo* sigue en `tool_call_logs`, y lo que recuerda del usuario a largo plazo
+(`memories`) no se toca.
+
 ## Varias cosas en un mensaje
 
 Ya funcionaba desde la Fase 2 — el bucle ejecuta todas las `tool_calls` de una misma
@@ -302,5 +321,4 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-**Fase 4** — historial en Supabase (sustituye al de KV).
 **Fase 5** — cron: briefing matutino y recordatorios.

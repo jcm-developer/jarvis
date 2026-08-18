@@ -1,10 +1,9 @@
-import { ConfigMissingError, executeConfirmed, runAgent } from '../agent';
+import { ConfigMissingError, executeConfirmed, forgetConversation, runAgent } from '../agent';
 import type { Config } from '../config';
 import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
 import { DeadlineExceededError } from '../lib/deadline';
 import { LLMError } from '../llm/provider';
-import { clearHistory } from '../memory/history';
 import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
@@ -64,21 +63,30 @@ type Reply = { kind: 'text'; text: string } | { kind: 'confirm'; text: string; t
 async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promise<Reply> {
   const text = message.text?.trim();
 
-  if (text?.startsWith('/')) {
-    return { kind: 'text', text: await handleCommand(text, ctx) };
-  }
-
   const voice = message.voice ?? message.audio;
   if (!text && !voice) {
     return { kind: 'text', text: 'Por ahora solo entiendo texto y audio.' };
   }
 
-  const prompt = text ?? (await transcribeVoice(voice!, ctx));
-  // La transcripción devuelve un Reply ya formateado si falla.
-  if (typeof prompt !== 'string') return prompt;
-
   try {
-    return await runAgent({ chatId: ctx.actor.chatId, from: message.from, text: prompt }, ctx);
+    if (text?.startsWith('/')) {
+      return { kind: 'text', text: await handleCommand(text, message, ctx) };
+    }
+
+    const prompt = text ?? (await transcribeVoice(voice!, ctx));
+    // La transcripción devuelve un Reply ya formateado si falla.
+    if (typeof prompt !== 'string') return prompt;
+
+    // El historial guarda de dónde salió el mensaje: cuando el agente entiende
+    // algo raro, lo primero que se mira es si venía de un audio.
+    const origin = text
+      ? { source: 'text' as const }
+      : { source: 'voice' as const, transcriptRaw: prompt };
+
+    return await runAgent(
+      { chatId: ctx.actor.chatId, from: message.from, text: prompt, ...origin },
+      ctx,
+    );
   } catch (error) {
     return { kind: 'text', text: describeError(error) };
   }
@@ -199,7 +207,11 @@ function describeError(error: unknown): string {
   throw error;
 }
 
-async function handleCommand(text: string, ctx: HandlerContext): Promise<string> {
+async function handleCommand(
+  text: string,
+  message: TelegramMessage,
+  ctx: HandlerContext,
+): Promise<string> {
   // "/reset@mi_bot arg" → "reset"
   const command = text.split(/\s+/)[0]!.slice(1).split('@')[0]!.toLowerCase();
 
@@ -228,7 +240,7 @@ async function handleCommand(text: string, ctx: HandlerContext): Promise<string>
       ].join('\n');
 
     case 'reset':
-      await clearHistory(ctx.env, ctx.actor.chatId);
+      await forgetConversation({ chatId: ctx.actor.chatId, from: message.from }, ctx);
       return 'Hecho, he olvidado la conversación reciente. Lo que sé de ti sigue ahí.';
 
     case 'ping':

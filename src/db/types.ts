@@ -1,3 +1,5 @@
+import type { ToolCall } from '../llm/provider';
+
 export interface UserRow {
   id: string;
   telegram_id: number;
@@ -30,4 +32,15 @@ export interface MemoryRow {
   key: string;
   value: string;
   updated_at: string;
+}
+
+/**
+ * Fila de historial. `tool_calls` guarda la estructura del proveedor tal cual,
+ * para poder reconstruir el contexto del modelo sin transformarla.
+ */
+export interface MessageRow {
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content: string | null;
+  tool_calls: ToolCall[] | null;
+  tool_call_id: string | null;
 }

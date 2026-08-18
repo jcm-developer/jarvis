@@ -66,6 +66,21 @@ export class Db {
     return inserted;
   }
 
+  /**
+   * Inserta varias filas en una sola petición.
+   *
+   * `return=minimal`: no se piden de vuelta. Un turno de conversación son cinco o
+   * seis filas que ya tenemos en memoria; traerlas otra vez solo añade latencia.
+   */
+  async insertMany(table: string, rows: Record<string, unknown>[]): Promise<void> {
+    if (rows.length === 0) return;
+    await this.request<unknown>(table, {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify(rows),
+    });
+  }
+
   /** Upsert por la columna con restricción única indicada en `onConflict`. */
   async upsert<T>(table: string, row: Record<string, unknown>, onConflict: string): Promise<T> {
     const rows = await this.request<T[]>(`${table}?on_conflict=${onConflict}`, {
@@ -87,11 +102,21 @@ export class Db {
     });
   }
 
-  async delete<T>(table: string, filters: Filters): Promise<T[]> {
+  /**
+   * Borra y devuelve las filas borradas.
+   *
+   * `returning: 'minimal'` para borrados masivos: purgar un historial largo
+   * devolvería cientos de filas que nadie va a leer.
+   */
+  async delete<T>(
+    table: string,
+    filters: Filters,
+    options: { returning?: 'representation' | 'minimal' } = {},
+  ): Promise<T[]> {
     const params = new URLSearchParams(filters);
     return this.request<T[]>(`${table}?${params.toString()}`, {
       method: 'DELETE',
-      headers: { Prefer: 'return=representation' },
+      headers: { Prefer: `return=${options.returning ?? 'representation'}` },
     });
   }
 

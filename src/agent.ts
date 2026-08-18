@@ -2,13 +2,13 @@ import type { Config } from './config';
 import { Db } from './db/client';
 import { resolveIdentity } from './db/identity';
 import { logToolCall } from './db/logs';
+import type { StoredTurn } from './db/messages';
+import { clearHistory, loadHistory, saveTurns, toLLMMessages, toolTurn } from './db/messages';
 import type { Deadline } from './lib/deadline';
 import { DeadlineExceededError } from './lib/deadline';
 import { createProvider } from './llm';
 import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
-import type { StoredTurn } from './memory/history';
-import { appendTurns, loadHistory, toLLMMessages, toolTurn } from './memory/history';
 import { buildSystemPrompt } from './prompts/system';
 import { loadMemories } from './tools/memory';
 import type { PendingCall } from './tools/pending';
@@ -22,6 +22,10 @@ export interface AgentInput {
   chatId: number;
   from: TelegramUser | undefined;
   text: string;
+  /** Por defecto 'text'. Se guarda en el historial para depurar audios. */
+  source?: 'text' | 'voice';
+  /** Lo que devolvió el STT, cuando el mensaje venía de un audio. */
+  transcriptRaw?: string;
 }
 
 export interface AgentDeps {
@@ -46,8 +50,9 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const db = createDb(env);
 
   const identity = await resolveIdentity(env, db, input.from, input.chatId, config.defaultTimezone);
+  // Dos consultas independientes: en paralelo cuestan lo que la más lenta.
   const [history, memories] = await Promise.all([
-    loadHistory(env, input.chatId),
+    loadHistory(db, identity.conversationId, config.historyWindow),
     loadMemories(db, identity.userId),
   ]);
 
@@ -58,9 +63,17 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     db,
   };
 
-  // Turnos nuevos de esta interacción. Se persisten al final, junto al historial
-  // previo, para que el modelo conserve constancia de lo que ya ha hecho.
-  const newTurns: StoredTurn[] = [{ role: 'user', content: input.text }];
+  // Turnos nuevos de esta interacción. Se persisten de golpe al final, no a
+  // medida que ocurren: un turno a medio guardar —un assistant con tool_calls
+  // sin sus resultados— es contexto que la API rechaza con un 400.
+  const newTurns: StoredTurn[] = [
+    {
+      role: 'user',
+      content: input.text,
+      source: input.source ?? 'text',
+      ...(input.transcriptRaw ? { transcriptRaw: input.transcriptRaw } : {}),
+    },
+  ];
 
   const messages: LLMMessage[] = [
     {
@@ -110,7 +123,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         throw new LLMError('malformed', 'el modelo devolvió una respuesta vacía');
       }
       newTurns.push({ role: 'assistant', content: reply });
-      await appendTurns(env, input.chatId, history, newTurns, config.historyWindow);
+      await saveTurns(db, identity.conversationId, newTurns);
       return { kind: 'text', text: reply };
     }
 
@@ -170,6 +183,25 @@ async function buildConfirmationPrompt(
 
   if (lines.length === 1) return lines[0]!;
   return ['¿Confirmas estas acciones?', '', ...lines.map((line) => `• ${line}`)].join('\n');
+}
+
+/**
+ * Olvida la conversación reciente (/reset). Las memorias de largo plazo no se
+ * tocan: son de otra tabla y de otro contrato con el usuario.
+ */
+export async function forgetConversation(
+  input: { chatId: number; from: TelegramUser | undefined },
+  deps: AgentDeps,
+): Promise<void> {
+  const db = createDb(deps.env);
+  const identity = await resolveIdentity(
+    deps.env,
+    db,
+    input.from,
+    input.chatId,
+    deps.config.defaultTimezone,
+  );
+  await clearHistory(db, identity.conversationId);
 }
 
 /** Ejecuta las acciones ya confirmadas por el usuario. */

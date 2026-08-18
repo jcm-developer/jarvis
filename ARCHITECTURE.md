@@ -78,44 +78,49 @@ Cron Trigger (cada hora)  ──▶  briefing / recordatorios  ──▶  sendMe
 ```
 jarvis/
 ├─ src/
-│  ├─ index.ts                 # entrypoint: fetch + scheduled
+│  ├─ index.ts                 # entrypoint: fetch (+ scheduled en la fase 5)
+│  ├─ agent.ts                 # loop agéntico y confirmaciones
 │  ├─ config.ts                # lectura y validación de env
-│  ├─ types.ts                 # Env, tipos compartidos
+│  ├─ types.ts                 # Env + tipos de la Telegram API
+│  │
+│  ├─ lib/
+│  │  └─ deadline.ts           # presupuesto de tiempo compartido del mensaje
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
 │  │  ├─ client.ts             # sendMessage, sendChatAction, getFile, answerCallbackQuery
-│  │  ├─ handler.ts            # router de updates (message / callback_query / command)
-│  │  └─ ui.ts                 # inline keyboards, formateo de respuestas
+│  │  └─ handler.ts            # router de updates + comandos
 │  │
 │  ├─ llm/
 │  │  ├─ provider.ts           # interfaz LLMProvider  ◄── la capa de abstracción
-│  │  ├─ providers/
-│  │  │  ├─ nvidia.ts          # NIM (OpenAI-compatible)
-│  │  │  ├─ groq.ts            # plan B
-│  │  │  └─ gemini.ts          # plan C
-│  │  └─ agent.ts              # loop agéntico
+│  │  ├─ index.ts              # selección de proveedor por env
+│  │  └─ providers/
+│  │     └─ openai-compatible.ts   # openai, groq y nvidia hablan el mismo protocolo
 │  │
 │  ├─ tools/
 │  │  ├─ registry.ts           # Map<name, ToolDefinition>
-│  │  ├─ types.ts              # ToolDefinition, ToolContext, ToolResult
+│  │  ├─ types.ts              # ToolDefinition, ToolContext, validadores de args
 │  │  ├─ tasks.ts              # create/list/complete/delete_task
 │  │  ├─ memory.ts             # remember, recall
-│  │  └─ time.ts               # get_current_time
+│  │  └─ pending.ts            # acciones a la espera de confirmación (KV)
 │  │
 │  ├─ stt/
-│  │  └─ whisper.ts            # Workers AI
+│  │  ├─ provider.ts           # interfaz Transcriber
+│  │  ├─ index.ts              # selección por env
+│  │  ├─ openai.ts             # Whisper de OpenAI
+│  │  └─ workers-ai.ts         # Whisper en el propio Worker
 │  │
 │  ├─ db/
-│  │  ├─ client.ts             # Supabase (service_role)
-│  │  ├─ conversations.ts
-│  │  ├─ memories.ts
-│  │  └─ tasks.ts
+│  │  ├─ client.ts             # PostgREST a mano (service_role)
+│  │  ├─ identity.ts           # users + conversations, cacheados en KV
+│  │  ├─ messages.ts           # historial de conversación
+│  │  ├─ logs.ts               # tool_call_logs
+│  │  └─ types.ts              # filas de las tablas
 │  │
 │  ├─ prompts/
-│  │  └─ system.ts             # personalidad + reglas + fecha/hora/TZ
+│  │  └─ system.ts             # personalidad + reglas + memorias + fecha/hora/TZ
 │  │
-│  └─ cron/
+│  └─ cron/                    # fase 5
 │     └─ briefing.ts
 │
 ├─ supabase/
@@ -215,6 +220,45 @@ alter table memories         enable row level security;
 alter table tasks            enable row level security;
 alter table tool_call_logs   enable row level security;
 ```
+
+### Historial: cómo se lee y se escribe
+
+Vivió en KV durante las fases 1-3 y desde la fase 4 está en `messages`. El motivo
+no fue estético: el plan free da **1.000 escrituras de KV al día** y el historial
+gastaba una por mensaje, compitiendo con el dedupe de `update_id`, que no es
+negociable. Además era lo único fuera de la base de datos, así que releer una
+conversación pasada solo se podía hacer por los logs del Worker.
+
+Tres decisiones que no se ven en el esquema:
+
+- **Se guarda el turno completo**, no solo el texto visible: también el mensaje
+  `assistant` con sus `tool_calls` y cada resultado `tool`. Guardando solo el texto
+  el modelo perdía constancia de lo que ya había hecho y repetía acciones — creaba
+  dos veces la misma tarea al volver a mencionarla en el mensaje siguiente.
+- **Se escribe de golpe al final del turno**, en un único INSERT con varias filas.
+  Escribir a medida que ocurren dejaría turnos a medias si algo falla por el
+  camino, y un `assistant` con `tool_calls` sin sus resultados es contexto que la
+  API rechaza con un 400.
+- **`created_at` lo pone el Worker**, un milisegundo por fila, en vez de dejar el
+  `now()` de la columna. `now()` es el mismo instante para todas las filas de un
+  INSERT, así que al releerlas ordenadas por fecha volverían en orden arbitrario, y
+  un mensaje `tool` delante de la llamada que lo originó es otro 400.
+
+La lectura pide las `HISTORY_WINDOW` filas más recientes (orden descendente, que es
+justo el del índice) y las invierte. Si el corte cae dentro de un turno, se
+descartan las filas iniciales hasta una que pueda abrir el contexto: un `user`, o un
+`assistant` sin `tool_calls`. Aceptar el segundo importa porque un turno con muchas
+herramientas puede llenar la ventana entero y entonces no hay ningún `user` que
+encontrar.
+
+`/reset` borra las filas de la conversación. Borrado real y no marca de corte: si el
+usuario pide olvidar, se olvida. La auditoría de lo que el agente *hizo* no se pierde
+por eso — vive en `tool_call_logs`, que es la tabla que se mira cuando algo salió mal.
+Las memorias de largo plazo tampoco se tocan: son otra tabla y otro contrato.
+
+La tabla crece sin límite y de momento se acepta: 500 MB dan para años de
+conversación de una persona. Si algún día aprieta, es un `delete` por antigüedad en
+el cron, no un rediseño.
 
 ---
 
@@ -378,7 +422,9 @@ LLM_PROVIDER = "nvidia"
 LLM_MODEL    = "meta/llama-3.3-70b-instruct"
 DEFAULT_TIMEZONE     = "Europe/Madrid"
 MAX_AGENT_ITERATIONS = "5"
-HISTORY_WINDOW       = "20"
+HISTORY_WINDOW       = "20"   # filas de `messages`, no intercambios: un turno con
+                              # herramientas gasta cuatro o cinco
+
 ```
 
 > Editar una var en el dashboard no sirve: el siguiente push la revierte al valor
@@ -425,7 +471,7 @@ manda una cadena vacía al LLM.
 | Workers requests | 100.000/día | No |
 | Workers CPU | 10 ms/petición | **No** — la espera de red (LLM, Supabase) no cuenta como CPU |
 | Workers AI | ~10.000 Neurons/día | No para uso personal |
-| KV escrituras | 1.000/día | Justo pero suficiente. Vigilar si se añaden escrituras por mensaje |
+| KV escrituras | 1.000/día | Justo. Queda una por mensaje (dedupe) desde que el historial se fue a Supabase; no añadir más |
 | Cron triggers | Incluidos | No |
 | Supabase | 500 MB | No |
 | NVIDIA NIM | Créditos finitos, ~40 req/min | **Sí, es el cuello de botella real** |
@@ -468,7 +514,7 @@ código no se toca. Está diseñado así a propósito.
 | **1** | Provider NVIDIA + conversación de texto | ✅ Hecha |
 | **2** | Registry de tools + tareas en Supabase + confirmaciones | ✅ Hecha |
 | **3** | Audio con Whisper | ✅ Hecha |
-| **4** | Historial + memoria de largo plazo | Pendiente |
+| **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | Pendiente |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
