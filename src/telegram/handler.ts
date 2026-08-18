@@ -65,8 +65,9 @@ async function handleCommand(text: string, ctx: HandlerContext): Promise<string>
       return [
         'Jarvis en línea.',
         '',
-        'Escríbeme lo que quieras y te contesto. Recuerdo los últimos mensajes de la',
-        'conversación, así que puedes seguir el hilo sin repetir contexto.',
+        // Sin saltos de línea dentro de un párrafo: Telegram ya ajusta el ancho,
+        // y un \n a media frase se ve partido en pantallas estrechas.
+        'Escríbeme lo que quieras y te contesto. Recuerdo los últimos mensajes de la conversación, así que puedes seguir el hilo sin repetir contexto.',
         '',
         '/help para ver los comandos.',
       ].join('\n');
