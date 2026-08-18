@@ -24,11 +24,43 @@ export interface LocalNow {
   date: string;
   /** Hora local, 0-23. */
   hour: number;
+  /** Minuto local, 0-59. */
+  minute: number;
 }
 
 export function localNow(instant: Date, timezone: string): LocalNow {
   const parts = zonedParts(instant, timezone);
-  return { date: isoDate(parts), hour: parts.hour };
+  return { date: isoDate(parts), hour: parts.hour, minute: parts.minute };
+}
+
+/**
+ * El instante que corresponde a una hora local de un día local.
+ *
+ * Sirve para reconstruir "las 13:14 de hoy" a partir de la hora que puso el modelo
+ * y el día que toca. Mismo truco de dos pasadas que `startOfLocalDay`: la primera
+ * aproxima con el offset de ahora, la segunda lo corrige con el del propio
+ * resultado, que es lo que salva los días de cambio de hora.
+ */
+export function zonedInstant(
+  date: string,
+  hour: number,
+  minute: number,
+  timezone: string,
+): Date | null {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const asUtc = Date.UTC(
+    Number.parseInt(match[1]!, 10),
+    Number.parseInt(match[2]!, 10) - 1,
+    Number.parseInt(match[3]!, 10),
+    hour,
+    minute,
+    0,
+  );
+
+  const firstGuess = asUtc - offsetMs(new Date(asUtc), timezone);
+  return new Date(asUtc - offsetMs(new Date(firstGuess), timezone));
 }
 
 /**

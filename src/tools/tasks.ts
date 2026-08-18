@@ -1,5 +1,6 @@
 import type { TaskRow } from '../db/types';
-import { parseRelativeMinutes } from '../lib/relative-time';
+import { localNow, localTomorrow, zonedInstant } from '../lib/localtime';
+import { mentionsAnotherDay, parseRelativeMinutes } from '../lib/relative-time';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { optionalBoolean, optionalInt, optionalIsoDate, optionalString, requireString } from './types';
 
@@ -24,35 +25,104 @@ function resolveOffset(args: Record<string, unknown>, field: string): string | n
 /** Margen que se le perdona al modelo antes de corregirle un plazo relativo. */
 const DRIFT_TOLERANCE_MS = 10 * 60 * 1000;
 
+export interface Deadlines {
+  dueAt: string | null;
+  remindAt: string | null;
+}
+
 /**
- * Corrige la fecha cuando el usuario ha dicho un plazo y el modelo se ha ido lejos.
+ * Corrige las fechas del modelo con lo que dijo el usuario en su mensaje.
  *
- * Las reglas del prompt no bastaron: `gpt-4o-mini` seguía fechando "avísame en 3
- * minutos" al día siguiente, incluso teniendo un campo en minutos para no calcular
- * nada. El plazo del mensaje del usuario es la fuente auténtica, así que gana él.
+ * Las reglas del prompt no bastaron: `gpt-4o-mini` fechaba "avísame en 3 minutos" al
+ * día siguiente incluso teniendo un campo en minutos para no calcular nada, y con
+ * "avísame a las 13:14" hacía lo mismo. El mensaje del usuario es la fuente
+ * auténtica, así que gana él.
  *
- * Solo corrige cuando la desviación pasa de diez minutos: si el modelo acertó, no
+ * Solo se corrige cuando la desviación pasa de diez minutos: si el modelo acertó, no
  * hay nada que tocar.
  */
-function honourUserDeadline(
-  chosen: string | null,
-  ctx: ToolContext,
-  field: string,
-): string | null {
+function honourUserDeadlines(chosen: Deadlines, ctx: ToolContext): Deadlines {
   const minutes = parseRelativeMinutes(ctx.userMessage);
-  if (minutes === null) return chosen;
 
+  if (minutes !== null) {
+    // El plazo describe el aviso cuando hay aviso; la fecha límite solo si no lo
+    // hay. "Llamar a David a las seis, avísame en cinco minutos" son dos horas
+    // distintas y el plazo es una de ellas, no las dos.
+    if (chosen.remindAt !== null || chosen.dueAt === null) {
+      return {
+        dueAt: correctDay(chosen.dueAt, ctx, 'due_at'),
+        remindAt: applyOffset(minutes, chosen.remindAt, 'remind_at'),
+      };
+    }
+    return { dueAt: applyOffset(minutes, chosen.dueAt, 'due_at'), remindAt: null };
+  }
+
+  return {
+    dueAt: correctDay(chosen.dueAt, ctx, 'due_at'),
+    remindAt: correctDay(chosen.remindAt, ctx, 'remind_at'),
+  };
+}
+
+function applyOffset(minutes: number, chosen: string | null, field: string): string {
   const target = Date.now() + minutes * 60_000;
   if (chosen !== null && Math.abs(new Date(chosen).getTime() - target) <= DRIFT_TOLERANCE_MS) {
     return chosen;
   }
+  return correct(field, chosen, new Date(target), { user_minutes: minutes });
+}
 
-  const corrected = new Date(target).toISOString();
+/**
+ * Si el usuario no dijo de qué día habla, el día es hoy.
+ *
+ * Este es el caso que se llevó tres intentos: el modelo acierta la hora ("13:14",
+ * "17:30") y escribe la fecha de mañana. Aquí se le respeta la hora —que es lo que
+ * hace bien— y se le cambia el día al que el usuario tenía en la cabeza.
+ *
+ * Si el mensaje sí menciona otro día ("el jueves", "el 19 de septiembre"), no se
+ * toca nada: ahí el día lo pone él y nosotros no tenemos nada que aportar.
+ */
+function correctDay(chosen: string | null, ctx: ToolContext, field: string): string | null {
+  if (chosen === null) return null;
+  // Sin mensaje no hay nada que interpretar: esto viene de un botón de confirmación
+  // y corregir a ciegas sería inventarse la intención del usuario.
+  if (!ctx.userMessage) return chosen;
+  if (mentionsAnotherDay(ctx.userMessage)) return chosen;
+
+  const now = new Date();
+  const clock = localNow(new Date(chosen), ctx.timezone);
+  const today = localNow(now, ctx.timezone).date;
+
+  let target = zonedInstant(today, clock.hour, clock.minute, ctx.timezone);
+  if (target === null) return chosen;
+
+  // Esa hora ya pasó hoy: entonces hablaba de mañana. "Avísame a las 8" dicho a
+  // las once de la noche es mañana a las 8, no dentro de un año.
+  if (target.getTime() < now.getTime() - DRIFT_TOLERANCE_MS) {
+    const tomorrow = localTomorrow(now, ctx.timezone);
+    target = zonedInstant(tomorrow, clock.hour, clock.minute, ctx.timezone) ?? target;
+  }
+
+  if (Math.abs(target.getTime() - new Date(chosen).getTime()) <= DRIFT_TOLERANCE_MS) {
+    return chosen;
+  }
+
+  return correct(field, chosen, target, { user_time_of_day: `${clock.hour}:${clock.minute}` });
+}
+
+function correct(
+  field: string,
+  chosen: string | null,
+  target: Date,
+  detail: Record<string, unknown>,
+): string {
+  const corrected = target.toISOString();
+  // Se registra siempre: es la única forma de saber cuánto se equivoca el modelo
+  // sin depender de que el usuario lo note.
   console.warn(
     JSON.stringify({
       event: 'deadline_corrected',
       field,
-      user_minutes: minutes,
+      ...detail,
       model_value: chosen,
       corrected_to: corrected,
     }),
@@ -106,18 +176,14 @@ export const createTask: ToolDefinition = {
     const title = cleanTitle(requireString(args, 'title', 200));
 
     // El relativo manda sobre el ISO: lo ha calculado el Worker con la hora real.
-    // Y por encima de los dos, el plazo que dijo el usuario.
-    let dueAt = resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at');
-    let remindAt = resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at');
-
-    // Si el usuario pidió un plazo y el modelo no puso ninguna fecha, es un aviso.
-    if (dueAt === null && remindAt === null) {
-      remindAt = honourUserDeadline(null, ctx, 'remind_at');
-    } else if (remindAt !== null) {
-      remindAt = honourUserDeadline(remindAt, ctx, 'remind_at');
-    } else {
-      dueAt = honourUserDeadline(dueAt, ctx, 'due_at');
-    }
+    // Y por encima de los dos, lo que dijo el usuario en su mensaje.
+    const { dueAt, remindAt } = honourUserDeadlines(
+      {
+        dueAt: resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'),
+        remindAt: resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at'),
+      },
+      ctx,
+    );
 
     if (!optionalBoolean(args, 'force')) {
       const duplicate = await findSimilarPending(title, ctx);
@@ -130,7 +196,8 @@ export const createTask: ToolDefinition = {
           error:
             `Ya existe la tarea "${duplicate.title}" (id ${duplicate.id}). No crees otra: ` +
             'usa update_task con ese id para cambiarle la fecha o ponerle hora de aviso. ' +
-            'Si de verdad es algo distinto, repite la llamada con force=true.',
+            'Si no tienes claro si quiere cambiar esa o apuntar algo nuevo, pregúntaselo. ' +
+            'Y si es evidente que son cosas distintas, repite la llamada con force=true.',
         };
       }
     }
@@ -321,21 +388,26 @@ export const updateTask: ToolDefinition = {
     // Cambiar cualquiera de las dos fechas reabre el aviso. Sin esto, una tarea de
     // la que ya se avisó se aplazaría al día siguiente y el recordatorio no volvería
     // a salir nunca, porque el cron solo mira las que tienen reminded_at a null.
-    if (args['due_in_minutes'] !== undefined || args['due_at'] !== undefined) {
-      const chosen =
-        resolveOffset(args, 'due_in_minutes') ??
-        (args['due_at'] !== undefined ? optionalIsoDate(args, 'due_at') : null);
-      // Solo se corrige lo que el modelo ha tocado: aquí no se inventan fechas que
-      // el usuario no ha pedido cambiar.
-      patch['due_at'] = chosen === null ? null : honourUserDeadline(chosen, ctx, 'due_at');
-      patch['reminded_at'] = null;
-    }
+    const touchesDue = args['due_in_minutes'] !== undefined || args['due_at'] !== undefined;
+    const touchesRemind = args['remind_in_minutes'] !== undefined || args['remind_at'] !== undefined;
 
-    if (args['remind_in_minutes'] !== undefined || args['remind_at'] !== undefined) {
-      const chosen =
-        resolveOffset(args, 'remind_in_minutes') ??
-        (args['remind_at'] !== undefined ? optionalIsoDate(args, 'remind_at') : null);
-      patch['remind_at'] = chosen === null ? null : honourUserDeadline(chosen, ctx, 'remind_at');
+    if (touchesDue || touchesRemind) {
+      const corrected = honourUserDeadlines(
+        {
+          dueAt: touchesDue
+            ? (resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'))
+            : null,
+          remindAt: touchesRemind
+            ? (resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at'))
+            : null,
+        },
+        ctx,
+      );
+
+      // Solo se escribe lo que el modelo ha tocado: aquí no se inventan fechas que
+      // el usuario no ha pedido cambiar.
+      if (touchesDue) patch['due_at'] = corrected.dueAt;
+      if (touchesRemind) patch['remind_at'] = corrected.remindAt;
       patch['reminded_at'] = null;
     }
 

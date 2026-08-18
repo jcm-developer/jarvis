@@ -375,10 +375,18 @@ fechó una tarea de "en 5 minutos" **al día siguiente** —hora correcta, día 
 copiado del año-mes-día de otra tarea del historial—, y el aviso se quedó esperando 24
 horas. Cuatro medidas, en orden inverso al que se probaron:
 
-1. **El plazo del usuario manda, y lo aplica el handler.** `lib/relative-time.ts` lee
-   "en 5 minutos", "dentro de media hora" o "en un par de horas" del propio mensaje y
-   corrige la fecha que haya puesto el modelo cuando se desvía más de diez minutos.
-   Esta es la única medida que resolvió el problema; las tres siguientes no bastaron.
+1. **Lo que dijo el usuario manda, y lo aplica el handler.** Dos casos, y hubo que
+   cubrir los dos porque el modelo falla igual en ambos:
+   - **Plazos.** `lib/relative-time.ts` lee "en 5 minutos", "dentro de media hora" o
+     "en un par de horas" del mensaje y fija la fecha con la hora real del Worker.
+   - **Horas concretas.** "Avísame a las 13:14" no lleva día, así que el día es hoy.
+     Se conserva la hora que puso el modelo —eso lo hace bien— y se le cambia el día,
+     rodando a mañana si esa hora ya pasó. Si el mensaje **sí** menciona otro día
+     ("el jueves", "el 19 de septiembre", "la semana que viene"), no se toca nada.
+
+   Solo se corrige cuando la desviación pasa de diez minutos, y nunca sin mensaje del
+   usuario: en el camino de los botones de confirmación no hay texto que interpretar y
+   corregir a ciegas sería inventarse la intención.
 2. **Plazos relativos como parámetro.** `create_task` y `update_task` aceptan
    `due_in_minutes` y `remind_in_minutes`. Cuando el modelo los usa, no hay aritmética
    de calendario que pueda salir mal. El problema es que muchas veces no los usa.
@@ -404,6 +412,7 @@ cumplir en código, y el prompt se queda como ayuda, no como control.
 | Guardarraíl | Qué impide |
 |---|---|
 | El plazo del mensaje corrige la fecha del modelo | Avisos fechados mañana |
+| Sin día en el mensaje, la hora del modelo se lleva al día de hoy | Lo mismo, cuando el usuario dice una hora concreta |
 | `create_task` limpia los títulos "Recordar X" / "Avisar de X" | Tareas que se llaman como su propio aviso |
 | `create_task` rechaza una tarea que repite las palabras de otra pendiente, y devuelve el id de la existente | Filas duplicadas para la misma cosa |
 
@@ -439,8 +448,11 @@ Tiene tres partes y el orden no es estético:
    buscar en internet y prometía "estar pendiente" de avisos que no había programado.
    Declarar los límites sale más barato que arreglar una promesa incumplida.
 2. **Reglas de herramientas y de estilo**: texto plano (Telegram no renderiza nuestro
-   markdown), contar solo lo que la herramienta devolvió, una pregunta de vuelta como
-   máximo, sin halagos.
+   markdown), contar solo lo que la herramienta devolvió, sin halagos, y **preguntar
+   antes que suponer**. Esto último es una preferencia explícita del usuario: ante dos
+   tareas que encajan, un día ambiguo o la duda entre crear y actualizar, una pregunta
+   corta gana a acertar por casualidad. Cuando sí decide solo, tiene que decir qué ha
+   dado por supuesto en la misma frase.
 3. **Lo volátil, al final**: memorias y contexto temporal. OpenAI cachea el prefijo
    común entre peticiones y cobra la mitad por esa parte; el prefijo se corta en el
    primer carácter que difiere, así que la hora —que cambia cada minuto— puesta arriba

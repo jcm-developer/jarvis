@@ -64,8 +64,10 @@ export function parseRelativeMinutes(message: string): number | null {
     if (pattern.test(text)) return minutes;
   }
 
+  // El "unos" opcional va solo en plural a propósito: aceptando el singular, en
+  // "en un minuto" se comía el "un" y luego no encontraba la cantidad.
   const match = text.match(
-    /\b(?:en|dentro\s+de|de\s+aqui\s+a|pasados?)\s+(?:unos?\s+|unas?\s+)?([\p{L}]+|\d+)\s*(minutos?|mins?|m|horas?|h)\b/u,
+    /\b(?:en|dentro\s+de|de\s+aqui\s+a|pasados?)\s+(?:unos\s+|unas\s+)?([\p{L}]+|\d+)\s*(minutos?|mins?|m|horas?|h)\b/u,
   );
   if (!match) return null;
 
@@ -81,6 +83,34 @@ export function parseRelativeMinutes(message: string): number | null {
 
   // Un año de tope, igual que los campos de las herramientas.
   return minutes > 525_600 ? null : minutes;
+}
+
+/**
+ * ¿El mensaje dice de qué DÍA habla?
+ *
+ * Es la pregunta que decide si podemos corregirle el día al modelo. Cuando el
+ * usuario dice "avísame a las 13:14" sin más, el día es hoy y no hay discusión; si
+ * dice "el jueves" o "el 19 de septiembre", el día lo pone él y no se toca.
+ *
+ * "Hoy", "esta tarde" y compañía cuentan como que NO hay otro día: refuerzan hoy.
+ */
+export function mentionsAnotherDay(message: string): boolean {
+  if (!message) return false;
+  const text = normalize(message);
+
+  return (
+    /\bmanana\b/.test(text) ||
+    /\bpasado\s+manana\b/.test(text) ||
+    /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(text) ||
+    /\b(?:el\s+)?dia\s+\d{1,2}\b/.test(text) ||
+    /\bel\s+\d{1,2}\s+de\s+[a-z]+/.test(text) ||
+    /\b\d{1,2}\/\d{1,2}/.test(text) ||
+    /\b\d{4}-\d{2}-\d{2}\b/.test(text) ||
+    /\b(semana|mes|ano)\s+(que\s+viene|siguiente|proximo|proxima)\b/.test(text) ||
+    /\bproxim[oa]\s+(semana|mes|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(text) ||
+    /\ben\s+\d+\s+(dias?|semanas?|meses|anos?)\b/.test(text) ||
+    /\bfin\s+de\s+semana\b/.test(text)
+  );
 }
 
 /** Minúsculas y sin acentos: el usuario escribe "aquí" y también "aqui". */
