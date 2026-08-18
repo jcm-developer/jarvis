@@ -52,6 +52,7 @@ export async function runAgent(input: AgentInput, { env, config }: AgentDeps): P
 
   const reply = response.content?.trim();
   if (!reply) {
+    // Puede pasar si el modelo devuelve solo razonamiento y nada de contenido.
     throw new LLMError('malformed', 'el modelo devolvió una respuesta vacía');
   }
 

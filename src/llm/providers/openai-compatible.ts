@@ -66,8 +66,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.temperature = options.temperature ?? 0.6;
-    this.maxTokens = options.maxTokens ?? 1024;
-    this.timeoutMs = options.timeoutMs ?? 25_000;
+    this.maxTokens = options.maxTokens ?? 800;
+    // 45 s: el free tier de NIM encola las peticiones y se va por encima de 25 s.
+    // El techo real es el timeout de webhook de Telegram (~60 s), no Cloudflare,
+    // porque el procesamiento ya no vive en waitUntil().
+    this.timeoutMs = options.timeoutMs ?? 45_000;
   }
 
   async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
