@@ -25,11 +25,20 @@ compatibility_flags = ["nodejs_compat"]
 DEFAULT_TIMEZONE = "Europe/Madrid"
 LOG_LEVEL = "info"
 
-# Proveedor de LLM. Cambiar a "groq" solo requiere tocar estas dos líneas y tener
-# GROQ_API_KEY puesto: el código del agente no se entera.
-# Ojo: no todos los modelos de NIM soportan tool calling (necesario en la Fase 2).
-LLM_PROVIDER = "nvidia"
-LLM_MODEL = "meta/llama-3.3-70b-instruct"
+# Proveedor de LLM. Cambiarlo son estas dos líneas más la API key correspondiente:
+# el código del agente no se entera.
+#
+# Se empezó con NVIDIA NIM y hubo que abandonarlo: su free tier encola las
+# peticiones y un saludo simple se iba por encima de los 45 s de timeout.
+#
+# Alternativas ya soportadas:
+#   LLM_PROVIDER = "groq"    LLM_MODEL = "llama-3.3-70b-versatile"   (gratis, muy rápido)
+#   LLM_PROVIDER = "nvidia"  LLM_MODEL = "meta/llama-3.3-70b-instruct"
+#
+# Ojo al cambiar de modelo: debe soportar tool calling o la Fase 2 deja de
+# funcionar. Y en OpenAI, evita la serie "o" (razonamiento): rechaza max_tokens.
+LLM_PROVIDER = "openai"
+LLM_MODEL = "gpt-4o-mini"
 
 # Turnos de conversación que se arrastran como contexto.
 HISTORY_WINDOW = "20"

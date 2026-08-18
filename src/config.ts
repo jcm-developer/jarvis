@@ -15,8 +15,9 @@ export interface Config {
 }
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
-  nvidia: 'meta/llama-3.3-70b-instruct',
+  openai: 'gpt-4o-mini',
   groq: 'llama-3.3-70b-versatile',
+  nvidia: 'meta/llama-3.3-70b-instruct',
 };
 
 export class ConfigError extends Error {}

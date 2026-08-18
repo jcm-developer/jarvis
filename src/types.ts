@@ -13,8 +13,9 @@ export interface Env {
   /** Secret y no var: el repo es público y wrangler.toml se lee desde GitHub. */
   ALLOWED_TELEGRAM_IDS: string;
   /** Opcionales: solo hace falta la del proveedor activo (LLM_PROVIDER). */
-  NVIDIA_API_KEY?: string;
+  OPENAI_API_KEY?: string;
   GROQ_API_KEY?: string;
+  NVIDIA_API_KEY?: string;
   SUPABASE_URL?: string;
   /** Se salta RLS: es la credencial con más poder del proyecto. */
   SUPABASE_SERVICE_ROLE_KEY?: string;

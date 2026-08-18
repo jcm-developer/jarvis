@@ -12,15 +12,24 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible';
  *
  * Gemini queda fuera a propósito: su API nativa no es compatible y necesitaría
  * su propio adaptador. Se añadirá si hace falta.
+ *
+ * ⚠️ Al elegir modelo de OpenAI: los de razonamiento (serie o) rechazan
+ * `max_tokens` (esperan `max_completion_tokens`) y no admiten `temperature`.
+ * El adaptador manda ambos parámetros, así que quédate en la familia gpt-4o /
+ * gpt-4.1 salvo que se adapte antes.
  */
 const ENDPOINTS = {
-  nvidia: {
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    keyName: 'NVIDIA_API_KEY',
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    keyName: 'OPENAI_API_KEY',
   },
   groq: {
     baseUrl: 'https://api.groq.com/openai/v1',
     keyName: 'GROQ_API_KEY',
+  },
+  nvidia: {
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    keyName: 'NVIDIA_API_KEY',
   },
 } as const;
 

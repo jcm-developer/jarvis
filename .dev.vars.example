@@ -13,11 +13,12 @@ TELEGRAM_WEBHOOK_SECRET="una-cadena-larga-y-aleatoria"
 ALLOWED_TELEGRAM_IDS="123456789"
 
 # Fase 1 — clave del proveedor activo (ver LLM_PROVIDER en wrangler.toml).
-# Se saca en https://build.nvidia.com → cualquier modelo → "Get API Key".
-NVIDIA_API_KEY="nvapi-..."
+# https://platform.openai.com/api-keys
+OPENAI_API_KEY="sk-..."
 
-# Alternativa si se agota el free tier de NVIDIA: https://console.groq.com
-# GROQ_API_KEY="gsk_..."
+# Alternativas ya soportadas:
+# GROQ_API_KEY="gsk_..."      https://console.groq.com   (gratis, muy rápido)
+# NVIDIA_API_KEY="nvapi-..."  https://build.nvidia.com
 
 # Fase 2 — Supabase. Project Settings → API.
 # La service_role key se salta RLS: da acceso total a la base de datos.
