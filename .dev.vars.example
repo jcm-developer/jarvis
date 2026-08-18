@@ -19,6 +19,8 @@ NVIDIA_API_KEY="nvapi-..."
 # Alternativa si se agota el free tier de NVIDIA: https://console.groq.com
 # GROQ_API_KEY="gsk_..."
 
-# A partir de la Fase 2
-# SUPABASE_URL="https://xxxx.supabase.co"
-# SUPABASE_SERVICE_ROLE_KEY="eyJ..."
+# Fase 2 — Supabase. Project Settings → API.
+# La service_role key se salta RLS: da acceso total a la base de datos.
+# Solo debe existir aquí (local, ignorado por git) y como secret en Cloudflare.
+SUPABASE_URL="https://xxxx.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="eyJ..."

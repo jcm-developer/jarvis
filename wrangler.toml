@@ -16,6 +16,8 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put TELEGRAM_WEBHOOK_SECRET
 #   wrangler secret put ALLOWED_TELEGRAM_IDS   # tu telegram user id, separados por coma
 #   wrangler secret put NVIDIA_API_KEY
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 #
 # ⚠️ En el dashboard, los cambios en Variables and Secrets NO se aplican hasta
 #    pulsar el botón Deploy. Sin eso el Worker sigue corriendo sin ellos.
@@ -31,6 +33,9 @@ LLM_MODEL = "meta/llama-3.3-70b-instruct"
 
 # Turnos de conversación que se arrastran como contexto.
 HISTORY_WINDOW = "20"
+
+# Vueltas máximas del bucle agéntico por mensaje.
+MAX_AGENT_ITERATIONS = "5"
 
 # Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
 # Crear con:  npx wrangler kv namespace create STATE

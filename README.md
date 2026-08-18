@@ -4,7 +4,7 @@ Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base
 
 Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 1** — conversación real con memoria de corto plazo. Sin herramientas todavía.
+**Estado: Fase 2** — el agente ejecuta acciones reales: tareas y memoria en Supabase.
 
 Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
 
@@ -60,6 +60,8 @@ Tras el primer deploy: **Worker → Settings → Variables and Secrets → Add**
 | `TELEGRAM_WEBHOOK_SECRET` | cadena aleatoria larga (ver abajo) |
 | `ALLOWED_TELEGRAM_IDS` | tu user id, varios separados por coma |
 | `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/models) → un modelo → *Get API Key* |
+| `SUPABASE_URL` | Supabase → Project Settings → API → *Project URL* |
+| `SUPABASE_SERVICE_ROLE_KEY` | ídem → *service_role*. Se salta RLS: trátala como la llave maestra |
 
 **Al terminar, pulsa Deploy.** Los secrets no se aplican hasta entonces.
 
@@ -216,7 +218,41 @@ una frase clara, no como silencio ni como un volcado de stack.
 Comandos: `/ping`, `/reset`, `/help`. Todo lo demás va al modelo.
 Los audios se acusan recibo pero no se transcriben hasta la Fase 3.
 
+## Qué hace la Fase 2
+
+El agente deja de conversar y empieza a actuar.
+
+**Registry de herramientas** ([src/tools/](src/tools/)). Cada tool es una definición
+tipada con su JSON Schema, y se envían en el campo `tools` de la petición — no
+descritas en prosa dentro del prompt, que duplicaría la fuente de verdad.
+
+| Tool | Qué hace | Confirmación |
+|---|---|---|
+| `create_task` | Crea tarea con fecha, prioridad y notas | No |
+| `list_tasks` | Filtra por estado y vencimiento | No |
+| `complete_task` | Marca como hecha | No |
+| `delete_task` | Borra permanentemente | **Sí** |
+| `remember` | Guarda un dato duradero del usuario | No |
+| `recall` | Busca entre lo recordado | No |
+
+**Bucle agéntico** ([src/agent.ts](src/agent.ts)). Hasta `MAX_AGENT_ITERATIONS`
+vueltas: el modelo pide herramientas, se ejecutan, el resultado vuelve como mensaje
+`tool` y decide otra vez. Los errores se devuelven al modelo como
+`{ok:false, error}` para que se corrija solo, en vez de romper la conversación.
+
+**Confirmación humana.** `delete_task` no se ejecuta: la acción queda en KV con TTL
+de 5 minutos y el usuario recibe botones. Confirmar la consume — pulsar dos veces no
+la ejecuta dos veces. El texto del botón incluye el título real de la tarea, porque
+nadie revisa un uuid.
+
+**Cliente de base de datos propio** ([src/db/client.ts](src/db/client.ts)). PostgREST
+por `fetch`, sin `@supabase/supabase-js`, por el mismo motivo que en la capa de LLM.
+Entra con `service_role`, que se salta RLS.
+
+**Auditoría.** Cada llamada a herramienta se registra en `tool_call_logs` con
+argumentos, resultado, duración y error. Es lo que permite entender después por qué
+el agente hizo lo que hizo.
+
 ## Siguiente
 
-**Fase 2** — registry de herramientas con JSON Schema, tareas en Supabase y
-confirmación humana para las acciones destructivas.
+**Fase 3** — transcripción de audios con Workers AI (Whisper).

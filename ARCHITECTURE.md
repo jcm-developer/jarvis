@@ -466,7 +466,7 @@ código no se toca. Está diseñado así a propósito.
 |---|---|---|
 | **0** | Scaffold, webhook, guard de seguridad, echo | ✅ Hecha |
 | **1** | Provider NVIDIA + conversación de texto | ✅ Hecha |
-| **2** | Registry de tools + tareas en Supabase + confirmaciones | Pendiente |
+| **2** | Registry de tools + tareas en Supabase + confirmaciones | ✅ Hecha |
 | **3** | Audio con Whisper | Pendiente |
 | **4** | Historial + memoria de largo plazo | Pendiente |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | Pendiente |

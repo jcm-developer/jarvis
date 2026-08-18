@@ -15,12 +15,16 @@ export interface Env {
   /** Opcionales: solo hace falta la del proveedor activo (LLM_PROVIDER). */
   NVIDIA_API_KEY?: string;
   GROQ_API_KEY?: string;
+  SUPABASE_URL?: string;
+  /** Se salta RLS: es la credencial con más poder del proyecto. */
+  SUPABASE_SERVICE_ROLE_KEY?: string;
 
   // --- Vars (wrangler.toml) ---
   DEFAULT_TIMEZONE: string;
   LLM_PROVIDER?: string;
   LLM_MODEL?: string;
   HISTORY_WINDOW?: string;
+  MAX_AGENT_ITERATIONS?: string;
   LOG_LEVEL?: string;
 }
 

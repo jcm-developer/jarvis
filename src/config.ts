@@ -9,6 +9,8 @@ export interface Config {
   llmModel: string;
   /** Nº de turnos de conversación que se arrastran como contexto. */
   historyWindow: number;
+  /** Tope de vueltas del bucle agéntico. Evita que un modelo confundido queme la cuota. */
+  maxAgentIterations: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -61,6 +63,7 @@ export function loadConfig(env: Env): Config {
     llmProvider,
     llmModel: env.LLM_MODEL?.trim() || DEFAULT_MODELS[llmProvider],
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
+    maxAgentIterations: parsePositiveInt(env.MAX_AGENT_ITERATIONS, 5),
     logLevel: parseLogLevel(env.LOG_LEVEL),
   };
 }
