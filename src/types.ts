@@ -29,6 +29,7 @@ export interface Env {
   STT_PROVIDER?: string;
   STT_MODEL?: string;
   STT_LANGUAGE?: string;
+  BRIEFING_HOUR?: string;
   LOG_LEVEL?: string;
 }
 

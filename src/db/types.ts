@@ -23,6 +23,7 @@ export interface TaskRow {
   priority: number;
   status: 'pending' | 'done' | 'cancelled';
   completed_at: string | null;
+  reminded_at: string | null;
   created_at: string;
 }
 

@@ -45,8 +45,12 @@ LLM_MODEL = "gpt-4o-mini"
 HISTORY_WINDOW = "30"
 
 # Vueltas máximas del bucle agéntico por mensaje. Bajado de 5 a 3: cada vuelta es
-# una llamada al modelo, y todas deben caber en el presupuesto de 25 s.
+# una llamada al modelo, y todas deben caber en el presupuesto de 27 s.
 MAX_AGENT_ITERATIONS = "3"
+
+# Hora LOCAL del briefing diario. La ventana de envío son 3 horas (con 8: a las 8,
+# 9 o 10): si el cron se salta su disparo, el siguiente lo recupera.
+BRIEFING_HOUR = "8"
 
 # Transcripción de notas de voz.
 # "openai" acepta el OGG/Opus de Telegram sin conversión y acierta más en español.
@@ -70,6 +74,8 @@ binding = "AI"
 [observability]
 enabled = true
 
-# Fase 5: briefing y recordatorios.
-# [triggers]
-# crons = ["0 * * * *"]
+# Briefing y recordatorios (Fase 5). El cron dispara cada hora EN UTC: la hora
+# local del usuario se calcula en el código (src/lib/localtime.ts), porque España
+# cambia de horario dos veces al año y un cron fijo se descuadraría medio año.
+[triggers]
+crons = ["0 * * * *"]

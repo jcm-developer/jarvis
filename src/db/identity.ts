@@ -73,3 +73,54 @@ function isCachedIdentity(value: unknown): value is Identity {
     typeof candidate['timezone'] === 'string'
   );
 }
+
+/**
+ * A quién escribe el cron. No hay chat de origen del que sacarlo, así que sale
+ * del cruce de `users` y `conversations`.
+ */
+export interface CronTarget {
+  userId: string;
+  conversationId: string;
+  chatId: number;
+  telegramId: number;
+  timezone: string;
+}
+
+/**
+ * Usuarios con conversación abierta a los que el cron puede escribir.
+ *
+ * Dos consultas y el cruce en memoria en vez de un select con recurso embebido:
+ * mantiene el cliente de base de datos tonto, y con un usuario son dos filas.
+ *
+ * El filtro por whitelist es la parte importante: si un id sale de
+ * `ALLOWED_TELEGRAM_IDS`, el cron deja de escribirle aunque su fila siga en la
+ * base de datos. Al revés que el webhook, aquí nadie más comprueba el permiso.
+ */
+export async function listCronTargets(
+  db: Db,
+  allowedTelegramIds: Set<number>,
+  defaultTimezone: string,
+): Promise<CronTarget[]> {
+  const [users, conversations] = await Promise.all([
+    db.select<UserRow>('users', { columns: 'id,telegram_id,timezone' }),
+    db.select<ConversationRow>('conversations', { columns: 'id,user_id,telegram_chat_id' }),
+  ]);
+
+  const authorized = new Map(
+    users.filter((user) => allowedTelegramIds.has(user.telegram_id)).map((user) => [user.id, user]),
+  );
+
+  const targets: CronTarget[] = [];
+  for (const conversation of conversations) {
+    const user = authorized.get(conversation.user_id);
+    if (!user) continue;
+    targets.push({
+      userId: user.id,
+      conversationId: conversation.id,
+      chatId: conversation.telegram_chat_id,
+      telegramId: user.telegram_id,
+      timezone: user.timezone || defaultTimezone,
+    });
+  }
+  return targets;
+}

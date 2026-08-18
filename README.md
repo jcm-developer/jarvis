@@ -4,7 +4,7 @@ Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base
 
 Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 4** — tareas, memoria y notas de voz, con el historial en Supabase. Le hablas y ejecuta.
+**Estado: Fase 5** — el roadmap inicial está completo: tareas, memoria, notas de voz, historial en Supabase y avisos proactivos por cron.
 
 Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
 
@@ -136,6 +136,20 @@ Desplegar a mano, saltándose el CI:
 ```bash
 npm run deploy
 ```
+
+### Probar el cron sin esperar a la hora en punto
+
+`wrangler dev` expone un endpoint para dispararlo a mano:
+
+```bash
+npx wrangler dev --test-scheduled
+# en otra terminal
+curl.exe "http://localhost:8787/__scheduled?cron=0+*+*+*+*"
+```
+
+Cada ejecución deja una línea `cron_run` en los logs con cuántos usuarios miró, y
+cuántos recordatorios y briefings salieron. Si el briefing ya salió hoy no se repite:
+para volver a probarlo hay que borrar su clave de KV (`briefing:<userId>:<fecha>`).
 
 ---
 
@@ -320,6 +334,40 @@ Cuando el agente entiende algo raro, lo primero que se mira es si venía de un a
 agente *hizo* sigue en `tool_call_logs`, y lo que recuerda del usuario a largo plazo
 (`memories`) no se toca.
 
+## Qué hace la Fase 5
+
+Jarvis deja de esperar a que le escribas: ahora escribe él.
+
+**Briefing diario** ([src/cron/briefing.ts](src/cron/briefing.ts)). A las 8 de la
+mañana *en tu hora local* llega un mensaje con lo que tienes: vencidas, lo de hoy con
+su hora, y lo urgente sin fecha. Se manda una vez al día, dentro de una ventana de 3
+horas: si el disparo de las 8 se pierde, lo recupera el de las 9 o el de las 10.
+
+```toml
+BRIEFING_HOUR = "8"   # hora local, 0-23
+```
+
+El texto se compone en código, sin pasar por el modelo: es una lista de tareas con
+fechas, y así no cuesta tokens ni puede inventarse una tarea que no existe.
+
+**Recordatorios de vencimiento** ([src/cron/reminders.ts](src/cron/reminders.ts)).
+Cada hora se buscan las tareas que vencen en los próximos 60 minutos y se avisa una
+sola vez por tarea (`reminded_at`). Lo que ya estaba vencido también entra, con un
+tope de 10 por ejecución para que no llegue una avalancha el primer día.
+
+**La hora local, calculada de verdad** ([src/lib/localtime.ts](src/lib/localtime.ts)).
+El cron de Cloudflare dispara en UTC y España cambia de horario dos veces al año: un
+cron a las 06:00 UTC serían las 7 en invierno y las 8 en verano. Así que la hora
+local, el inicio y el fin del día salen de `Intl`, incluidos los dos días del año que
+duran 23 y 25 horas.
+
+Los avisos se guardan en el historial como mensajes del asistente. Sin eso, contestar
+"hecho" a un recordatorio no tendría referente y el modelo preguntaría de qué le hablas.
+
+No hace falta tocar nada para que esto funcione: ni secrets nuevos, ni cambios en el
+esquema — `reminded_at` estaba previsto desde la Fase 2. Solo el trigger de
+[wrangler.toml](wrangler.toml), que ya va activado.
+
 ## Varias cosas en un mensaje
 
 Ya funcionaba desde la Fase 2 — el bucle ejecuta todas las `tool_calls` de una misma
@@ -328,4 +376,7 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-**Fase 5** — cron: briefing matutino y recordatorios.
+El roadmap de fases está terminado. Lo que hay en la recámara, sin orden:
+notas y gastos como dominios nuevos, calendario, búsqueda web, respuesta en audio,
+entender imágenes y un panel web. La lista completa, al final de
+[ARCHITECTURE.md](ARCHITECTURE.md).

@@ -68,7 +68,8 @@ Telegram
 │  [7] Persistencia + sendMessage                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 
-Cron Trigger (cada hora)  ──▶  briefing / recordatorios  ──▶  sendMessage
+Cron Trigger (cada hora, UTC)  ──▶  ¿toca briefing en hora local?  ──▶ sendMessage
+                               └─▶  tareas que vencen en 1 h        ──▶ sendMessage
 ```
 
 ---
@@ -78,13 +79,14 @@ Cron Trigger (cada hora)  ──▶  briefing / recordatorios  ──▶  sendMe
 ```
 jarvis/
 ├─ src/
-│  ├─ index.ts                 # entrypoint: fetch (+ scheduled en la fase 5)
+│  ├─ index.ts                 # entrypoint: fetch (webhook) + scheduled (cron)
 │  ├─ agent.ts                 # loop agéntico y confirmaciones
 │  ├─ config.ts                # lectura y validación de env
 │  ├─ types.ts                 # Env + tipos de la Telegram API
 │  │
 │  ├─ lib/
-│  │  └─ deadline.ts           # presupuesto de tiempo compartido del mensaje
+│  │  ├─ deadline.ts           # presupuesto de tiempo compartido del mensaje
+│  │  └─ localtime.ts          # hora local del usuario (Intl, cambios de hora)
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
@@ -120,8 +122,10 @@ jarvis/
 │  ├─ prompts/
 │  │  └─ system.ts             # personalidad + reglas + memorias + fecha/hora/TZ
 │  │
-│  └─ cron/                    # fase 5
-│     └─ briefing.ts
+│  └─ cron/
+│     ├─ index.ts              # qué se hace en cada disparo
+│     ├─ briefing.ts           # briefing diario a la hora local
+│     └─ reminders.ts          # avisos de tareas que vencen
 │
 ├─ supabase/
 │  └─ schema.sql
@@ -541,7 +545,66 @@ código no se toca. Está diseñado así a propósito.
 
 ---
 
-## 12. Roadmap
+## 12. Proactividad: el cron
+
+Un Cron Trigger cada hora (`0 * * * *`) y dos trabajos independientes por usuario,
+cada uno con su `try`: que falle un aviso no debe dejar al usuario sin el otro.
+
+El `scheduled` **awaita** su trabajo en vez de mandarlo a `waitUntil()`. Aquí no hay
+respuesta que devolver, así que no existe el margen corto que obliga a la gimnasia
+del webhook. Aun así lleva presupuesto (25 s): una llamada colgada no debe dejar el
+briefing a medias.
+
+A quién se escribe sale del cruce de `users` y `conversations`, filtrado por
+`ALLOWED_TELEGRAM_IDS`. **La whitelist se vuelve a comprobar aquí a propósito:** es
+el único camino del código en el que no hay un update de Telegram que validar, así
+que si nadie mira la lista, un usuario retirado seguiría recibiendo mensajes.
+
+### Briefing diario
+
+Sale a la hora **local** del usuario (`BRIEFING_HOUR`, por defecto las 8). El cron
+dispara en UTC, así que la hora local se calcula en cada ejecución con `Intl`
+([src/lib/localtime.ts](src/lib/localtime.ts)) y no con un offset fijo: España
+cambia de horario dos veces al año, y un cron a las 06:00 UTC sería las 7 en
+invierno y las 8 en verano.
+
+- **Una vez al día**, con marca en KV `briefing:<userId>:<fecha local>` y TTL de 48 h.
+  La fecha de la clave es la local, no la UTC: es la que define "hoy" para quien lee.
+  Una escritura de KV al día no se nota en el presupuesto de 1.000.
+- **La ventana de envío son 3 horas**: con `BRIEFING_HOUR = 8`, se manda en el disparo
+  de las 8, las 9 o las 10. Si el primero se pierde, el siguiente lo recupera. Sin
+  ventana no habría briefing ese día; sin límite llegaría un "buenos días" a medianoche.
+- **El texto se compone en código, sin pasar por el modelo.** Es una lista de tareas
+  con fechas: el LLM no añade nada y sí añade coste, latencia y la posibilidad de
+  inventarse una tarea. El briefing tiene que ser aburrido y exacto.
+- Contenido: vencidas, lo que vence hoy con su hora, y las de prioridad alta sin
+  fecha. Las pendientes sin fecha ni prioridad no entran: es el día, no el inventario.
+
+### Recordatorios de vencimiento
+
+Cada ejecución busca tareas `pending` que vencen en la próxima hora y que no tienen
+`reminded_at`. La ventana es de una hora porque el cron corre cada hora: más corta
+dejaría caer entre dos disparos lo que vence a y media.
+
+- `reminded_at` (columna que estaba en el esquema desde la Fase 2) es lo que evita
+  repetir el aviso cada hora hasta que la tarea se complete.
+- **Se marca después de enviar, nunca antes.** Si el envío falla, la tarea sigue sin
+  marcar y el aviso se reintenta a la hora siguiente. Al revés, un 500 de Telegram
+  se convertiría en un recordatorio que nunca llega.
+- Tope de 10 por ejecución. La primera vez que esto corre, todo lo vencido de antes
+  entra en el lote, y no queremos que llegue como una avalancha.
+
+Los mensajes proactivos se guardan en `messages` como turnos del asistente. Sin eso,
+un "hecho" o un "posponlo" como respuesta al aviso no tendría referente en el
+contexto y el modelo preguntaría de qué se le habla.
+
+Una tarea que vence dentro de la misma hora del briefing sale en los dos mensajes.
+Se acepta: son cosas distintas —planificar el día y avisar de lo inminente— y
+suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
+
+---
+
+## 13. Roadmap
 
 | Fase | Alcance | Estado |
 |---|---|---|
@@ -550,10 +613,13 @@ código no se toca. Está diseñado así a propósito.
 | **2** | Registry de tools + tareas en Supabase + confirmaciones | ✅ Hecha |
 | **3** | Audio con Whisper | ✅ Hecha |
 | **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
-| **5** | Cron: briefing matutino y recordatorios de vencimiento | Pendiente |
+| **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
 chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
+
+Con la Fase 5 cerrada, el roadmap inicial está completo. Lo que venga sale de la
+lista de abajo, y ya no por orden.
 
 ### Ideas para después
 

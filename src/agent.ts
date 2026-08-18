@@ -300,7 +300,8 @@ function parseArguments(call: ToolCall): Record<string, unknown> {
   }
 }
 
-function createDb(env: Env): Db {
+/** También lo usa el cron: la comprobación de secrets vive en un solo sitio. */
+export function createDb(env: Env): Db {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new ConfigMissingError('Faltan los secrets SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.');
   }

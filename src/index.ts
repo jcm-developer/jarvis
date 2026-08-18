@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 
 import { ConfigError, loadConfig } from './config';
+import { runScheduled } from './cron';
 import { Deadline, DeadlineExceededError } from './lib/deadline';
 import { TelegramClient } from './telegram/client';
 import { claimUpdate, extractActor, isAuthorized, verifyWebhookSecret } from './telegram/guard';
@@ -19,6 +20,16 @@ import type { Env, TelegramUpdate } from './types';
  * reintentos. Afectaría solo a este fichero.
  */
 const TOTAL_BUDGET_MS = 27_000;
+
+/**
+ * Presupuesto del cron.
+ *
+ * Más holgado que el del webhook porque aquí no hay nadie esperando una respuesta:
+ * el trabajo se *awaita* directamente, sin waitUntil, así que no hay margen ajeno
+ * que se agote. Sigue habiendo tope para que una llamada colgada no se coma la
+ * ejecución entera y deje el briefing a medias.
+ */
+const CRON_BUDGET_MS = 25_000;
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -118,4 +129,32 @@ app.post('/webhook', async (c) => {
   return c.json({ ok: true });
 });
 
-export default app;
+/**
+ * Cron: briefing y recordatorios (Fase 5).
+ *
+ * Se *awaita* en vez de mandarlo a waitUntil: aquí no hay respuesta que devolver,
+ * así que no existe el margen corto que obliga a la gimnasia del webhook.
+ *
+ * Los fallos se registran y se tragan. Un throw haría que Cloudflare marcara la
+ * ejecución como fallida, y ni la reintenta ni avisa: solo ensucia las métricas.
+ */
+async function scheduled(env: Env): Promise<void> {
+  let config;
+  try {
+    config = loadConfig(env);
+  } catch (error) {
+    console.error('cron abortado, configuración inválida:', error);
+    return;
+  }
+
+  try {
+    await runScheduled(env, config, Deadline.in(CRON_BUDGET_MS));
+  } catch (error) {
+    console.error('cron falló:', error);
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled: (_controller, env: Env) => scheduled(env),
+} satisfies ExportedHandler<Env>;

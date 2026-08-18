@@ -15,6 +15,8 @@ export interface Config {
   sttProvider: SttProviderName;
   sttModel: string;
   sttLanguage: string;
+  /** Hora local (0-23) a la que sale el briefing diario del cron. */
+  briefingHour: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -80,8 +82,15 @@ export function loadConfig(env: Env): Config {
     llmModel: env.LLM_MODEL?.trim() || DEFAULT_MODELS[llmProvider],
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
     maxAgentIterations: parsePositiveInt(env.MAX_AGENT_ITERATIONS, 5),
+    briefingHour: parseHour(env.BRIEFING_HOUR, 8),
     logLevel: parseLogLevel(env.LOG_LEVEL),
   };
+}
+
+/** Aparte de parsePositiveInt porque las 0:00 es una hora válida y un cero no. */
+function parseHour(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 23 ? parsed : fallback;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

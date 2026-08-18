@@ -235,6 +235,8 @@ async function handleCommand(
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
+        'También escribo yo: por la mañana con lo que tienes ese día, y cuando algo está a punto de vencer.',
+        '',
         'Para todo lo demás, escríbeme normal.',
         'Lo que recuerdo de ti a largo plazo no se borra con /reset.',
       ].join('\n');
@@ -251,6 +253,7 @@ async function handleCommand(
         `modelo: ${ctx.config.llmModel}`,
         `proveedor: ${ctx.config.llmProvider}`,
         `zona horaria: ${ctx.config.defaultTimezone}`,
+        `briefing: ${String(ctx.config.briefingHour).padStart(2, '0')}:00 hora local`,
       ].join('\n');
 
     default:
