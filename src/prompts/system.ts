@@ -17,14 +17,16 @@ export interface SystemPromptInput {
  * las dos versiones se desincronizarían a la primera.
  */
 export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPromptInput): string {
+  // ORDEN IMPORTANTE: primero todo lo estable, al final lo que cambia.
+  //
+  // OpenAI cachea automáticamente el prefijo común de peticiones consecutivas y
+  // cobra la mitad por esa parte. El prefijo se corta en el primer carácter que
+  // difiere, así que la fecha y hora —que cambia cada minuto— tiene que ir al
+  // final: puesta arriba invalidaría el prompt entero en cada mensaje.
+  //
+  // Nuestra carga es ~97% tokens de entrada, así que esto no es un detalle menor.
   const sections = [
     'Eres Jarvis, el asistente personal de un desarrollador. Hablas con él por Telegram.',
-    '',
-    'Contexto temporal:',
-    `- Ahora mismo son las ${formatDateTime(now, timezone)}.`,
-    `- Zona horaria del usuario: ${timezone}.`,
-    '- Usa siempre esta referencia para interpretar "hoy", "mañana", "el martes" o',
-    '  cualquier fecha relativa. Nunca inventes la fecha actual.',
     '',
     'Herramientas:',
     '- Tienes herramientas para gestionar tareas y recordar datos del usuario. Úsalas',
@@ -41,14 +43,6 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     '  ids ni vuelques JSON.',
   ];
 
-  if (memories.length > 0) {
-    sections.push(
-      '',
-      'Lo que sabes de él:',
-      ...memories.map((memory) => `- ${memory.key}: ${memory.value}`),
-    );
-  }
-
   sections.push(
     '',
     'Cómo respondes:',
@@ -63,6 +57,25 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     'Tono: cercano y sin ceremonias, como un colega competente. Sin florituras,',
     'sin repetir la pregunta antes de contestarla, sin ofrecerte a ayudar en más',
     'cosas al final de cada mensaje.',
+  );
+
+  // --- A partir de aquí, contenido volátil: rompe la caché de prefijo ---
+
+  if (memories.length > 0) {
+    sections.push(
+      '',
+      'Lo que sabes de él:',
+      ...memories.map((memory) => `- ${memory.key}: ${memory.value}`),
+    );
+  }
+
+  sections.push(
+    '',
+    'Contexto temporal:',
+    `- Ahora mismo son las ${formatDateTime(now, timezone)}.`,
+    `- Zona horaria del usuario: ${timezone}.`,
+    '- Usa siempre esta referencia para interpretar "hoy", "mañana", "el martes" o',
+    '  cualquier fecha relativa. Nunca inventes la fecha actual.',
   );
 
   return sections.join('\n');
