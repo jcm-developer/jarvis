@@ -13,8 +13,8 @@ mejorables están así por un motivo que ya está escrito ahí.
 
 ## Cómo trabajamos
 
-- **Idioma: español.** Respuestas, comentarios del código, mensajes de commit y
-  textos que ve el usuario en Telegram.
+- **Idioma: español.** Respuestas, comentarios del código, documentación y textos
+  que ve el usuario en Telegram. La única excepción son los commits, en inglés.
 - **Vamos por fases.** El roadmap está al final de ARCHITECTURE.md. Cuando digo
   "el siguiente punto" o "continuamos", es la siguiente fase pendiente de esa tabla.
 - Al cerrar una fase se actualizan **los tres**: el código, el roadmap de
@@ -65,14 +65,25 @@ mejorables están así por un motivo que ya está escrito ahí.
 
 ## Commits
 
-Conventional commits en español, **sin tildes ni eñes en el asunto** (`anadir`,
-`transcripcion`), en minúscula y en imperativo. El asunto dice el efecto, no el
-fichero tocado. Cuerpo cuando haya un por qué que merezca la pena.
+**En inglés, una sola línea, sin cuerpo.** Conventional commits en minúscula e
+imperativo, con uno de estos tres prefijos:
+
+| Prefijo | Cuándo |
+|---|---|
+| `feat:` | funcionalidad nueva |
+| `fix:` | corregir algo que estaba mal |
+| `chore:` | todo lo demás: dependencias, config, tooling, documentación |
+
+El asunto dice el efecto, no el fichero tocado.
 
 ```
-fix: presupuesto de tiempo global y respuesta inmediata al webhook
-feat(fase-3): transcripcion de notas de voz y varias tareas por mensaje
+feat: store conversation history in supabase instead of kv
+fix: share one time budget across audio download, stt and llm calls
+chore: document project conventions for claude code
 ```
+
+Los commits anteriores a agosto de 2026 están en español y con cuerpo. Es historia,
+no un patrón a seguir.
 
 Cada push a `main` despliega a producción vía Cloudflare Workers Builds. Es la rama
 de trabajo y es deliberado: no crees ramas ni PR salvo que te lo pida.
