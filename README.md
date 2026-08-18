@@ -81,16 +81,26 @@ Una sola vez. El `secret_token` debe ser **idéntico** a `TELEGRAM_WEBHOOK_SECRE
 si no coincide, el Worker devuelve 403 a todo y el bot parece muerto sin dar pistas.
 
 ```powershell
-curl.exe -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -H "Content-Type: application/json" -d '{\"url\":\"https://jarvis.<subdominio>.workers.dev/webhook\",\"secret_token\":\"<SECRET>\",\"allowed_updates\":[\"message\",\"edited_message\",\"callback_query\"]}'
+$token  = "<TOKEN>"
+$secret = "<TU_WEBHOOK_SECRET>"
+$url    = "https://jarvis.<subdominio>.workers.dev/webhook"
+
+Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$token/setWebhook" `
+  -ContentType "application/json" -Body (@{
+    url             = $url
+    secret_token    = $secret
+    allowed_updates = @("message", "edited_message", "callback_query")
+  } | ConvertTo-Json)
 ```
 
-En PowerShell usa `curl.exe`, no `curl`: este último es un alias de `Invoke-WebRequest`
-y no acepta estos flags. No olvides el `/webhook` final en la URL.
+Se usa `Invoke-RestMethod` y no `curl` a propósito: en PowerShell `curl` es un alias de
+`Invoke-WebRequest` y no acepta los flags de curl, y `curl.exe` obliga a escapar el JSON
+a mano, que es donde falla casi todo el mundo. No olvides el `/webhook` final en la URL.
 
 Comprobar:
 
 ```powershell
-curl.exe "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" | Select-Object -ExpandProperty result
 ```
 
 `last_error_message` con contenido o `pending_update_count` alto = algo falla.
@@ -123,6 +133,46 @@ npm run deploy
 ```
 
 ---
+
+## Troubleshooting
+
+### El bot no responde
+
+El Worker devuelve `200` en casi todos los modos de fallo (para que Telegram no
+reintente en bucle), así que desde Telegram no se ve nada. Diagnostica por capas:
+
+```powershell
+# 1. ¿Está vivo el Worker?  → debe responder "jarvis ok"
+curl.exe https://jarvis.<subdominio>.workers.dev/
+
+# 2. ¿Coincide el secret?  → 200 = sí, 403 = no
+curl.exe -s -o NUL -w "%{http_code}" -X POST https://jarvis.<subdominio>.workers.dev/webhook `
+  -H "Content-Type: application/json" `
+  -H "X-Telegram-Bot-Api-Secret-Token: <TU_SECRET>" -d '{\"update_id\":1}'
+
+# 3. ¿Entrega Telegram?  → mira last_error_message
+Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" | Select -ExpandProperty result
+```
+
+Si el paso 2 da 200 y el bot sigue mudo, el problema es la whitelist: mira los logs
+(**Compute → Workers → jarvis → Logs**), donde `update ignorado de usuario no
+autorizado: N` te da tu id real.
+
+### Dos trampas que cuestan tiempo
+
+**Los secrets del dashboard no se aplican hasta pulsar Deploy.** Añadirlos en
+*Variables and Secrets* y salir de la pantalla no hace nada: el Worker sigue
+corriendo la versión anterior, sin ellos, y rechaza todo con 403.
+
+**`setWebhook` ignora el `secret_token` si la URL ya estaba registrada.** Telegram
+compara solo la URL, responde `{"ok":true,"description":"Webhook is already set"}`
+y descarta el resto de parámetros. Si ves `already set` en vez de `Webhook was set`,
+tu secret **no** se ha guardado. Hay que borrar primero:
+
+```
+https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true
+https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/webhook&secret_token=<SECRET>
+```
 
 ## Qué hace la Fase 0
 
