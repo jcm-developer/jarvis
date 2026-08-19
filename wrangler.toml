@@ -19,6 +19,12 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put SUPABASE_URL
 #   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 #
+# Calendario (Fase 6). Los tres salen del JSON de la service account y de la
+# pantalla de "Configuración y uso compartido" del calendario:
+#   wrangler secret put GOOGLE_SA_EMAIL         # client_email del JSON
+#   wrangler secret put GOOGLE_SA_PRIVATE_KEY   # private_key del JSON, con sus \n
+#   wrangler secret put GOOGLE_CALENDAR_ID      # el id del calendario, nunca "primary"
+#
 # ⚠️ En el dashboard, los cambios en Variables and Secrets NO se aplican hasta
 #    pulsar el botón Deploy. Sin eso el Worker sigue corriendo sin ellos.
 [vars]

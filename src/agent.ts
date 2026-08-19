@@ -61,6 +61,8 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     conversationId: identity.conversationId,
     timezone: identity.timezone,
     db,
+    env,
+    deadline,
     userMessage: input.text,
   };
 
@@ -224,6 +226,8 @@ export async function executeConfirmed(
     conversationId: identity.conversationId,
     timezone: identity.timezone,
     db,
+    env: deps.env,
+    deadline: deps.deadline,
     // Sin mensaje nuevo: esto viene de un botón de confirmación.
     userMessage: '',
   };

@@ -62,6 +62,9 @@ Tras el primer deploy: **Worker → Settings → Variables and Secrets → Add**
 | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → *Create new secret key*. Sirve para el modelo y para transcribir |
 | `SUPABASE_URL` | Supabase → Project Settings → API → *Project URL* |
 | `SUPABASE_SERVICE_ROLE_KEY` | ídem → *service_role*. Se salta RLS: trátala como la llave maestra |
+| `GOOGLE_SA_EMAIL` | desde la Fase 6. El `client_email` del JSON de la service account |
+| `GOOGLE_SA_PRIVATE_KEY` | ídem, el `private_key`: pégalo tal cual, con sus `\n` |
+| `GOOGLE_CALENDAR_ID` | ídem, el id del calendario compartido. Nunca `primary` |
 
 **Al terminar, pulsa Deploy.** Los secrets no se aplican hasta entonces.
 
@@ -400,6 +403,61 @@ No hacen falta secrets nuevos. El trigger de [wrangler.toml](wrangler.toml) ya v
 activado, y la columna `remind_at` se añade reejecutando
 [supabase/schema.sql](supabase/schema.sql), que es idempotente.
 
+## Qué hace la Fase 6
+
+Apuntar citas en Google Calendar desde el chat. *"Apúntame el dentista el jueves a las
+diez"* crea el evento; *"comprar pan"* sigue siendo una tarea. La frontera es si ocupa
+un hueco del día a una hora concreta o es algo que hay que hacer cuando se pueda, y si
+el modelo duda, pregunta.
+
+**Solo escritura.** No puede consultar ni cambiar lo que ya tienes en el calendario, y
+el prompt se lo dice para que no te prometa que va a mirarlo. Los avisos de una cita los
+da tu propia app de calendario, no el cron de Jarvis.
+
+### Preparar Google (una vez)
+
+1. [console.cloud.google.com](https://console.cloud.google.com) con la cuenta del
+   calendario → proyecto nuevo → **APIs y servicios → Biblioteca** → habilitar
+   **Google Calendar API**. No pide tarjeta: la cuota gratuita es de un millón de
+   peticiones al día y nosotros hacemos una por cita.
+2. **IAM y administración → Cuentas de servicio → Crear**. Sin ningún rol de IAM: los
+   permisos vienen del calendario compartido, no de aquí.
+3. La cuenta → **Claves → Agregar clave → JSON**. Guarda el fichero fuera del repo,
+   que es público, y bórralo en cuanto copies los dos campos que hacen falta.
+4. [calendar.google.com](https://calendar.google.com) → el calendario → **⋮ →
+   Configuración y uso compartido → Compartir con determinadas personas** → añade el
+   `client_email` con permiso **"Hacer cambios en los eventos"**. En la misma pantalla,
+   **Integrar calendario → ID del calendario**: ese es `GOOGLE_CALENDAR_ID`.
+5. Los tres secrets del paso 4 de la puesta en marcha, y **Deploy**.
+
+> **La política que bloquea el paso 3.** En las organizaciones nuevas Google aplica de
+> oficio `iam.disableServiceAccountKeyCreation` y el diálogo de error no dice que se
+> pueda quitar. Se desactiva solo en este proyecto, desde Cloud Shell:
+>
+> ```bash
+> gcloud resource-manager org-policies disable-enforce \
+>   iam.disableServiceAccountKeyCreation --project=<PROJECT_ID>
+> ```
+>
+> La consola cachea el estado: recarga la pestaña antes de reintentar, o crea la clave
+> con `gcloud iam service-accounts keys create`, que no pasa por ahí.
+
+### Dos cosas que no puede hacer y no es un bug
+
+- **Invitar a otras personas a un evento.** Una service account sin *domain-wide
+  delegation* —que necesita Google Workspace, no una cuenta Gmail— no puede añadir
+  invitados, y la API lo rechaza.
+- **Leer el calendario.** Ver §13 de [ARCHITECTURE.md](ARCHITECTURE.md) para el por qué.
+
+### Si algo falla la primera vez
+
+Con `npx wrangler tail` delante, los dos errores probables se distinguen solos:
+
+| En el log | Qué pasa |
+|---|---|
+| `google_token_failed` con `invalid_grant` | el `private_key` está mal pegado |
+| `calendar_insert_failed` con `404` | el `GOOGLE_CALENDAR_ID` está mal, o el calendario no está compartido con la service account (la API responde 404, no 403: para ella ese calendario no existe) |
+
 ## Varias cosas en un mensaje
 
 Ya funcionaba desde la Fase 2 — el bucle ejecuta todas las `tool_calls` de una misma
@@ -408,8 +466,8 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-La Fase 6 —crear eventos en Google Calendar desde el chat— está apuntada y sin
-empezar. Detrás, sin orden: notas y gastos como dominios nuevos, búsqueda web,
-respuesta en audio, entender imágenes y un panel web. La lista completa y las
-decisiones ya tomadas para la Fase 6, al final de
-[ARCHITECTURE.md](ARCHITECTURE.md).
+La Fase 6 está escrita pero todavía no probada contra Google: aquí no hay credenciales
+con las que validar la firma del JWT ni el compartir del calendario, así que su primera
+ejecución real es en producción. Detrás, sin orden: notas y gastos como dominios nuevos,
+búsqueda web, respuesta en audio, entender imágenes y un panel web. La lista completa,
+al final de [ARCHITECTURE.md](ARCHITECTURE.md).

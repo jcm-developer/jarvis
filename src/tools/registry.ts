@@ -1,4 +1,5 @@
 import type { ToolSchema } from '../llm/provider';
+import { createEvent } from './calendar';
 import { recall, remember } from './memory';
 import { completeTask, createTask, deleteTask, listTasks, updateTask } from './tasks';
 import type { ToolDefinition } from './types';
@@ -16,6 +17,7 @@ export const TOOLS: ToolDefinition[] = [
   updateTask,
   completeTask,
   deleteTask,
+  createEvent,
   remember,
   recall,
 ];

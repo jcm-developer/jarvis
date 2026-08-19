@@ -1,10 +1,23 @@
 import type { Db } from '../db/client';
+import type { Deadline } from '../lib/deadline';
+import type { Env } from '../types';
 
 export interface ToolContext {
   userId: string;
   conversationId: string;
   timezone: string;
   db: Db;
+  /**
+   * Secrets y bindings. Entró con create_event, la primera herramienta que habla
+   * con un servicio de fuera por su cuenta: hasta entonces todo lo externo lo
+   * resolvía el agente y a los handlers les bastaba `db`.
+   */
+  env: Env;
+  /**
+   * Presupuesto de tiempo del mensaje. Una herramienta que llama por red pide aquí
+   * su tope en vez de fijar uno propio, que es lo que ya nos costó una fase (§11).
+   */
+  deadline: Deadline;
   /**
    * El mensaje que ha escrito el usuario en este turno.
    *

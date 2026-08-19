@@ -1,15 +1,15 @@
 # Jarvis — Asistente personal por Telegram
 
 Documento de arquitectura. Fuente de verdad de las decisiones técnicas.
-Última revisión: 2026-08-18.
+Última revisión: 2026-08-19.
 
 ---
 
 ## 1. Qué es
 
 Un agente de IA al que se le escribe o se le manda audios por Telegram. El agente
-razona, decide qué herramientas ejecutar (crear tareas, consultar, recordar cosas)
-y responde. Todo corre en Cloudflare Workers, sin servidor propio, con Supabase
+razona, decide qué herramientas ejecutar (crear tareas, apuntar citas en el
+calendario, consultar, recordar cosas) y responde. Todo corre en Cloudflare Workers, sin servidor propio, con Supabase
 como base de datos.
 
 **Usuario único** (o lista blanca corta). No es un producto multi-tenant.
@@ -103,7 +103,9 @@ jarvis/
 │  ├─ tools/
 │  │  ├─ registry.ts           # Map<name, ToolDefinition>
 │  │  ├─ types.ts              # ToolDefinition, ToolContext, validadores de args
+│  │  ├─ guardrails.ts         # correcciones a lo que manda el modelo (fechas, títulos)
 │  │  ├─ tasks.ts              # create/list/update/complete/delete_task
+│  │  ├─ calendar.ts           # create_event
 │  │  ├─ memory.ts             # remember, recall
 │  │  └─ pending.ts            # acciones a la espera de confirmación (KV)
 │  │
@@ -112,6 +114,12 @@ jarvis/
 │  │  ├─ index.ts              # selección por env
 │  │  ├─ openai.ts             # Whisper de OpenAI
 │  │  └─ workers-ai.ts         # Whisper en el propio Worker
+│  │
+│  ├─ calendar/
+│  │  ├─ provider.ts           # interfaz CalendarClient (solo escritura)
+│  │  ├─ index.ts              # selección de proveedor
+│  │  ├─ google.ts             # Google Calendar por REST
+│  │  └─ google-auth.ts        # JWT RS256 con WebCrypto + token cacheado en KV
 │  │
 │  ├─ db/
 │  │  ├─ client.ts             # PostgREST a mano (service_role)
@@ -365,6 +373,7 @@ export type ToolResult =
 | `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. Reabre el aviso si cambia una fecha. | No |
 | `complete_task` | Marca como hecha. | No |
 | `delete_task` | Elimina permanentemente. | **Sí** |
+| `create_event` | Crea una cita en el calendario, con hora o de día completo. Solo escritura. | No |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
 | `recall` | Busca en memorias. | No |
 
@@ -523,6 +532,9 @@ ALLOWED_TELEGRAM_IDS      # secret, no var: el repo es público
 OPENAI_API_KEY            # LLM y transcripción, la misma clave
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
+GOOGLE_SA_EMAIL           # calendario: client_email de la service account
+GOOGLE_SA_PRIVATE_KEY     # calendario: private_key del mismo JSON, PEM incluido
+GOOGLE_CALENDAR_ID        # calendario: el id del calendario compartido, nunca "primary"
 GROQ_API_KEY              # opcional, solo si LLM_PROVIDER = "groq"
 NVIDIA_API_KEY            # opcional, solo si LLM_PROVIDER = "nvidia"
 
@@ -756,7 +768,96 @@ suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
 
 ---
 
-## 13. Roadmap
+## 13. Calendario
+
+Una herramienta, `create_event`, que escribe una cita en el calendario del usuario.
+**Solo escritura, a propósito.** Leer el calendario —para que el briefing cuente las
+reuniones del día— arrastra tokens de sincronización incremental, expansión de eventos
+recurrentes y zonas horarias de las recurrencias: es otro proyecto. Y como el modelo
+prometería consultarlo si le dejáramos la duda, el prompt declara explícitamente que
+no puede.
+
+`create_event` es una tool aparte de `create_task` y no un campo suyo. La frontera es
+si la cosa ocupa un hueco del día a una hora concreta —el médico el jueves a las diez—
+o es algo que hay que hacer cuando se pueda —comprar pan—. Son dos sitios distintos y
+el modelo no puede mirar el calendario después para corregir el error, así que el
+prompt le pide preguntar cuando dude.
+
+### Autenticación: service account, no OAuth de usuario
+
+El flujo OAuth de usuario se descartó y el motivo es dedicado: una app de Google Cloud
+en estado *Testing* emite refresh tokens que **caducan a los siete días**, así que el
+bot se habría quedado muerto cada semana; y publicarla con el scope de Calendar exige
+pasar la verificación de Google. Con una service account y el calendario personal
+compartido con su email no caduca nada.
+
+El precio es firmar un JWT RS256 a mano con WebCrypto y canjearlo por un access token
+([src/calendar/google-auth.ts](src/calendar/google-auth.ts)). Tres detalles que
+importan:
+
+- **Scope `calendar.events`**, no `calendar`: puede crear y editar eventos, no
+  administrar ni borrar calendarios. La service account además no tiene **ningún** rol
+  de IAM, así que la clave no da acceso a nada más del proyecto.
+- **El token se cachea en KV 55 minutos**, no 60: uno recién sacado de la caché tiene
+  que sobrevivir a la petición que va a hacer con él. Son ~26 escrituras al día, lejos
+  del límite de 1.000 que ya gasta el dedupe.
+- **El `private_key` llega desde un secret en una sola línea, con `\n` literales**, que
+  es como está en el JSON de Google. El parser acepta esa forma, la de saltos reales y
+  la de comillas pegadas al copiar: es una cadena de 1.700 caracteres que se pega a
+  mano una vez, y un fallo ahí se manifiesta como un `401 invalid_grant` que no explica
+  nada.
+
+Alternativas descartadas: **Google Tasks** encaja mejor con el nombre del producto pero
+no admite service accounts, así que devuelve al refresh token que caduca. **CalDAV de
+iCloud** sigue siendo el plan B —autenticación más simple, app-specific password y
+Basic auth— pero obliga a descubrir la URL del calendario con `PROPFIND` y a escribir
+iCalendar a mano: CRLF, plegado a 75 octetos, `DTSTART` con `TZID`, escapado del
+`SUMMARY`. Falla en silencio, con el evento a la hora equivocada.
+
+### La trampa de la organización
+
+Google aplica de oficio en las organizaciones nuevas la política
+`iam.disableServiceAccountKeyCreation` ("secure by default"), que **impide crear la
+clave** con un diálogo que no dice que se pueda quitar. Se desactiva solo en este
+proyecto, no en toda la organización:
+
+```bash
+gcloud resource-manager org-policies disable-enforce \
+  iam.disableServiceAccountKeyCreation --project=<PROJECT_ID>
+```
+
+La consola cachea el estado, así que hay que recargar la pestaña antes de reintentar —o
+crear la clave desde Cloud Shell, que no pasa por ahí.
+
+### Dos límites que no se arreglan con código
+
+- **No se pueden invitar asistentes.** Una service account sin *domain-wide delegation*
+  —que requiere Google Workspace, no una cuenta Gmail— no puede añadir invitados y la
+  API lo rechaza. "Apúntame la cita" sí; "invita a David" no.
+- **Los avisos de la cita los da Google Calendar**, con la configuración del propio
+  calendario. Nuestro cron solo sabe de la tabla `tasks`, así que el prompt le prohíbe
+  al modelo prometer un aviso de un evento como si lo fuera a mandar él.
+
+### Lo que comparte con las tareas
+
+Los guardarraíles de fecha salieron de `tasks.ts` a
+[src/tools/guardrails.ts](src/tools/guardrails.ts) sin cambiarlos: el modelo se
+equivoca de día igual apuntando una cita que una tarea, y en una cita duele más porque
+ocupa un hueco de la agenda que el usuario cree libre. `honourUserInstant` es la
+variante de un solo campo —una cita empieza a una hora y no tiene el par
+fecha-límite/aviso—; el reparto entre los dos campos que hace `honourUserDeadlines` no
+aplica, las dos correcciones sí.
+
+`ToolContext` ganó `env` y `deadline` aquí: es la primera herramienta que habla con un
+servicio de fuera por su cuenta, y hasta ahora a los handlers les bastaba `db`. La
+autenticación y la escritura **comparten un solo presupuesto** en vez de tener cada una
+su tope, que es la misma lección que dejó el audio en §10. Por debajo de 3 s no se
+intenta: decirle al usuario que lo repita es mejor que lanzar una escritura que
+Cloudflare va a cancelar a mitad, dejándonos sin saber si el evento se creó.
+
+---
+
+## 14. Roadmap
 
 | Fase | Alcance | Estado |
 |---|---|---|
@@ -766,7 +867,7 @@ suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
 | **3** | Audio con Whisper | ✅ Hecha |
 | **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
-| **6** | Eventos en Google Calendar (escritura) | ⏳ Pendiente |
+| **6** | Eventos en Google Calendar (escritura) | 🚧 Escrita, sin probar en producción |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
 chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
@@ -774,36 +875,11 @@ chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
 Con la Fase 5 cerrada, el roadmap inicial está completo. La Fase 6 es el primer
 añadido de después; el resto sale de la lista del final, y ya no por orden.
 
-### Fase 6: eventos en el calendario
-
-Pendiente. Una tool `create_event` que escriba una cita en el calendario del
-usuario. Lo que ya está decidido, para no volver a discutirlo:
-
-- **Google Calendar con service account**, y el calendario personal compartido con
-  su email dándole permiso de edición. El flujo OAuth de usuario se descartó: una
-  app de Google Cloud en estado *Testing* emite refresh tokens que caducan a los
-  siete días, y publicarla con el scope de Calendar exige pasar verificación. Con
-  service account no caduca nada. El precio es firmar un JWT RS256 con WebCrypto
-  para pedir el access token, y cachearlo en KV una hora (~24 escrituras al día,
-  lejos del límite de 1.000).
-- **Google Tasks queda fuera** aunque encaje mejor con el nombre: no admite service
-  accounts, así que devuelve al refresh token que caduca.
-- **CalDAV de iCloud es el plan B**, no el primero. La autenticación es más simple
-  (app-specific password y Basic auth, sin tokens), pero obliga a descubrir la URL
-  del calendario con `PROPFIND` y a escribir iCalendar a mano: CRLF, plegado a 75
-  octetos, `DTSTART` con `TZID`, escapado del `SUMMARY`. Falla en silencio —el
-  evento aparece con la hora mal— y no se puede probar desde local.
-- **Solo escritura.** Leer el calendario para que el briefing cuente las reuniones
-  del día es otro proyecto: tokens de sincronización incremental, expansión de
-  eventos recurrentes y zonas horarias de las recurrencias.
-- **Tool separada de `create_task`.** No todo recado es una cita, y el briefing está
-  pensado como el día, no como el inventario.
-
-Trabajo previo que no es del calendario pero lo bloquea: `ToolContext` solo lleva
-`db` y datos del usuario, y esta es la primera tool que necesita secrets y
-presupuesto de tiempo. Hay que añadirle `env` y `deadline` y tocar los dos sitios
-donde se construye. Las fechas no hay que rehacerlas: `honourUserDeadlines` y los
-campos en minutos de `tasks.ts` valen tal cual, que es la parte cara.
+La Fase 6 está escrita y con el typecheck y las pruebas de módulo en verde, pero su
+estado no es ✅ todavía: la firma del JWT, el compartir del calendario y la hora a la
+que acaba el evento solo se pueden comprobar contra Google, y aquí no hay `.dev.vars`
+con esas credenciales. Pasa a hecha cuando una cita aparezca en el calendario real, a
+la hora correcta. Ver §13.
 
 ### Ideas para después
 

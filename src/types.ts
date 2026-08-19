@@ -19,6 +19,16 @@ export interface Env {
   SUPABASE_URL?: string;
   /** Se salta RLS: es la credencial con más poder del proyecto. */
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  /**
+   * Service account de Google, para escribir en el calendario. Opcionales: sin
+   * ellos, create_event devuelve un error explicando qué falta y el resto del
+   * asistente sigue funcionando igual.
+   */
+  GOOGLE_SA_EMAIL?: string;
+  /** El campo `private_key` del JSON de la service account, PEM incluido. */
+  GOOGLE_SA_PRIVATE_KEY?: string;
+  /** Id del calendario compartido. Nunca 'primary': ver src/calendar/index.ts. */
+  GOOGLE_CALENDAR_ID?: string;
 
   // --- Vars (wrangler.toml) ---
   DEFAULT_TIMEZONE: string;

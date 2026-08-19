@@ -5,3 +5,7 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Claves de service account de Google: el repo es publico
+*-key.json
+*service-account*.json
