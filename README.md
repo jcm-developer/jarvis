@@ -457,6 +457,17 @@ Con `npx wrangler tail` delante, los dos errores probables se distinguen solos:
 |---|---|
 | `google_token_failed` con `invalid_grant` | el `private_key` está mal pegado |
 | `calendar_insert_failed` con `404` | el `GOOGLE_CALENDAR_ID` está mal, o el calendario no está compartido con la service account (la API responde 404, no 403: para ella ese calendario no existe) |
+| `tool_calls: []` y el bot dice que no está configurado | el modelo contesta desde el historial; ver abajo |
+
+**`GOOGLE_CALENDAR_ID` no sale de Google Cloud ni del JSON de la service account.** Es
+el `Calendar ID` de *Settings and sharing → Integrate calendar*, que en el calendario
+principal es tu dirección de Gmail. Poner ahí el email `...iam.gserviceaccount.com` da
+exactamente el mismo 404: es quien escribe, no dónde se escribe.
+
+**Después de arreglar un secret, `/reset` antes de volver a probar.** El error de la
+herramienta se queda guardado en el historial y el modelo contesta desde ahí sin
+reintentar, así que la prueba mide la conversación vieja y no el arreglo. Se reconoce en
+el log: `llm_call` con `tool_calls: []`.
 
 ## Varias cosas en un mensaje
 
@@ -466,8 +477,7 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-La Fase 6 está escrita pero todavía no probada contra Google: aquí no hay credenciales
-con las que validar la firma del JWT ni el compartir del calendario, así que su primera
-ejecución real es en producción. Detrás, sin orden: notas y gastos como dominios nuevos,
-búsqueda web, respuesta en audio, entender imágenes y un panel web. La lista completa,
-al final de [ARCHITECTURE.md](ARCHITECTURE.md).
+Lo primero que se echa de menos de la Fase 6: **mover y borrar citas**. Hoy solo puede
+añadirlas, así que una cita mal puesta se arregla desde el móvil. Detrás, sin orden:
+notas y gastos como dominios nuevos, búsqueda web, respuesta en audio, entender imágenes
+y un panel web. La lista completa, al final de [ARCHITECTURE.md](ARCHITECTURE.md).

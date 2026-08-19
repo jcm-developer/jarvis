@@ -508,6 +508,19 @@ llamada al modelo y las tres deben caber en el presupuesto de tiempo del mensaje
 **Errores de tool:** nunca se propagan como excepción al usuario. Se devuelven al
 modelo como `{ok:false, error}` para que se autocorrija o lo explique.
 
+**Y se quedan en el historial, con un efecto secundario que costó una prueba entera.**
+Al configurar el calendario, la primera llamada devolvió "el calendario no está
+configurado", y esa frase se persistió en `messages` como resultado de herramienta. En
+los turnos siguientes el modelo la leía y contestaba de memoria **sin volver a llamar a
+la herramienta**: `finish_reason=stop` con la lista de `tool_calls` vacía, aunque el
+secret que faltaba ya estuviera puesto. Insistir no servía; hizo falta un `/reset`.
+
+Es coherente con cómo funciona un LLM —el contexto dice que eso no se puede hacer— pero
+tiene una consecuencia práctica: **al arreglar una configuración, hay que borrar la
+conversación antes de volver a probar**, o la prueba mide el historial y no el arreglo.
+No se corrige en código: filtrar los errores del historial le quitaría al modelo la
+memoria de lo que ya intentó, que es justo lo que evita que repita acciones.
+
 ---
 
 ## 9. Seguridad
@@ -867,7 +880,7 @@ Cloudflare va a cancelar a mitad, dejándonos sin saber si el evento se creó.
 | **3** | Audio con Whisper | ✅ Hecha |
 | **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
-| **6** | Eventos en Google Calendar (escritura) | 🚧 Escrita, sin probar en producción |
+| **6** | Eventos en Google Calendar (escritura) | ✅ Hecha |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
 chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
@@ -875,14 +888,17 @@ chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
 Con la Fase 5 cerrada, el roadmap inicial está completo. La Fase 6 es el primer
 añadido de después; el resto sale de la lista del final, y ya no por orden.
 
-La Fase 6 está escrita y con el typecheck y las pruebas de módulo en verde, pero su
-estado no es ✅ todavía: la firma del JWT, el compartir del calendario y la hora a la
-que acaba el evento solo se pueden comprobar contra Google, y aquí no hay `.dev.vars`
-con esas credenciales. Pasa a hecha cuando una cita aparezca en el calendario real, a
-la hora correcta. Ver §13.
+La Fase 6 dejó pendiente lo que se ve en cuanto se usa: no se puede mover ni borrar una
+cita, solo añadirla. Es el siguiente candidato y está al principio de la lista de abajo.
 
 ### Ideas para después
 
+- **Mover y borrar citas** (`update_event`, `delete_event`). Es lo primero que se echa
+  de menos: hoy una cita mal puesta solo se arregla desde el móvil. Necesita encontrar
+  el evento, y el scope `calendar.events` que ya usamos permite listar — buscar "el
+  dentista del jueves" en un rango de fechas no arrastra nada de lo que hizo descartar
+  la lectura para el briefing, que era la sincronización incremental y las recurrencias.
+  `delete_event` iría con confirmación, como `delete_task`.
 - Más dominios de tools: notas, gastos, listas de compra.
 - Búsqueda web como tool.
 - Respuesta en audio (TTS) para contestar a los audios en el mismo formato.
