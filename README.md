@@ -403,16 +403,26 @@ No hacen falta secrets nuevos. El trigger de [wrangler.toml](wrangler.toml) ya v
 activado, y la columna `remind_at` se añade reejecutando
 [supabase/schema.sql](supabase/schema.sql), que es idempotente.
 
-## Qué hace la Fase 6
+## Qué hacen las Fases 6 y 7: el calendario
 
 Apuntar citas en Google Calendar desde el chat. *"Apúntame el dentista el jueves a las
 diez"* crea el evento; *"comprar pan"* sigue siendo una tarea. La frontera es si ocupa
 un hueco del día a una hora concreta o es algo que hay que hacer cuando se pueda, y si
 el modelo duda, pregunta.
 
-**Solo escritura.** No puede consultar ni cambiar lo que ya tienes en el calendario, y
-el prompt se lo dice para que no te prometa que va a mirarlo. Los avisos de una cita los
-da tu propia app de calendario, no el cron de Jarvis.
+La Fase 6 solo sabía crear. La **Fase 7** añadió consultarlas, moverlas y borrarlas:
+
+```
+¿qué tengo el jueves?
+muévela al viernes
+la del dentista bórrala, que al final no puedo ir
+```
+
+Para cambiar o borrar necesita el id, así que primero consulta el calendario y luego
+actúa. Borrar pide confirmación con botones, como borrar una tarea, y la pregunta lleva
+el título de la cita para que sepas qué estás confirmando.
+
+Los avisos de una cita los da tu propia app de calendario, no el cron de Jarvis.
 
 ### Preparar Google (una vez)
 
@@ -442,12 +452,17 @@ da tu propia app de calendario, no el cron de Jarvis.
 > La consola cachea el estado: recarga la pestaña antes de reintentar, o crea la clave
 > con `gcloud iam service-accounts keys create`, que no pasa por ahí.
 
-### Dos cosas que no puede hacer y no es un bug
+### Tres cosas que no puede hacer y no son bugs
 
 - **Invitar a otras personas a un evento.** Una service account sin *domain-wide
   delegation* —que necesita Google Workspace, no una cuenta Gmail— no puede añadir
   invitados, y la API lo rechaza.
-- **Leer el calendario.** Ver §13 de [ARCHITECTURE.md](ARCHITECTURE.md) para el por qué.
+- **Mover una serie entera.** Si cambias una cita que se repite, cambia solo ese día. Te
+  lo dice al hacerlo.
+- **Ver el título de tus citas privadas.** El permiso que le das las muestra como hueco
+  ocupado y sin nombre. Las puede mover y borrar, pero no reconocerlas por el título.
+  Se arregla subiendo el permiso a *Make changes and see all event details*, a cambio de
+  darle acceso de lectura a todo.
 
 ### Si algo falla la primera vez
 
@@ -456,7 +471,8 @@ Con `npx wrangler tail` delante, los dos errores probables se distinguen solos:
 | En el log | Qué pasa |
 |---|---|
 | `google_token_failed` con `invalid_grant` | el `private_key` está mal pegado |
-| `calendar_insert_failed` con `404` | el `GOOGLE_CALENDAR_ID` está mal, o el calendario no está compartido con la service account (la API responde 404, no 403: para ella ese calendario no existe) |
+| `calendar_request_failed` con `404` en un `POST` o `GET` de lista | el `GOOGLE_CALENDAR_ID` está mal, o el calendario no está compartido con la service account (la API responde 404, no 403: para ella ese calendario no existe) |
+| `calendar_request_failed` con `404` en un `PATCH` o `DELETE` | el evento ya no existe; el calendario está bien |
 | `tool_calls: []` y el bot dice que no está configurado | el modelo contesta desde el historial; ver abajo |
 
 **`GOOGLE_CALENDAR_ID` no sale de Google Cloud ni del JSON de la service account.** Es
@@ -477,7 +493,7 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-Lo primero que se echa de menos de la Fase 6: **mover y borrar citas**. Hoy solo puede
-añadirlas, así que una cita mal puesta se arregla desde el móvil. Detrás, sin orden:
-notas y gastos como dominios nuevos, búsqueda web, respuesta en audio, entender imágenes
-y un panel web. La lista completa, al final de [ARCHITECTURE.md](ARCHITECTURE.md).
+Con el calendario completo, el siguiente candidato es que **el briefing cuente las
+reuniones del día**, que es la lectura masiva que sigue fuera. Detrás, sin orden: notas y
+gastos como dominios nuevos, búsqueda web, respuesta en audio, entender imágenes y un
+panel web. La lista completa, al final de [ARCHITECTURE.md](ARCHITECTURE.md).

@@ -373,7 +373,10 @@ export type ToolResult =
 | `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. Reabre el aviso si cambia una fecha. | No |
 | `complete_task` | Marca como hecha. | No |
 | `delete_task` | Elimina permanentemente. | **Sí** |
-| `create_event` | Crea una cita en el calendario, con hora o de día completo. Solo escritura. | No |
+| `create_event` | Crea una cita en el calendario, con hora o de día completo. | No |
+| `list_events` | Citas de un rango de días, con búsqueda por texto. Da los ids. | No |
+| `update_event` | Cambia hora, día, título o sitio de una cita. Conserva lo que no se toca. | No |
+| `delete_event` | Borra una cita permanentemente. | **Sí** |
 | `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
 | `recall` | Busca en memorias. | No |
 
@@ -424,6 +427,9 @@ cumplir en código, y el prompt se queda como ayuda, no como control.
 | Sin día en el mensaje, la hora del modelo se lleva al día de hoy | Lo mismo, cuando el usuario dice una hora concreta |
 | `create_task` limpia los títulos "Recordar X" / "Avisar de X" | Tareas que se llaman como su propio aviso |
 | `create_task` rechaza una tarea que repite las palabras de otra pendiente, y devuelve el id de la existente | Filas duplicadas para la misma cosa |
+| En un evento de día completo, la corrección de día no se aplica | Que un "todo el día" del 25 acabe hoy: sin hora, la premisa del corrector no existe |
+| `update_event` manda solo los campos que cambian | Borrar el sitio o las notas que el usuario puso desde el móvil |
+| Mover una cita sin decir duración lee la que tenía | Convertir "muévela al viernes" en una cita de otra longitud |
 
 El rechazo del duplicado no es un `throw`: es un `{ok: false, error}` que le dice al
 modelo qué id tiene que usar con `update_task`, así que se corrige en la vuelta
@@ -783,18 +789,24 @@ suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
 
 ## 13. Calendario
 
-Una herramienta, `create_event`, que escribe una cita en el calendario del usuario.
-**Solo escritura, a propósito.** Leer el calendario —para que el briefing cuente las
-reuniones del día— arrastra tokens de sincronización incremental, expansión de eventos
-recurrentes y zonas horarias de las recurrencias: es otro proyecto. Y como el modelo
-prometería consultarlo si le dejáramos la duda, el prompt declara explícitamente que
-no puede.
+Cuatro herramientas: `create_event`, `list_events`, `update_event` y `delete_event`.
+
+**La Fase 6 fue solo escritura y duró un mensaje.** Nada más probarla llegó un "bórrala
+que al final no puedo ir", y luego un "pues muévela al viernes": el bot contestó bien
+—dijo que no podía en vez de fingir— pero una cita mal puesta solo se arreglaba desde el
+móvil, que es exactamente el trabajo que este proyecto existe para ahorrar. La Fase 7
+añadió leer, modificar y borrar.
+
+Lo que sigue fuera es la lectura **masiva** para el briefing: eso sí arrastra tokens de
+sincronización incremental, expansión de recurrentes y zonas horarias de las
+recurrencias. Buscar "el dentista del jueves" en un rango de fechas no arrastra nada de
+eso, y el scope `calendar.events` que ya usábamos lo permitía sin tocar nada en Google.
 
 `create_event` es una tool aparte de `create_task` y no un campo suyo. La frontera es
 si la cosa ocupa un hueco del día a una hora concreta —el médico el jueves a las diez—
-o es algo que hay que hacer cuando se pueda —comprar pan—. Son dos sitios distintos y
-el modelo no puede mirar el calendario después para corregir el error, así que el
-prompt le pide preguntar cuando dude.
+o es algo que hay que hacer cuando se pueda —comprar pan—. Ahora que el modelo puede
+mirar los dos sitios, el prompt le pide buscar en ambos antes de decir que algo no
+existe: el primer intento de mover la cita falló porque buscó solo en tareas.
 
 ### Autenticación: service account, no OAuth de usuario
 
@@ -842,6 +854,42 @@ gcloud resource-manager org-policies disable-enforce \
 La consola cachea el estado, así que hay que recargar la pestaña antes de reintentar —o
 crear la clave desde Cloud Shell, que no pasa por ahí.
 
+### Modificar sin romper lo que no se pidió
+
+Tres decisiones de `update_event`, todas nacidas de que el modelo manda lo que le apetece
+y lo que hay en el calendario no lo puso él:
+
+- **Solo viajan los campos que cambian.** Un `PATCH` con el objeto entero pondría a vacío
+  la descripción, el sitio o los invitados que el usuario tenga puestos desde el móvil,
+  sin que nadie lo haya pedido y sin dejar rastro. `undefined` es "no lo toques"; `null`
+  es "bórralo".
+- **Mover una cita lee antes su duración.** "Muévela al viernes" quiere decir la misma
+  cita otro día, no una cita de otra longitud, y cuánto duraba solo lo sabe Google. Son
+  dos llamadas —`GET` y luego `PATCH`— y cada una pide su tope al `Deadline` por
+  separado.
+- **`singleEvents=true` al listar**, que expande las series en repeticiones concretas. El
+  id que devuelve es el de *esa* instancia, así que mover "el standup del lunes" no toca
+  el resto de la serie. Es lo que queremos, pero el usuario no lo adivina: cuando el
+  evento venía de una serie, el resultado lleva una nota para que el modelo lo diga.
+
+`delete_event` va con confirmación por botones, como `delete_task`, y la pregunta se
+construye leyendo el título del evento: "¿borro la cita 7f3a-...?" no lo revisa nadie. Si
+no se puede leer, se pregunta en genérico — lo que no puede pasar es borrar sin preguntar.
+
+### El día completo no pasa por el corrector de fechas
+
+`correctDay` parte de que el modelo acierta la **hora** y falla el día. En un evento de
+día completo no hay hora, así que la premisa no existe: aplicárselo traía la cita a hoy
+cuando el mensaje no nombraba un día que el detector reconociera. Ahora los "todo el día"
+usan la fecha del modelo tal cual, que es lo que sí hace bien.
+
+Ese fallo destapó otro más viejo, que afectaba también a las tareas:
+`mentionsAnotherDay` reconocía "el 25 de agosto" pero exigía el "el", así que "pásalo
+**al** 25 de agosto", "quedamos **para el** 3 de septiembre" y "la cita **del** 12 de
+enero" se le escapaban, y con ellas el corrector cambiaba la fecha a hoy. Ahora basta un
+número de día seguido de "de \<mes\>", con la lista de meses explícita para no confundir
+"el capítulo 12 de la serie" con una fecha.
+
 ### Dos límites que no se arreglan con código
 
 - **No se pueden invitar asistentes.** Una service account sin *domain-wide delegation*
@@ -850,6 +898,12 @@ crear la clave desde Cloud Shell, que no pasa por ahí.
 - **Los avisos de la cita los da Google Calendar**, con la configuración del propio
   calendario. Nuestro cron solo sabe de la tabla `tasks`, así que el prompt le prohíbe
   al modelo prometer un aviso de un evento como si lo fuera a mandar él.
+- **Los eventos privados llegan sin título.** El permiso compartido que usamos es el que
+  los muestra como hueco ocupado y nada más. Se puede mover y borrar uno —el id sí
+  viaja—, pero no identificarlo por su nombre, así que `list_events` lo devuelve marcado
+  como privado en vez de dejar que el modelo se invente de qué es. Subir el permiso a
+  *Make changes and see all event details* lo resuelve, a cambio de darle a la
+  credencial acceso de lectura a todo.
 
 ### Lo que comparte con las tareas
 
@@ -881,6 +935,7 @@ Cloudflare va a cancelar a mitad, dejándonos sin saber si el evento se creó.
 | **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
 | **6** | Eventos en Google Calendar (escritura) | ✅ Hecha |
+| **7** | Consultar, mover y borrar citas del calendario | ✅ Hecha |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
 chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
@@ -888,17 +943,16 @@ chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
 Con la Fase 5 cerrada, el roadmap inicial está completo. La Fase 6 es el primer
 añadido de después; el resto sale de la lista del final, y ya no por orden.
 
-La Fase 6 dejó pendiente lo que se ve en cuanto se usa: no se puede mover ni borrar una
-cita, solo añadirla. Es el siguiente candidato y está al principio de la lista de abajo.
+Las fases 6 y 7 salieron seguidas y en el mismo día: la 6 dejó el calendario en solo
+escritura y la primera conversación real dejó claro que eso no se sostenía. Está contado
+en §13, porque la lección no es sobre el calendario sino sobre por dónde se rompen los
+alcances recortados.
 
 ### Ideas para después
 
-- **Mover y borrar citas** (`update_event`, `delete_event`). Es lo primero que se echa
-  de menos: hoy una cita mal puesta solo se arregla desde el móvil. Necesita encontrar
-  el evento, y el scope `calendar.events` que ya usamos permite listar — buscar "el
-  dentista del jueves" en un rango de fechas no arrastra nada de lo que hizo descartar
-  la lectura para el briefing, que era la sincronización incremental y las recurrencias.
-  `delete_event` iría con confirmación, como `delete_task`.
+- **El briefing contando las reuniones del día**, ahora que sabemos leer el calendario.
+  Es la lectura masiva que sigue fuera: haría falta decidir qué hacer con las series y
+  con las citas sin hora, y el briefing tiene que seguir siendo aburrido y exacto.
 - Más dominios de tools: notas, gastos, listas de compra.
 - Búsqueda web como tool.
 - Respuesta en audio (TTS) para contestar a los audios en el mismo formato.

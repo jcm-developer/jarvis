@@ -103,7 +103,14 @@ export function mentionsAnotherDay(message: string): boolean {
     /\bpasado\s+manana\b/.test(text) ||
     /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(text) ||
     /\b(?:el\s+)?dia\s+\d{1,2}\b/.test(text) ||
-    /\bel\s+\d{1,2}\s+de\s+[a-z]+/.test(text) ||
+    // Un número de día seguido de "de <mes>" ya es una fecha, sin depender de la
+    // preposición que lo preceda. Antes exigía un "el" delante y se escapaban
+    // "pásalo AL 25 de agosto", "quedamos PARA EL 3 de septiembre" o "la cita DEL
+    // 12 de enero": con eso el corrector creía que el usuario no había dicho el día
+    // y le cambiaba la fecha a hoy.
+    /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|sep?tiembre|octubre|noviembre|diciembre)\b/.test(
+      text,
+    ) ||
     /\b\d{1,2}\/\d{1,2}/.test(text) ||
     /\b\d{4}-\d{2}-\d{2}\b/.test(text) ||
     /\b(semana|mes|ano)\s+(que\s+viene|siguiente|proximo|proxima)\b/.test(text) ||
