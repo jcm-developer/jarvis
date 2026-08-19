@@ -39,13 +39,17 @@ interface TelegramApiResponse<T> {
 export class TelegramClient {
   constructor(private readonly token: string) {}
 
-  private async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+  private async call<T>(
+    method: string,
+    payload: Record<string, unknown>,
+    timeoutMs = API_TIMEOUT_MS,
+  ): Promise<T> {
     const response = await fetch(`${API_BASE}/bot${this.token}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       // Sin esto una llamada colgada consume sola el margen de waitUntil.
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.max(1_000, timeoutMs)),
     });
 
     const body = (await response.json()) as TelegramApiResponse<T>;
@@ -89,23 +93,33 @@ export class TelegramClient {
   }
 
   /** Paso 1 para descargar audio (Fase 3): resuelve el file_path. */
-  async getFile(fileId: string): Promise<TelegramFile> {
-    return this.call<TelegramFile>('getFile', { file_id: fileId });
+  async getFile(fileId: string, timeoutMs?: number): Promise<TelegramFile> {
+    return this.call<TelegramFile>('getFile', { file_id: fileId }, timeoutMs);
   }
 
   fileUrl(filePath: string): string {
     return `${API_BASE}/file/bot${this.token}/${filePath}`;
   }
 
-  /** Resuelve el file_id y descarga el contenido. Usado para las notas de voz. */
+  /**
+   * Resuelve el file_id y descarga el contenido. Usado para las notas de voz.
+   *
+   * `timeoutMs` acota los dos pasos juntos, no cada uno. Antes `getFile` gastaba
+   * sus propios 8 s por fuera del presupuesto, así que una descarga "dentro de
+   * tope" podía llevarse 23 s de los 27 del mensaje y dejar al modelo sin tiempo
+   * para contestar.
+   */
   async downloadFile(fileId: string, timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS): Promise<ArrayBuffer> {
-    const file = await this.getFile(fileId);
+    const total = Math.max(1_000, timeoutMs);
+    const startedAt = Date.now();
+
+    const file = await this.getFile(fileId, total);
     if (!file.file_path) {
       throw new TelegramError('getFile', undefined, 'la respuesta no traía file_path');
     }
 
     const response = await fetch(this.fileUrl(file.file_path), {
-      signal: AbortSignal.timeout(Math.max(1_000, timeoutMs)),
+      signal: AbortSignal.timeout(Math.max(1_000, total - (Date.now() - startedAt))),
     });
     if (!response.ok) {
       throw new TelegramError('downloadFile', response.status, 'no se pudo descargar el fichero');
@@ -116,6 +130,17 @@ export class TelegramClient {
 
 /** Tope de descarga de la Bot API. Más allá, getFile falla. */
 export const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Si el corte fue por tiempo o por otra cosa.
+ *
+ * `AbortSignal.timeout()` lanza un `DOMException` con `name === 'TimeoutError'`,
+ * y según el runtime llega como `AbortError`. La distinción decide qué hacer:
+ * un corte por tiempo se reintenta, un 400 de Telegram no.
+ */
+export function isTimeout(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
 
 /** Telegram rechaza mensajes de más de 4096 caracteres. */
 const MAX_MESSAGE_LENGTH = 4096;

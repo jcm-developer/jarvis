@@ -180,7 +180,7 @@ Si el paso 2 da 200 y el bot sigue mudo, el problema es la whitelist: mira los l
 (**Compute → Workers → jarvis → Logs**), donde `update ignorado de usuario no
 autorizado: N` te da tu id real.
 
-### Límite conocido: audios largos
+### Límite conocido: todo tiene que caber en 27 s
 
 El plan free de Cloudflare concede **30 s** a `ctx.waitUntil()` tras responder y
 luego cancela la tarea. Todo el procesamiento de un mensaje tiene que caber ahí,
@@ -189,13 +189,16 @@ presupuesto de 27 s:
 
 | Paso | Tope |
 |---|---|
-| Descarga del audio | 15 s |
+| Descarga del audio (`getFile` + fichero) | 6 s por intento, con un reintento |
 | Transcripción | 10 s |
 | Cada llamada al modelo | 15 s, o lo que quede |
 
-El paso más lento y peor escalado es la descarga: el servidor de ficheros de
-Telegram tarda varios segundos con notas de voz de más de 15 s. **Los audios de
-más de ~20 s pueden fallar**, y cuando ocurre el bot lo dice y pide trocearlos.
+La descarga tuvo 15 s dando por hecho que las notas largas tardaban más. No es
+así: Telegram las manda en OGG/Opus a ~16 kbps, un minuto de audio son ~120 KB y
+bajan en menos de un segundo. Los fallos de descarga son **picos puntuales del
+servidor de ficheros de Telegram**, no cuestión de tamaño; por eso aparecían con
+el mismo audio unas veces sí y otras no. Ahora se corta antes y se reintenta una
+vez, siempre que quede presupuesto para transcribir y responder después.
 
 La solución real es **Cloudflare Queues** ($5/mes): desacopla el trabajo de la
 petición y elimina el techo. El cambio afecta casi solo a

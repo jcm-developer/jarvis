@@ -580,10 +580,19 @@ Si la transcripción viene vacía o falla, se responde pidiendo repetir — nunc
 manda una cadena vacía al LLM.
 
 **Reparto del presupuesto** (topes que cada paso pide al `Deadline`, no fijos):
-descarga 15 s, transcripción 10 s, cada llamada al modelo 15 s. El paso peor
-escalado es la descarga: el servidor de ficheros de Telegram tarda varios segundos
-con notas de voz largas, y por encima de ~20 s de audio el mensaje puede no caber
-en el presupuesto. Cuando pasa, el bot lo dice y pide trocear.
+descarga 6 s por intento con un reintento, transcripción 10 s, cada llamada al
+modelo 15 s. `getFile` y la descarga comparten ese tope en vez de tener cada uno
+el suyo: cuando `getFile` gastaba 8 s propios por fuera, una descarga "dentro de
+tope" podía llevarse 23 s de los 27 y dejar al modelo sin tiempo para responder.
+
+La descarga tuvo 15 s por el diagnóstico de que las notas largas tardaban más.
+No se sostiene: Telegram las manda en OGG/Opus a ~16 kbps, así que un minuto de
+audio son ~120 KB. Los fallos de descarga son picos puntuales del servidor de
+ficheros, no cuestión de tamaño, y por eso pasaban con el mismo audio unas veces
+sí y otras no. Se corta antes y se reintenta una vez, solo si queda presupuesto
+para transcribir y contestar después. Si aun así falla, el bot lo dice sin
+inventarse la causa, y el log `voice_download_failed` lleva duración, tamaño,
+tiempo gastado y presupuesto restante para poder mirarlo.
 
 ---
 
