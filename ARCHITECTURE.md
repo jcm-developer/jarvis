@@ -913,6 +913,37 @@ de que esto existiera. Y al listar, un `colorId` solo se traduce de vuelta si es
 nuestra tabla — los colores que el usuario haya puesto a mano desde la app no significan
 nada aquí, y darles un nombre sería inventarse un dato.
 
+### Repeticiones: y el alcance, que es lo peligroso
+
+Un cumpleaños es un evento de día completo con `RRULE:FREQ=YEARLY`. El modelo elige la
+frecuencia de una lista cerrada —anual, mensual, semanal, diario, laborables— y la cadena
+la escribe el código, por el mismo motivo que con los colores pero con más razón: una
+RRULE tiene su propia gramática, y una regla mal escrita **la API la acepta** y repite el
+cumpleaños el día equivocado durante los próximos veinte años.
+
+Añadir repeticiones obligó a arreglar algo antes de que existieran. Con
+`singleEvents=true`, los ids que devuelve `list_events` son de **repeticiones concretas**,
+así que un `delete_event` con ese id borra solo ese día: "borra el cumpleaños de mi
+hermana" habría dejado los otros veinte años puestos, y el usuario no se enteraría hasta
+el año siguiente. Por eso `update_event` y `delete_event` llevan `scope`:
+
+| `scope` | Sobre qué actúa |
+|---|---|
+| `esta` (por defecto) | Solo esa repetición |
+| `serie` | Todas, usando el `recurringEventId` que viene dentro del evento |
+
+El defecto es el menos destructivo, y **el alcance va en el texto de la confirmación**, no
+en una nota posterior: entre saltarse un cumpleaños y borrarlo para siempre no hay vuelta
+atrás, y es exactamente lo que el botón está confirmando.
+
+**Cambiar la hora de una serie entera no se hace.** Reanclar la serie desde aquí es donde
+se rompe en silencio: una regla con días fijos —los laborables— movida a un sábado deja de
+cuadrar con su propio patrón y desaparece una semana entera de citas sin ningún error. Se
+puede mover una repetición suelta, o cambiarle a la serie el título, el sitio o la
+categoría; para reprogramarla, la app del calendario. La herramienta lo dice en el error y
+el prompt lo declara en la lista de límites, que sale más barato que gastar una iteración
+en descubrirlo.
+
 ### El día completo no pasa por el corrector de fechas
 
 `correctDay` parte de que el modelo acierta la **hora** y falla el día. En un evento de

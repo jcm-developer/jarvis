@@ -232,6 +232,7 @@ function toGoogleEvent(input: CalendarEventInput): Record<string, unknown> {
     ...(input.description ? { description: input.description } : {}),
     ...(input.location ? { location: input.location } : {}),
     ...(input.colorId ? { colorId: input.colorId } : {}),
+    ...(input.recurrence ? { recurrence: input.recurrence } : {}),
     ...when,
     // Los avisos del evento los da Google con la configuración del propio
     // calendario. Nuestro cron no toca esto: solo sabe de la tabla `tasks`.
@@ -301,6 +302,7 @@ function toSummary(value: unknown): CalendarEventSummary | null {
     allDay,
     colorId: typeof raw['colorId'] === 'string' ? raw['colorId'] : null,
     recurring: typeof raw['recurringEventId'] === 'string',
+    seriesId: typeof raw['recurringEventId'] === 'string' ? raw['recurringEventId'] : null,
     url: typeof raw['htmlLink'] === 'string' ? raw['htmlLink'] : null,
   };
 }

@@ -31,6 +31,12 @@ export interface CalendarEventInput {
    * categoría, no el modelo: ver CATEGORY_COLORS en tools/calendar.ts.
    */
   colorId: string | null;
+  /**
+   * Regla de repetición en formato RRULE, ya construida por el código. El modelo
+   * elige la frecuencia de una lista cerrada y nunca escribe la cadena: ver
+   * RECURRENCE_RULES en tools/calendar.ts.
+   */
+  recurrence: string[] | null;
 }
 
 /** Solo los campos que se envían se tocan; el resto del evento se queda como está. */
@@ -75,6 +81,11 @@ export interface CalendarEventSummary extends CalendarEvent {
    * instancia no toca las demás, y hay que decírselo al usuario.
    */
   recurring: boolean;
+  /**
+   * Id de la serie a la que pertenece esta repetición, cuando lo es. Es el id con
+   * el que se toca el cumpleaños entero en vez del de este año.
+   */
+  seriesId: string | null;
 }
 
 export interface CalendarSearch {

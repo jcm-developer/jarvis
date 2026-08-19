@@ -417,12 +417,18 @@ La Fase 6 solo sabía crear. La **Fase 7** añadió consultarlas, moverlas y bor
 muévela al viernes
 la del dentista bórrala, que al final no puedo ir
 apunta que me voy a Lisboa del 23 al 26
+el cumple de Marta es el 3 de septiembre, todos los años
 ```
 
 Las citas de varios días se guardan como un solo evento, no como uno por día. Y según de
 qué sean —viaje, trabajo, estudios, personal, salud, social— salen de un color distinto en la app
 del calendario: el modelo deduce el tipo y el color lo pone el código, para que los viajes
 sean siempre del mismo color y no de uno cada semana.
+
+Las citas que se repiten (anual, mensual, semanal, diario, laborables) pueden tocarse de
+dos maneras, y **antes de cambiar o borrar una te pregunta cuál**: solo ese día, o todas
+las veces. El texto del botón de confirmación lo dice, porque entre saltarse un cumpleaños
+y borrarlo para siempre no hay vuelta atrás.
 
 Para cambiar o borrar necesita el id, así que primero consulta el calendario y luego
 actúa. Borrar pide confirmación con botones, como borrar una tarea, y la pregunta lleva
@@ -463,8 +469,10 @@ Los avisos de una cita los da tu propia app de calendario, no el cron de Jarvis.
 - **Invitar a otras personas a un evento.** Una service account sin *domain-wide
   delegation* —que necesita Google Workspace, no una cuenta Gmail— no puede añadir
   invitados, y la API lo rechaza.
-- **Mover una serie entera.** Si cambias una cita que se repite, cambia solo ese día. Te
-  lo dice al hacerlo.
+- **Cambiar la hora de una serie entera.** Puede mover una repetición suelta, y puede
+  cambiarle a la serie el título, el sitio o la categoría, pero reprogramarla entera no:
+  reanclar una serie desde fuera es donde se rompe en silencio, y una regla de días fijos
+  movida a un sábado hace desaparecer una semana de citas sin dar ningún error.
 - **Ver el título de tus citas privadas.** El permiso que le das las muestra como hueco
   ocupado y sin nombre. Las puede mover y borrar, pero no reconocerlas por el título.
   Se arregla subiendo el permiso a *Make changes and see all event details*, a cambio de

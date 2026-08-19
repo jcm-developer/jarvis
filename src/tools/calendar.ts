@@ -71,6 +71,32 @@ const COLOR_CATEGORIES: Record<string, string> = Object.fromEntries(
 );
 
 /**
+ * Frecuencia → regla de repetición.
+ *
+ * Mismo reparto que con los colores, y aquí más necesario: una RRULE es una cadena
+ * con su propia gramática, y un modelo que la escribe a mano produce reglas que la
+ * API acepta y que repiten el cumpleaños el día equivocado durante los próximos
+ * veinte años. Elige la frecuencia de una lista; la cadena la escribe el código.
+ */
+const RECURRENCE_RULES: Record<string, string> = {
+  anual: 'RRULE:FREQ=YEARLY',
+  mensual: 'RRULE:FREQ=MONTHLY',
+  semanal: 'RRULE:FREQ=WEEKLY',
+  diario: 'RRULE:FREQ=DAILY',
+  laborables: 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR',
+};
+
+const FREQUENCIES = Object.keys(RECURRENCE_RULES);
+
+/** Sobre qué actúan update_event y delete_event cuando la cita se repite. */
+const SCOPES = ['esta', 'serie'];
+
+const SCOPE_HINT =
+  'Solo para citas que se repiten: "esta" toca únicamente ese día y "serie" todas las ' +
+  'repeticiones. Por defecto "esta". Si el usuario no lo ha dejado claro, PREGÚNTASELO ' +
+  'antes: no es lo mismo saltarse un cumpleaños que borrarlo para siempre.';
+
+/**
  * Traduce la categoría a color, o null si no la reconoce.
  *
  * Un valor raro no es un error que merezca cortar la cita: el evento se crea sin
@@ -80,6 +106,32 @@ function colorFor(args: Record<string, unknown>): string | null {
   const category = optionalString(args, 'category', 20);
   if (category === null) return null;
   return CATEGORY_COLORS[category.toLowerCase()] ?? null;
+}
+
+/** La regla de repetición, o null si la cita pasa una sola vez. */
+function recurrenceFor(args: Record<string, unknown>): string[] | null {
+  const frequency = optionalString(args, 'repeats', 20);
+  if (frequency === null) return null;
+  const rule = RECURRENCE_RULES[frequency.toLowerCase()];
+  return rule ? [rule] : null;
+}
+
+/**
+ * El id sobre el que hay que actuar: el de esta repetición o el de la serie.
+ *
+ * Un `delete_event` con el id de una repetición borra solo ese día. Para "borra el
+ * cumpleaños de mi hermana" eso deja los otros veinte años puestos, y el usuario no
+ * se enteraría hasta el año que viene.
+ */
+function targetOf(
+  event: CalendarEventSummary,
+  args: Record<string, unknown>,
+): { id: string; wholeSeries: boolean } {
+  const scope = (optionalString(args, 'scope', 10) ?? 'esta').toLowerCase();
+  if (scope === 'serie' && event.seriesId !== null) {
+    return { id: event.seriesId, wholeSeries: true };
+  }
+  return { id: event.id, wholeSeries: false };
 }
 
 const NO_TIME = {
@@ -137,6 +189,14 @@ export const createEvent: ToolDefinition = {
       location: { type: 'string', description: 'Dónde es, si lo dice.' },
       description: { type: 'string', description: 'Detalles adicionales, si los hay.' },
       category: { type: 'string', enum: CATEGORIES, description: CATEGORY_HINT },
+      repeats: {
+        type: 'string',
+        enum: FREQUENCIES,
+        description:
+          'Si la cita se repite siempre: un cumpleaños es "anual", una clase semanal es ' +
+          '"semanal". No lo mandes para algo que pasa una vez. Un cumpleaños va además ' +
+          'con all_day.',
+      },
     },
     required: ['title'],
   },
@@ -240,6 +300,7 @@ export const createEvent: ToolDefinition = {
         startDate,
         endDate,
         colorId: colorFor(args),
+        recurrence: recurrenceFor(args),
         timezone: ctx.timezone,
       },
       budget,
@@ -275,6 +336,7 @@ export const createEvent: ToolDefinition = {
                 endDate,
                 allDay: true,
                 recurring: false,
+                seriesId: null,
                 colorId: null,
                 url: null,
               },
@@ -390,6 +452,7 @@ export const updateEvent: ToolDefinition = {
       location: { type: 'string', description: 'Nuevo sitio. Cadena vacía para quitarlo.' },
       description: { type: 'string', description: 'Nuevas notas. Cadena vacía para quitarlas.' },
       category: { type: 'string', enum: CATEGORIES, description: CATEGORY_HINT },
+      scope: { type: 'string', enum: SCOPES, description: SCOPE_HINT },
     },
     required: ['event_id'],
   },
@@ -411,6 +474,7 @@ export const updateEvent: ToolDefinition = {
 
     const touchesStart = args['start_at'] !== undefined || args['start_in_minutes'] !== undefined;
     const touchesEnd = args['end_at'] !== undefined || args['duration_minutes'] !== undefined;
+    const wantsSeries = (optionalString(args, 'scope', 10) ?? 'esta').toLowerCase() === 'serie';
 
     if (!touchesStart && !touchesEnd && Object.keys(patch).length === 1) {
       return {
@@ -421,7 +485,9 @@ export const updateEvent: ToolDefinition = {
       };
     }
 
-    if (touchesStart || touchesEnd) {
+    // Hace falta leer el evento para tocar la serie: el id que tiene el modelo es el
+    // de una repetición, y el de la serie solo viene dentro del evento.
+    if (touchesStart || touchesEnd || wantsSeries) {
       // Hay que leer el evento ANTES de decidir la hora nueva, por dos razones.
       // Una: mover el inicio sin tocar el final dejaría una cita de duración
       // absurda, y la que tenía solo la sabe Google —"muévela al viernes" es la
@@ -435,35 +501,54 @@ export const updateEvent: ToolDefinition = {
       const current = await client.getEvent(eventId, budget);
       if (current === null) return notFound(eventId);
 
-      const chosen = touchesStart
-        ? (resolveOffset(args, 'start_in_minutes') ?? optionalIsoDate(args, 'start_at'))
-        : null;
-      const newStart =
-        touchesStart && !current.allDay ? honourUserInstant(chosen, ctx, 'start_at') : chosen;
+      const target = targetOf(current, args);
 
-      if (touchesStart && newStart === null) {
+      // Cambiar la HORA de una serie entera no lo hacemos. Reanclar la serie desde
+      // aquí es donde se rompe en silencio: una regla con días fijos (los
+      // laborables) movida a un sábado deja de cuadrar con su propio patrón, y el
+      // usuario no lo ve hasta que falta una semana entera de citas.
+      if (target.wholeSeries && (touchesStart || touchesEnd)) {
         return {
           ok: false,
-          error: 'No he entendido la nueva hora. Manda start_at en ISO 8601 o start_in_minutes.',
+          error:
+            'No puedo cambiar la hora de toda una serie de una vez. Puedo mover esta ' +
+            'repetición (scope="esta"), o cambiarle a la serie el título, el sitio o la ' +
+            'categoría. Para reprogramar la serie entera tiene que hacerlo él desde la ' +
+            'app del calendario: díselo así.',
         };
       }
 
-      const applied = applyNewTimes(current, newStart, args, ctx);
-      if (!applied.ok) return applied;
-      Object.assign(patch, applied.patch);
+      if (touchesStart || touchesEnd) {
+        const chosen = touchesStart
+          ? (resolveOffset(args, 'start_in_minutes') ?? optionalIsoDate(args, 'start_at'))
+          : null;
+        const newStart =
+          touchesStart && !current.allDay ? honourUserInstant(chosen, ctx, 'start_at') : chosen;
+
+        if (touchesStart && newStart === null) {
+          return {
+            ok: false,
+            error: 'No he entendido la nueva hora. Manda start_at en ISO 8601 o start_in_minutes.',
+          };
+        }
+
+        const applied = applyNewTimes(current, newStart, args, ctx);
+        if (!applied.ok) return applied;
+        Object.assign(patch, applied.patch);
+      }
 
       budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
       if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
-      const updated = await client.updateEvent(eventId, patch, budget);
-      return report(eventId, patch, current, ctx, updated.url);
+      const updated = await client.updateEvent(target.id, patch, budget);
+      return report(target.id, patch, current, ctx, updated.url, target.wholeSeries);
     }
 
     const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
     if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
     const updated = await createCalendarClient(ctx.env).updateEvent(eventId, patch, budget);
-    return report(eventId, patch, null, ctx, updated.url);
+    return report(eventId, patch, null, ctx, updated.url, false);
   },
 };
 
@@ -477,6 +562,7 @@ export const deleteEvent: ToolDefinition = {
     type: 'object',
     properties: {
       event_id: { type: 'string', description: 'El id devuelto por list_events.' },
+      scope: { type: 'string', enum: SCOPES, description: SCOPE_HINT },
     },
     required: ['event_id'],
   },
@@ -493,6 +579,17 @@ export const deleteEvent: ToolDefinition = {
         const event = await createCalendarClient(ctx.env).getEvent(eventId, budget);
         if (event) {
           const shown = event.title || 'esa cita';
+          const target = targetOf(event, args);
+
+          // El alcance va en la pregunta, no en la nota de después: entre borrar un
+          // cumpleaños de este año y borrarlo para siempre no hay vuelta atrás, y es
+          // justo lo que el botón está confirmando.
+          if (target.wholeSeries) {
+            return `¿Borro "${shown}" del calendario con TODAS sus repeticiones, para siempre?`;
+          }
+          if (event.recurring) {
+            return `¿Borro "${shown}" solo el ${whenOf(event, ctx.timezone)}, dejando el resto de las repeticiones?`;
+          }
           return `¿Borro del calendario "${shown}" (${whenOf(event, ctx.timezone)})?`;
         }
       } catch {
@@ -503,18 +600,38 @@ export const deleteEvent: ToolDefinition = {
   },
   handler: async (args, ctx): Promise<ToolResult> => {
     const eventId = requireString(args, 'event_id', 1024);
+    const wantsSeries = (optionalString(args, 'scope', 10) ?? 'esta').toLowerCase() === 'serie';
 
-    const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
+    let budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
     if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
     const client = createCalendarClient(ctx.env);
-    await client.deleteEvent(eventId, budget);
+    let targetId = eventId;
+    let wholeSeries = false;
+
+    // Solo se lee cuando hay que resolver la serie: el id de la serie vive dentro
+    // del evento y el modelo no lo tiene.
+    if (wantsSeries) {
+      const event = await client.getEvent(eventId, budget);
+      if (event === null) return notFound(eventId);
+      ({ id: targetId, wholeSeries } = targetOf(event, args));
+
+      budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
+      if (budget < MIN_CALENDAR_MS) return NO_TIME;
+    }
+
+    await client.deleteEvent(targetId, budget);
 
     console.info(
-      JSON.stringify({ event: 'calendar_event_deleted', provider: client.name, event_id: eventId }),
+      JSON.stringify({
+        event: 'calendar_event_deleted',
+        provider: client.name,
+        event_id: targetId,
+        whole_series: wholeSeries,
+      }),
     );
 
-    return { ok: true, data: { deleted: true } };
+    return { ok: true, data: { deleted: true, whole_series: wholeSeries } };
   },
 };
 
@@ -593,6 +710,7 @@ function report(
   before: CalendarEventSummary | null,
   ctx: ToolContext,
   url: string | null,
+  wholeSeries: boolean,
 ): ToolResult {
   const startIso = patch.startAt ?? null;
   const startDate = patch.startDate ?? null;
@@ -603,6 +721,7 @@ function report(
       event_id: eventId,
       start: startIso ?? startDate,
       recurring: before?.recurring ?? null,
+      whole_series: wholeSeries,
     }),
   );
 
@@ -613,16 +732,18 @@ function report(
       ...(patch.title ? { title: patch.title } : {}),
       ...(startIso ? { when: formatDayAndTime(new Date(startIso), ctx.timezone) } : {}),
       ...(startDate ? { when: `${startDate}, todo el día` } : {}),
-      // Con singleEvents=true el id es el de esta repetición, así que el cambio no
-      // toca el resto de la serie. El usuario tiene que saberlo o creerá que ha
-      // movido su reunión de todos los lunes.
-      ...(before?.recurring
-        ? {
-            note:
-              'Es una cita que se repite: el cambio afecta solo a este día, no a toda ' +
-              'la serie. Dile esto al usuario.',
-          }
-        : {}),
+      // Con singleEvents=true el id es el de esta repetición, así que por defecto el
+      // cambio no toca el resto de la serie. El usuario tiene que saber cuál de las
+      // dos cosas ha pasado, o creerá que ha movido su reunión de todos los lunes.
+      ...(wholeSeries
+        ? { note: 'El cambio se ha aplicado a TODAS las repeticiones. Dilo en tu respuesta.' }
+        : before?.recurring
+          ? {
+              note:
+                'Es una cita que se repite: el cambio afecta solo a este día, no a toda ' +
+                'la serie. Dile esto al usuario.',
+            }
+          : {}),
       ...(url ? { url } : {}),
     },
   };
