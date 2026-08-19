@@ -1,17 +1,17 @@
 /**
- * Plazos relativos escritos en castellano: "en 5 minutos", "dentro de media hora".
+ * Relative deadlines written in Spanish: "en 5 minutos", "dentro de media hora".
  *
- * Existe porque el modelo no es de fiar con las fechas y las reglas del prompt no
- * lo arreglaron. Medido en producción con `gpt-4o-mini`: tres intentos seguidos de
- * "avísame en N minutos" acabaron con la fecha del día siguiente, ignorando el
- * campo en minutos que se añadió justo para eso.
+ * This exists because the model cannot be trusted with dates and the prompt rules did
+ * not fix it. Measured in production with `gpt-4o-mini`: three consecutive attempts at
+ * "remind me in N minutes" ended up dated the following day, ignoring the minutes
+ * field that had been added for exactly that.
  *
- * Así que el plazo se lee del mensaje del usuario, que es la fuente auténtica, y
- * se usa para corregir lo que haya decidido el modelo. Lo dice CLAUDE.md: las
- * fechas relativas se resuelven en los handlers.
+ * So the deadline is read from the user's own message, which is the authentic source,
+ * and used to correct whatever the model decided. CLAUDE.md says as much: relative
+ * dates are resolved in the handlers.
  */
 
-/** Números escritos con letra que aparecen de verdad al hablar de plazos. */
+/** Spelled-out numbers that actually show up when people talk about deadlines. */
 const WORD_NUMBERS: Record<string, number> = {
   un: 1,
   uno: 1,
@@ -35,7 +35,7 @@ const WORD_NUMBERS: Record<string, number> = {
   sesenta: 60,
 };
 
-/** Expresiones que no son un número por delante de la unidad. */
+/** Expressions that are not a number followed by a unit. */
 const FIXED: Array<[RegExp, number]> = [
   [/\bmedia\s+hora\b/, 30],
   [/\bun\s+cuarto\s+de\s+hora\b/, 15],
@@ -45,27 +45,27 @@ const FIXED: Array<[RegExp, number]> = [
 ];
 
 /**
- * Minutos desde ahora que pide el mensaje, o null si no habla en relativo.
+ * Minutes from now that the message is asking for, or null when it is not relative.
  *
- * Solo reconoce minutos y horas: "en tres días" se deja al modelo, que con los
- * días no se equivoca tanto y donde una fecha concreta importa más que el plazo.
+ * Only minutes and hours are recognised: "in three days" is left to the model, which
+ * is less wrong with days, and where a concrete date matters more than the delay.
  */
 export function parseRelativeMinutes(message: string): number | null {
-  // Vacío cuando la acción viene de un botón de confirmación, sin texto nuevo.
+  // Empty when the action comes from a confirmation button, with no new text.
   if (!message) return null;
 
   const text = normalize(message);
 
-  // Tiene que haber una marca de plazo. Sin esto, "la reunión de las dos horas"
-  // se leería como un plazo de dos horas.
+  // There has to be a delay marker. Without this, "the two-hour meeting" would read
+  // as a two-hour delay.
   if (!/\b(en|dentro\s+de|de\s+aqui\s+a|pasados?)\b/.test(text)) return null;
 
   for (const [pattern, minutes] of FIXED) {
     if (pattern.test(text)) return minutes;
   }
 
-  // El "unos" opcional va solo en plural a propósito: aceptando el singular, en
-  // "en un minuto" se comía el "un" y luego no encontraba la cantidad.
+  // The optional "unos" is plural-only on purpose: accepting the singular made "en un
+  // minuto" swallow the "un" and then fail to find the amount.
   const match = text.match(
     /\b(?:en|dentro\s+de|de\s+aqui\s+a|pasados?)\s+(?:unos\s+|unas\s+)?([\p{L}]+|\d+)\s*(minutos?|mins?|m|horas?|h)\b/u,
   );
@@ -81,18 +81,19 @@ export function parseRelativeMinutes(message: string): number | null {
 
   const minutes = unit.startsWith('h') ? amount * 60 : amount;
 
-  // Un año de tope, igual que los campos de las herramientas.
+  // One year cap, same as the tool fields.
   return minutes > 525_600 ? null : minutes;
 }
 
 /**
- * ¿El mensaje dice de qué DÍA habla?
+ * Does the message say which DAY it is talking about?
  *
- * Es la pregunta que decide si podemos corregirle el día al modelo. Cuando el
- * usuario dice "avísame a las 13:14" sin más, el día es hoy y no hay discusión; si
- * dice "el jueves" o "el 19 de septiembre", el día lo pone él y no se toca.
+ * This is the question that decides whether we may correct the model's day. When the
+ * user just says "remind me at 13:14", the day is today and there is nothing to
+ * argue; if they say "on Thursday" or "on 19 September", the day is theirs and stays
+ * untouched.
  *
- * "Hoy", "esta tarde" y compañía cuentan como que NO hay otro día: refuerzan hoy.
+ * "Today", "this afternoon" and friends count as NO other day: they reinforce today.
  */
 export function mentionsAnotherDay(message: string): boolean {
   if (!message) return false;
@@ -103,11 +104,11 @@ export function mentionsAnotherDay(message: string): boolean {
     /\bpasado\s+manana\b/.test(text) ||
     /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(text) ||
     /\b(?:el\s+)?dia\s+\d{1,2}\b/.test(text) ||
-    // Un número de día seguido de "de <mes>" ya es una fecha, sin depender de la
-    // preposición que lo preceda. Antes exigía un "el" delante y se escapaban
-    // "pásalo AL 25 de agosto", "quedamos PARA EL 3 de septiembre" o "la cita DEL
-    // 12 de enero": con eso el corrector creía que el usuario no había dicho el día
-    // y le cambiaba la fecha a hoy.
+    // A day number followed by "de <month>" is already a date, whatever preposition
+    // precedes it. This used to require an "el" in front, so "pásalo AL 25 de agosto",
+    // "quedamos PARA EL 3 de septiembre" and "la cita DEL 12 de enero" all slipped
+    // through: the corrector then believed the user had named no day and moved the
+    // date to today.
     /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|sep?tiembre|octubre|noviembre|diciembre)\b/.test(
       text,
     ) ||
@@ -120,7 +121,7 @@ export function mentionsAnotherDay(message: string): boolean {
   );
 }
 
-/** Minúsculas y sin acentos: el usuario escribe "aquí" y también "aqui". */
+/** Lowercase and unaccented: the user writes both "aquí" and "aqui". */
 function normalize(text: string): string {
   return text
     .toLowerCase()

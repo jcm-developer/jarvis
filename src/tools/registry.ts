@@ -1,15 +1,16 @@
 import type { ToolSchema } from '../llm/provider';
+import { findFreeSlots, whatNow } from './agenda';
 import { createEvent, deleteEvent, listEvents, updateEvent } from './calendar';
 import { recall, remember } from './memory';
 import { completeTask, createTask, deleteTask, listTasks, updateTask } from './tasks';
 import type { ToolDefinition } from './types';
 
 /**
- * Catálogo de herramientas.
+ * The tool catalogue.
  *
- * Esto es el "manual de instrucciones" del agente, pero en forma de JSON Schema
- * en el campo `tools` de la petición, no en prosa dentro del prompt. El modelo
- * recibe firmas tipadas en vez de una descripción que tenga que interpretar.
+ * This is the agent's "instruction manual", except it takes the shape of JSON Schema
+ * in the request's `tools` field rather than prose inside the prompt. The model gets
+ * typed signatures instead of a description it has to interpret.
  */
 export const TOOLS: ToolDefinition[] = [
   createTask,
@@ -21,6 +22,8 @@ export const TOOLS: ToolDefinition[] = [
   listEvents,
   updateEvent,
   deleteEvent,
+  findFreeSlots,
+  whatNow,
   remember,
   recall,
 ];

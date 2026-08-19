@@ -1,27 +1,27 @@
-# Copia este fichero a `.dev.vars` para desarrollo local.
-# `.dev.vars` está en .gitignore — no se sube nunca.
+# Copy this file to `.dev.vars` for local development.
+# `.dev.vars` is in .gitignore — it never gets committed.
 #
-# En producción estos valores van con `wrangler secret put <NOMBRE>`.
-# Se ponen una sola vez: los deploys (incluidos los automáticos de Workers Builds)
-# no los sobrescriben.
+# In production these values go in with `wrangler secret put <NAME>`.
+# They are set once: deploys (including Workers Builds' automatic ones) do not
+# overwrite them.
 
 TELEGRAM_BOT_TOKEN="123456789:AA..."
-TELEGRAM_WEBHOOK_SECRET="una-cadena-larga-y-aleatoria"
+TELEGRAM_WEBHOOK_SECRET="a-long-random-string"
 
-# Tu telegram user id (te lo da @userinfobot). Varios separados por coma.
-# Es un secret, no una var, porque el repo es público.
+# Your telegram user id (@userinfobot gives it to you). Several, comma separated.
+# It is a secret and not a var because the repo is public.
 ALLOWED_TELEGRAM_IDS="123456789"
 
-# Fase 1 — clave del proveedor activo (ver LLM_PROVIDER en wrangler.toml).
+# Phase 1 — the active provider's key (see LLM_PROVIDER in wrangler.toml).
 # https://platform.openai.com/api-keys
 OPENAI_API_KEY="sk-..."
 
-# Alternativas ya soportadas:
-# GROQ_API_KEY="gsk_..."      https://console.groq.com   (gratis, muy rápido)
+# Alternatives already supported:
+# GROQ_API_KEY="gsk_..."      https://console.groq.com   (free, very fast)
 # NVIDIA_API_KEY="nvapi-..."  https://build.nvidia.com
 
-# Fase 2 — Supabase. Project Settings → API.
-# La service_role key se salta RLS: da acceso total a la base de datos.
-# Solo debe existir aquí (local, ignorado por git) y como secret en Cloudflare.
+# Phase 2 — Supabase. Project Settings → API.
+# The service_role key bypasses RLS: it grants full access to the database.
+# It should only exist here (local, git-ignored) and as a secret in Cloudflare.
 SUPABASE_URL="https://xxxx.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY="eyJ..."

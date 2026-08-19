@@ -3,20 +3,20 @@ import type { Db } from './client';
 import type { MessageRow } from './types';
 
 /**
- * Historial de conversación, en la tabla `messages`.
+ * Conversation history, in the `messages` table.
  *
- * Guarda la secuencia COMPLETA del turno, incluidas las llamadas a herramientas y
- * sus resultados. Guardar solo el texto visible parecía suficiente y no lo era: el
- * modelo perdía constancia de lo que ya había hecho y repetía acciones — creaba dos
- * veces la misma tarea al volver a mencionarla en el turno siguiente.
+ * It stores the COMPLETE sequence of the turn, tool calls and their results included.
+ * Storing only the visible text looked sufficient and was not: the model lost track of
+ * what it had already done and repeated actions — it created the same task twice when
+ * the user mentioned it again on the following turn.
  *
- * Antes vivía en KV con TTL de 7 días. Se mueve aquí por dos motivos: el plan free
- * de Cloudflare da 1.000 escrituras de KV al día y una por mensaje se comía el
- * presupuesto, y el historial es lo único que quedaba fuera de la base de datos,
- * así que no había forma de leer una conversación pasada más que por los logs.
+ * This used to live in KV with a 7-day TTL. It moved here for two reasons: Cloudflare's
+ * free plan allows 1,000 KV writes a day and one per message ate the budget, and the
+ * history was the only thing left outside the database, so there was no way to read a
+ * past conversation other than through the logs.
  */
 
-/** Los resultados de herramienta pueden ser largos; en el historial basta el resumen. */
+/** Tool results can be long; the summary is enough for the history. */
 const MAX_TOOL_CONTENT = 600;
 
 export interface StoredTurn {
@@ -24,20 +24,20 @@ export interface StoredTurn {
   content: string | null;
   toolCalls?: ToolCall[];
   toolCallId?: string;
-  /** Solo en role='user': de dónde salió el mensaje. */
+  /** Only on role='user': where the message came from. */
   source?: 'text' | 'voice';
-  /** Solo en audios: lo que devolvió el STT, para depurar transcripciones raras. */
+  /** Only on audio: what the STT returned, for debugging odd transcriptions. */
   transcriptRaw?: string;
 }
 
-/** Los N mensajes más recientes, en orden cronológico y listos para replayear. */
+/** The N most recent messages, in chronological order and ready to replay. */
 export async function loadHistory(
   db: Db,
   conversationId: string,
   limit: number,
 ): Promise<StoredTurn[]> {
-  // Se piden del más nuevo al más viejo porque es la única forma de quedarse con
-  // la cola sin traer la conversación entera; el índice está justo en ese orden.
+  // They are requested newest first because it is the only way to keep the tail
+  // without fetching the whole conversation; the index is in exactly that order.
   const rows = await db.select<MessageRow>('messages', {
     columns: 'role,content,tool_calls,tool_call_id',
     filters: { conversation_id: `eq.${conversationId}` },
@@ -49,10 +49,10 @@ export async function loadHistory(
 }
 
 /**
- * Persiste los turnos de una interacción.
+ * Persists the turns of one interaction.
  *
- * Nunca lanza: el usuario ya tiene su respuesta y perder el historial de un turno
- * es un fallo menor comparado con tragarse la respuesta por un error de escritura.
+ * It never throws: the user already has their answer, and losing one turn's history is
+ * a minor failure next to swallowing the reply over a write error.
  */
 export async function saveTurns(
   db: Db,
@@ -61,12 +61,12 @@ export async function saveTurns(
 ): Promise<void> {
   if (turns.length === 0) return;
 
-  // created_at explícito, un milisegundo por fila.
+  // Explicit created_at, one millisecond per row.
   //
-  // El default de la columna es now(), que en Postgres es el mismo instante para
-  // todas las filas de un INSERT: al releerlas ordenadas por fecha volverían en
-  // orden arbitrario. Y un mensaje 'tool' delante de la llamada que lo originó no
-  // es un desorden cosmético, es un 400 de la API que deja el bot mudo.
+  // The column default is now(), which in Postgres is the same instant for every row of
+  // an INSERT: reading them back ordered by date would return them in arbitrary order.
+  // And a 'tool' message ahead of the call that produced it is not cosmetic disorder,
+  // it is a 400 from the API that leaves the bot mute.
   const base = Date.now();
 
   try {
@@ -89,17 +89,17 @@ export async function saveTurns(
 }
 
 /**
- * Borra la conversación (/reset).
+ * Deletes the conversation (/reset).
  *
- * Borrado real, no marca de corte: si el usuario pide olvidar, se olvida. La
- * auditoría de lo que el agente *hizo* no se pierde con esto — vive en
- * `tool_call_logs`, que es la tabla que se consulta cuando algo salió raro.
+ * A real delete, not a cut-off marker: if the user asks to forget, it is forgotten. The
+ * audit trail of what the agent *did* is not lost with this — it lives in
+ * `tool_call_logs`, which is the table you go to when something looked off.
  */
 export async function clearHistory(db: Db, conversationId: string): Promise<void> {
   await db.delete('messages', { conversation_id: `eq.${conversationId}` }, { returning: 'minimal' });
 }
 
-/** Convierte el historial guardado al formato que espera el proveedor. */
+/** Converts the stored history into the shape the provider expects. */
 export function toLLMMessages(turns: StoredTurn[]): LLMMessage[] {
   return turns.map((turn) => {
     const message: LLMMessage = { role: turn.role, content: turn.content };
@@ -118,16 +118,16 @@ export function toolTurn(toolCallId: string, result: unknown): StoredTurn {
 }
 
 /**
- * Descarta mensajes del principio hasta llegar a uno que pueda abrir el contexto.
+ * Drops messages from the front until one that can open the context is reached.
  *
- * Obligatorio, no cosmético: la ventana puede cortar justo entre un assistant con
- * tool_calls y su resultado, y la API rechaza un 'tool' huérfano con un 400 que
- * dejaría el bot mudo hasta hacer /reset.
+ * Mandatory, not cosmetic: the window can cut right between an assistant message with
+ * tool_calls and its result, and the API rejects an orphan 'tool' with a 400 that would
+ * leave the bot mute until a /reset.
  *
- * Vale un 'user' o un 'assistant' sin tool_calls. Aceptar el segundo importa: un
- * turno con muchas herramientas puede llenar la ventana entero, y entonces no hay
- * ningún 'user' que encontrar. Quedarse con la última respuesta del asistente es
- * peor que el historial completo, pero mucho mejor que empezar de cero.
+ * A 'user' or an 'assistant' without tool_calls will do. Accepting the second matters: a
+ * turn with many tools can fill the whole window, and then there is no 'user' left to
+ * find. Keeping the assistant's last reply is worse than the full history, but far
+ * better than starting from scratch.
  */
 function trimToValidStart(turns: StoredTurn[]): StoredTurn[] {
   const start = turns.findIndex(
@@ -136,7 +136,7 @@ function trimToValidStart(turns: StoredTurn[]): StoredTurn[] {
   return start === -1 ? [] : turns.slice(start);
 }
 
-/** El system prompt se construye en cada petición; si hubiera filas, se ignoran. */
+/** The system prompt is built on every request; any stored rows are ignored. */
 function isReplayable(row: MessageRow): boolean {
   return row.role !== 'system';
 }

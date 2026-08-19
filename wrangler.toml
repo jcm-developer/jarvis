@@ -3,96 +3,103 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ⚠️ Este fichero está en un repo PÚBLICO. Nada sensible aquí.
+# ⚠️ This file lives in a PUBLIC repo. Nothing sensitive here.
 #
-# Además, `wrangler deploy` sobrescribe [vars] con lo que haya en este fichero:
-# cualquier variable que edites en el dashboard se pierde en el siguiente push.
-# Este fichero es la única fuente de verdad para las vars.
+# On top of that, `wrangler deploy` overwrites [vars] with whatever is in this file:
+# any variable edited in the dashboard is lost on the next push. This file is the
+# only source of truth for vars.
 #
-# Los secrets funcionan al revés: `wrangler secret put` los guarda en Cloudflare
-# y los deploys NO los tocan. Se ponen una vez y sobreviven a todos los pushes.
+# Secrets work the other way round: `wrangler secret put` stores them in Cloudflare
+# and deploys do NOT touch them. Set once, they survive every push.
 #
 #   wrangler secret put TELEGRAM_BOT_TOKEN
 #   wrangler secret put TELEGRAM_WEBHOOK_SECRET
-#   wrangler secret put ALLOWED_TELEGRAM_IDS   # tu telegram user id, separados por coma
-#   wrangler secret put OPENAI_API_KEY      # modelo y transcripción, la misma clave
+#   wrangler secret put ALLOWED_TELEGRAM_IDS   # your telegram user id, comma separated
+#   wrangler secret put OPENAI_API_KEY      # model and transcription, the same key
 #   wrangler secret put SUPABASE_URL
 #   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 #
-# Calendario (Fase 6). Los tres salen del JSON de la service account y de la
-# pantalla de "Configuración y uso compartido" del calendario:
-#   wrangler secret put GOOGLE_SA_EMAIL         # client_email del JSON
-#   wrangler secret put GOOGLE_SA_PRIVATE_KEY   # private_key del JSON, con sus \n
-#   wrangler secret put GOOGLE_CALENDAR_ID      # el id del calendario, nunca "primary"
+# Calendar (phase 6). All three come from the service account JSON and from the
+# calendar's "Settings and sharing" screen:
+#   wrangler secret put GOOGLE_SA_EMAIL         # client_email from the JSON
+#   wrangler secret put GOOGLE_SA_PRIVATE_KEY   # private_key from the JSON, \n included
+#   wrangler secret put GOOGLE_CALENDAR_ID      # the calendar's id, never "primary"
 #
-# ⚠️ En el dashboard, los cambios en Variables and Secrets NO se aplican hasta
-#    pulsar el botón Deploy. Sin eso el Worker sigue corriendo sin ellos.
+# ⚠️ In the dashboard, changes under Variables and Secrets do NOT take effect until
+#    the Deploy button is pressed. Until then the Worker keeps running without them.
 [vars]
 DEFAULT_TIMEZONE = "Europe/Madrid"
 LOG_LEVEL = "info"
 
-# Proveedor de LLM. Cambiarlo son estas dos líneas más la API key correspondiente:
-# el código del agente no se entera.
+# LLM provider. Switching is these two lines plus the matching API key: the agent's
+# code never notices.
 #
-# Se empezó con NVIDIA NIM y hubo que abandonarlo: su free tier encola las
-# peticiones y un saludo simple se iba por encima de los 45 s de timeout.
+# It started on NVIDIA NIM and had to be abandoned: its free tier queues requests and
+# a simple greeting went past the 45 s timeout.
 #
-# Después se usó gpt-4o-mini y se cambió por seguir instrucciones fatal: con las
-# reglas delante duplicaba tareas, fechaba los avisos al día siguiente y titulaba
-# "Recordar X" habiéndolo prohibido. gpt-4.1-mini sale más caro de lista (0,40 $
-# por millón de entrada frente a 0,15) pero apenas en lo que de verdad gastamos:
-# el prefijo cacheado va a 0,10 $ frente a 0,075, y es la mayor parte de la carga.
+# Then came gpt-4o-mini, dropped for following instructions terribly: with the rules
+# right in front of it, it duplicated tasks, dated alerts to the following day and
+# titled things "Recordar X" having been forbidden to. gpt-4.1-mini costs more on
+# paper ($0.40 per million input against $0.15) but barely so on what we actually
+# spend: the cached prefix is $0.10 against $0.075, and it is most of the load.
 #
-# Alternativas ya soportadas:
-#   LLM_PROVIDER = "groq"    LLM_MODEL = "llama-3.3-70b-versatile"   (gratis, muy rápido)
+# Alternatives already supported:
+#   LLM_PROVIDER = "groq"    LLM_MODEL = "llama-3.3-70b-versatile"   (free, very fast)
 #   LLM_PROVIDER = "nvidia"  LLM_MODEL = "meta/llama-3.3-70b-instruct"
 #
-# Ojo al cambiar de modelo: debe soportar tool calling o la Fase 2 deja de
-# funcionar. Y en OpenAI, evita la serie "o" (razonamiento): rechaza max_tokens.
+# Careful when changing model: it must support tool calling or the whole of phase 2
+# stops working. And on OpenAI, avoid the "o" (reasoning) series: it rejects max_tokens.
 LLM_PROVIDER = "openai"
 LLM_MODEL = "gpt-4.1-mini"
 
-# Mensajes de historial que se arrastran como contexto. Cuenta también los de
-# herramienta (llamada + resultado), así que 30 son unos 10-12 turnos reales.
+# History messages dragged along as context. Tool rows count too (call + result), so
+# 30 is about 10-12 real turns.
 HISTORY_WINDOW = "30"
 
-# Vueltas máximas del bucle agéntico por mensaje. Bajado de 5 a 3: cada vuelta es
-# una llamada al modelo, y todas deben caber en el presupuesto de 27 s.
+# Maximum agentic loop rounds per message. Lowered from 5 to 3: every round is a model
+# call, and all of them have to fit the 27 s budget.
 MAX_AGENT_ITERATIONS = "3"
 
-# Hora LOCAL del briefing diario. La ventana de envío son 3 horas (con 8: a las 8,
-# 9 o 10): si el cron se salta su disparo, el siguiente lo recupera.
+# LOCAL hour of the daily briefing. The sending window is 3 hours (with 8: at 8, 9 or
+# 10): if the cron misses its tick, the next one recovers it.
 BRIEFING_HOUR = "8"
 
-# Transcripción de notas de voz.
-# "openai" acepta el OGG/Opus de Telegram sin conversión y acierta más en español.
-# Alternativa gratis, dentro de Cloudflare:
+# The day window find_free_slots searches for gaps in, in LOCAL hours.
+# Without it, "you are free from 03:00 to 07:00" would be a correct and useless answer:
+# the calendar is empty at night because people sleep, not because there is room.
+# DAY_END_HOUR accepts 24 to mean "until midnight".
+DAY_START_HOUR = "9"
+DAY_END_HOUR = "21"
+
+# Voice note transcription.
+# "openai" accepts Telegram's OGG/Opus without conversion and is more accurate in
+# Spanish. Free alternative, inside Cloudflare:
 #   STT_PROVIDER = "workers-ai"   STT_MODEL = "@cf/openai/whisper-large-v3-turbo"
 STT_PROVIDER = "openai"
 STT_MODEL = "whisper-1"
 STT_LANGUAGE = "es"
 
-# Estado efímero: dedupe de update_id, confirmaciones pendientes, cuotas.
-# Crear con:  npx wrangler kv namespace create STATE
-# El id no es un secreto: sin credenciales de cuenta no sirve de nada.
+# Ephemeral state: update_id dedupe, pending confirmations, quotas.
+# Create it with:  npx wrangler kv namespace create STATE
+# The id is not a secret: without account credentials it is useless.
 [[kv_namespaces]]
 binding = "STATE"
 id = "0e41914a829c4f87897b73eca34a2760"
 
-# Workers AI. Se usa a partir de la Fase 3 (Whisper). Declararlo ya no cuesta nada.
+# Workers AI. Used from phase 3 on (Whisper). Declaring it costs nothing.
 [ai]
 binding = "AI"
 
 [observability]
 enabled = true
 
-# Briefing y recordatorios (Fase 5). Cada cinco minutos, no cada hora: un aviso
-# pedido para las 12:10 tiene que llegar a las 12:10, y con el cron en punto lo
-# antes que podía salir era la hora siguiente. Son 288 invocaciones al día, nada
-# frente a las 100.000 del plan free, y el briefing sigue saliendo una vez al día.
+# Briefing and reminders (phase 5). Every five minutes, not hourly: an alert asked for
+# at 12:10 has to arrive at 12:10, and with the cron on the hour the earliest it could
+# go out was the following hour. That is 288 invocations a day, nothing against the free
+# plan's 100,000, and the briefing still goes out once a day.
 #
-# Dispara EN UTC: la hora local del usuario se calcula en el código
-# (src/lib/localtime.ts), porque España cambia de horario dos veces al año y un
-# cron fijo se descuadraría medio año.
+# It fires IN UTC: the user's local hour is computed in the code
+# (src/lib/localtime.ts), because Spain changes its clocks twice a year and a fixed cron
+# would be off for half of it.
 [triggers]
 crons = ["*/5 * * * *"]

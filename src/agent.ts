@@ -22,9 +22,9 @@ export interface AgentInput {
   chatId: number;
   from: TelegramUser | undefined;
   text: string;
-  /** Por defecto 'text'. Se guarda en el historial para depurar audios. */
+  /** 'text' by default. Stored in the history for debugging audio. */
   source?: 'text' | 'voice';
-  /** Lo que devolvió el STT, cuando el mensaje venía de un audio. */
+  /** What the STT returned, when the message came from audio. */
   transcriptRaw?: string;
 }
 
@@ -34,13 +34,13 @@ export interface AgentDeps {
   deadline: Deadline;
 }
 
-/** Margen que se reserva para enviar la respuesta antes de que nos corten. */
+/** Margin reserved for sending the reply before we get cut off. */
 const MIN_ROOM_FOR_CALL_MS = 4_000;
 const MAX_LLM_CALL_MS = 15_000;
 
 export type AgentResult =
   | { kind: 'text'; text: string }
-  /** Una o varias acciones destructivas esperan confirmación. */
+  /** One or more destructive actions are waiting for confirmation. */
   | { kind: 'confirm'; text: string; token: string };
 
 export class ConfigMissingError extends Error {}
@@ -50,7 +50,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const db = createDb(env);
 
   const identity = await resolveIdentity(env, db, input.from, input.chatId, config.defaultTimezone);
-  // Dos consultas independientes: en paralelo cuestan lo que la más lenta.
+  // Two independent queries: in parallel they cost whatever the slower one costs.
   const [history, memories] = await Promise.all([
     loadHistory(db, identity.conversationId, config.historyWindow),
     loadMemories(db, identity.userId),
@@ -62,13 +62,14 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     timezone: identity.timezone,
     db,
     env,
+    config,
     deadline,
     userMessage: input.text,
   };
 
-  // Turnos nuevos de esta interacción. Se persisten de golpe al final, no a
-  // medida que ocurren: un turno a medio guardar —un assistant con tool_calls
-  // sin sus resultados— es contexto que la API rechaza con un 400.
+  // New turns from this interaction. They are persisted in one go at the end, not as
+  // they happen: a half-saved turn —an assistant with tool_calls but without their
+  // results— is context the API rejects with a 400.
   const newTurns: StoredTurn[] = [
     {
       role: 'user',
@@ -95,8 +96,8 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const schemas = toolSchemas();
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration++) {
-    // Antes de empezar otra vuelta, comprobar que da tiempo. Lanzarla sabiendo
-    // que no cabe garantiza el silencio que precisamente queremos evitar.
+    // Before starting another round, check there is time. Launching it knowing it does
+    // not fit guarantees exactly the silence we are trying to avoid.
     if (!deadline.hasRoomFor(MIN_ROOM_FOR_CALL_MS)) {
       throw new DeadlineExceededError();
     }
@@ -137,15 +138,15 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     };
     messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
-    // Las destructivas se agrupan y se preguntan de una vez. Preguntarlas de una
-    // en una convierte "bórralas todas" en una cadena de diálogos absurda.
+    // Destructive calls are grouped and asked about at once. Asking one at a time turns
+    // "delete them all" into an absurd chain of dialogues.
     const confirmable = response.toolCalls.filter(
       (call) => getTool(call.name)?.requiresConfirmation,
     );
 
     if (confirmable.length > 0) {
-      // No se persiste nada de este turno: hasta que la persona diga que sí, no
-      // ha pasado nada que el modelo deba recordar.
+      // Nothing from this turn is persisted: until the person says yes, nothing has
+      // happened that the model should remember.
       const prompt = await buildConfirmationPrompt(confirmable, toolCtx);
       const token = await savePending(env, input.chatId, {
         calls: confirmable.map((call) => ({ toolName: call.name, args: parseArguments(call) })),
@@ -163,8 +164,8 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     }
   }
 
-  // Se agotaron las iteraciones. Sin este corte, un modelo confundido encadena
-  // llamadas hasta quemar la cuota del día en una sola conversación.
+  // The iterations ran out. Without this cut-off, a confused model chains calls until it
+  // burns the day's quota in a single conversation.
   console.warn(`agente agotó las ${config.maxAgentIterations} iteraciones`);
   return {
     kind: 'text',
@@ -189,8 +190,8 @@ async function buildConfirmationPrompt(
 }
 
 /**
- * Olvida la conversación reciente (/reset). Las memorias de largo plazo no se
- * tocan: son de otra tabla y de otro contrato con el usuario.
+ * Forgets the recent conversation (/reset). Long-term memories are left alone: they are
+ * another table and another contract with the user.
  */
 export async function forgetConversation(
   input: { chatId: number; from: TelegramUser | undefined },
@@ -207,7 +208,7 @@ export async function forgetConversation(
   await clearHistory(db, identity.conversationId);
 }
 
-/** Ejecuta las acciones ya confirmadas por el usuario. */
+/** Runs the actions the user has already confirmed. */
 export async function executeConfirmed(
   calls: PendingCall[],
   input: { chatId: number; from: TelegramUser | undefined },
@@ -227,8 +228,9 @@ export async function executeConfirmed(
     timezone: identity.timezone,
     db,
     env: deps.env,
+    config: deps.config,
     deadline: deps.deadline,
-    // Sin mensaje nuevo: esto viene de un botón de confirmación.
+    // No new message: this comes from a confirmation button.
     userMessage: '',
   };
 
@@ -267,8 +269,8 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
     args = parseArguments(call);
     result = await tool.handler(args, ctx);
   } catch (error) {
-    // Los errores vuelven al modelo como resultado, no como excepción: así puede
-    // corregirse en la siguiente iteración en vez de romper la conversación.
+    // Errors go back to the model as a result, not as an exception: that way it can
+    // correct itself on the next iteration instead of breaking the conversation.
     const message =
       error instanceof ToolValidationError
         ? error.message
@@ -292,7 +294,7 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
   return result;
 }
 
-/** Los modelos emiten JSON inválido de vez en cuando; no debe tumbar el turno. */
+/** Models emit invalid JSON now and then; it must not bring the turn down. */
 function parseArguments(call: ToolCall): Record<string, unknown> {
   if (!call.arguments.trim()) return {};
   try {
@@ -307,7 +309,7 @@ function parseArguments(call: ToolCall): Record<string, unknown> {
   }
 }
 
-/** También lo usa el cron: la comprobación de secrets vive en un solo sitio. */
+/** The cron uses it too: the secrets check lives in exactly one place. */
 export function createDb(env: Env): Db {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new ConfigMissingError('Faltan los secrets SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.');

@@ -1,10 +1,10 @@
--- Jarvis — esquema inicial
--- Ejecutar en Supabase: SQL Editor → New query → pegar → Run.
--- Idempotente: se puede reejecutar sin romper nada.
+-- Jarvis — database schema
+-- Run it in Supabase: SQL Editor → New query → paste → Run.
+-- Idempotent: it can be re-run without breaking anything.
 
 create extension if not exists "pgcrypto";
 
--- Usuarios autorizados -------------------------------------------------------
+-- Authorised users -----------------------------------------------------------
 create table if not exists users (
   id               uuid primary key default gen_random_uuid(),
   telegram_id      bigint unique not null,
@@ -14,7 +14,7 @@ create table if not exists users (
   created_at       timestamptz not null default now()
 );
 
--- Una conversación por chat de Telegram --------------------------------------
+-- One conversation per Telegram chat ----------------------------------------
 create table if not exists conversations (
   id                 uuid primary key default gen_random_uuid(),
   user_id            uuid not null references users(id) on delete cascade,
@@ -23,25 +23,25 @@ create table if not exists conversations (
   updated_at         timestamptz not null default now()
 );
 
--- Historial ------------------------------------------------------------------
--- `role` sigue el estándar de OpenAI para poder reconstruir el contexto del LLM
--- leyendo la tabla tal cual, sin transformaciones.
+-- History --------------------------------------------------------------------
+-- `role` follows the OpenAI standard so the LLM's context can be rebuilt by reading
+-- the table verbatim, with no transformations.
 create table if not exists messages (
   id               uuid primary key default gen_random_uuid(),
   conversation_id  uuid not null references conversations(id) on delete cascade,
   role             text not null check (role in ('user','assistant','tool','system')),
   content          text,
-  tool_calls       jsonb,        -- role='assistant' cuando pide herramientas
-  tool_call_id     text,         -- role='tool', enlaza con la llamada que lo originó
+  tool_calls       jsonb,        -- role='assistant' when it asks for tools
+  tool_call_id     text,         -- role='tool', links to the call that produced it
   source           text not null default 'text' check (source in ('text','voice')),
-  transcript_raw   text,         -- transcripción cruda del audio, para depurar
+  transcript_raw   text,         -- raw audio transcript, for debugging
   created_at       timestamptz not null default now()
 );
 create index if not exists messages_conversation_created_idx
   on messages (conversation_id, created_at desc);
 
--- Memoria de largo plazo -----------------------------------------------------
--- La escribe el propio agente mediante la tool remember().
+-- Long-term memory -----------------------------------------------------------
+-- Written by the agent itself through the remember() tool.
 create table if not exists memories (
   id           uuid primary key default gen_random_uuid(),
   user_id      uuid not null references users(id) on delete cascade,
@@ -52,19 +52,19 @@ create table if not exists memories (
   unique (user_id, key)
 );
 
--- Dominio: tareas ------------------------------------------------------------
+-- Domain: tasks --------------------------------------------------------------
 create table if not exists tasks (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references users(id) on delete cascade,
   title          text not null,
   notes          text,
   due_at         timestamptz,
-  remind_at      timestamptz,   -- cuándo avisar, si no es al vencer
-  priority       smallint not null default 2 check (priority between 1 and 3), -- 1 = alta
+  remind_at      timestamptz,   -- when to alert, when it is not at the deadline
+  priority       smallint not null default 2 check (priority between 1 and 3), -- 1 = high
   status         text not null default 'pending'
                    check (status in ('pending','done','cancelled')),
   completed_at   timestamptz,
-  reminded_at    timestamptz,   -- evita recordatorios duplicados en el cron
+  reminded_at    timestamptz,   -- prevents duplicate reminders from the cron
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
@@ -73,12 +73,12 @@ create index if not exists tasks_user_status_due_idx
 create index if not exists tasks_user_status_remind_idx
   on tasks (user_id, status, remind_at);
 
--- Para bases de datos creadas antes de que existiera remind_at: `create table if
--- not exists` no añade columnas a una tabla que ya está, así que hace falta esto.
+-- For databases created before remind_at existed: `create table if not exists` does
+-- not add columns to a table that is already there, so this is needed.
 alter table tasks add column if not exists remind_at timestamptz;
 
--- Observabilidad -------------------------------------------------------------
--- Sin esto, entender por qué el agente hizo algo raro es imposible.
+-- Observability --------------------------------------------------------------
+-- Without this, understanding why the agent did something odd is impossible.
 create table if not exists tool_call_logs (
   id                uuid primary key default gen_random_uuid(),
   conversation_id   uuid references conversations(id) on delete set null,
@@ -93,7 +93,7 @@ create table if not exists tool_call_logs (
 create index if not exists tool_call_logs_created_idx
   on tool_call_logs (created_at desc);
 
--- updated_at automático ------------------------------------------------------
+-- Automatic updated_at ------------------------------------------------------
 create or replace function touch_updated_at() returns trigger as $$
 begin
   new.updated_at = now();
@@ -114,8 +114,8 @@ create trigger tasks_touch before update on tasks
   for each row execute function touch_updated_at();
 
 -- Row Level Security ---------------------------------------------------------
--- Sin políticas: nadie accede salvo `service_role`, que las bypasea por diseño.
--- El Worker es el único cliente. Esto blinda la DB aunque se filtre la anon key.
+-- No policies: nobody gets in except `service_role`, which bypasses them by design.
+-- The Worker is the only client. This hardens the DB even if the anon key leaks.
 alter table users          enable row level security;
 alter table conversations  enable row level security;
 alter table messages       enable row level security;

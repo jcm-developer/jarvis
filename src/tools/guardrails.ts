@@ -4,18 +4,18 @@ import type { ToolContext } from './types';
 import { optionalInt } from './types';
 
 /**
- * Lo que hay que corregirle al modelo antes de escribir nada en ningún sitio.
+ * What has to be corrected in the model's output before anything gets written.
  *
- * Vivía dentro de tasks.ts hasta que create_event necesitó las mismas
- * correcciones. La lección de la fase de pruebas —una regla que el modelo cumple
- * voluntariamente no es una garantía— vale igual para una cita que para una
- * tarea, y tener dos copias de esto garantizaría que se separasen a la primera.
+ * This lived inside tasks.ts until create_event needed the very same corrections. The
+ * lesson from the test phase —a rule the model follows voluntarily is not a
+ * guarantee— applies to an appointment exactly as much as to a task, and keeping two
+ * copies of this would guarantee they drifted apart immediately.
  */
 
-/** Un año. Tope de los desplazamientos relativos: más allá huele a error del modelo. */
+/** One year. Cap for relative offsets: beyond that it smells like a model error. */
 export const MAX_OFFSET_MINUTES = 525_600;
 
-/** Margen que se le perdona al modelo antes de corregirle un plazo relativo. */
+/** Slack forgiven to the model before a relative deadline gets corrected. */
 export const DRIFT_TOLERANCE_MS = 10 * 60 * 1000;
 
 export const OFFSET_HINT =
@@ -23,12 +23,12 @@ export const OFFSET_HINT =
   '"dentro de media hora"). Preferible a calcular la fecha tú. Manda esto o el ISO, no ambos.';
 
 /**
- * Resuelve un desplazamiento en minutos a una fecha ISO.
+ * Resolves an offset in minutes into an ISO date.
  *
- * Existe porque el modelo se equivocaba de día. Pedirle "en 5 minutos" en ISO le
- * obliga a hacer aritmética de calendario, y con eso falla: acertaba la hora y
- * escribía la fecha de mañana, copiada de otra tarea del historial. El offset lo
- * calcula el Worker, que sí sabe qué hora es.
+ * It exists because the model kept getting the day wrong. Asking it for "in 5
+ * minutes" as ISO forces it into calendar arithmetic, and that is what it fails at:
+ * it got the time right and wrote tomorrow's date, copied from another task in the
+ * history. The offset is computed by the Worker, which does know what time it is.
  */
 export function resolveOffset(args: Record<string, unknown>, field: string): string | null {
   const minutes = optionalInt(args, field, 1, MAX_OFFSET_MINUTES);
@@ -41,23 +41,23 @@ export interface Deadlines {
 }
 
 /**
- * Corrige las fechas del modelo con lo que dijo el usuario en su mensaje.
+ * Corrects the model's dates with what the user actually said in their message.
  *
- * Las reglas del prompt no bastaron: `gpt-4o-mini` fechaba "avísame en 3 minutos" al
- * día siguiente incluso teniendo un campo en minutos para no calcular nada, y con
- * "avísame a las 13:14" hacía lo mismo. El mensaje del usuario es la fuente
- * auténtica, así que gana él.
+ * The prompt rules were not enough: `gpt-4o-mini` dated "remind me in 3 minutes" to
+ * the following day even with a minutes field available so it would not have to
+ * compute anything, and it did the same with "remind me at 13:14". The user's message
+ * is the authentic source, so the user wins.
  *
- * Solo se corrige cuando la desviación pasa de diez minutos: si el modelo acertó, no
- * hay nada que tocar.
+ * Correction only kicks in past a ten-minute deviation: if the model got it right,
+ * there is nothing to touch.
  */
 export function honourUserDeadlines(chosen: Deadlines, ctx: ToolContext): Deadlines {
   const minutes = parseRelativeMinutes(ctx.userMessage);
 
   if (minutes !== null) {
-    // El plazo describe el aviso cuando hay aviso; la fecha límite solo si no lo
-    // hay. "Llamar a David a las seis, avísame en cinco minutos" son dos horas
-    // distintas y el plazo es una de ellas, no las dos.
+    // The delay describes the reminder when there is one, and the due date only when
+    // there is not. "Call David at six, remind me in five minutes" holds two different
+    // times, and the delay is one of them, not both.
     if (chosen.remindAt !== null || chosen.dueAt === null) {
       return {
         dueAt: correctDay(chosen.dueAt, ctx, 'due_at'),
@@ -74,12 +74,12 @@ export function honourUserDeadlines(chosen: Deadlines, ctx: ToolContext): Deadli
 }
 
 /**
- * La misma corrección para un único instante.
+ * The same correction for a single instant.
  *
- * Una cita no tiene el par fecha-límite/aviso de una tarea: empieza a una hora y
- * ya está. El reparto que hace `honourUserDeadlines` entre los dos campos aquí no
- * aplica, pero las dos correcciones —el plazo relativo del mensaje y el día que
- * el modelo se inventa— sí.
+ * An appointment has no due-date/reminder pair like a task does: it starts at a time
+ * and that is it. The split `honourUserDeadlines` makes between the two fields does
+ * not apply here, but both corrections —the message's relative delay and the day the
+ * model makes up— do.
  */
 export function honourUserInstant(
   chosen: string | null,
@@ -100,19 +100,19 @@ function applyOffset(minutes: number, chosen: string | null, field: string): str
 }
 
 /**
- * Si el usuario no dijo de qué día habla, el día es hoy.
+ * When the user did not say which day they meant, the day is today.
  *
- * Este es el caso que se llevó tres intentos: el modelo acierta la hora ("13:14",
- * "17:30") y escribe la fecha de mañana. Aquí se le respeta la hora —que es lo que
- * hace bien— y se le cambia el día al que el usuario tenía en la cabeza.
+ * This is the case that took three attempts: the model gets the time right ("13:14",
+ * "17:30") and writes tomorrow's date. Here its time is respected —that is the part
+ * it does well— and the day is swapped for the one the user had in mind.
  *
- * Si el mensaje sí menciona otro día ("el jueves", "el 19 de septiembre"), no se
- * toca nada: ahí el día lo pone él y nosotros no tenemos nada que aportar.
+ * If the message does name another day ("on Thursday", "on 19 September"), nothing is
+ * touched: there the day is theirs and we have nothing to add.
  */
 function correctDay(chosen: string | null, ctx: ToolContext, field: string): string | null {
   if (chosen === null) return null;
-  // Sin mensaje no hay nada que interpretar: esto viene de un botón de confirmación
-  // y corregir a ciegas sería inventarse la intención del usuario.
+  // With no message there is nothing to interpret: this came from a confirmation
+  // button, and correcting blindly would mean inventing the user's intent.
   if (!ctx.userMessage) return chosen;
   if (mentionsAnotherDay(ctx.userMessage)) return chosen;
 
@@ -123,8 +123,8 @@ function correctDay(chosen: string | null, ctx: ToolContext, field: string): str
   let target = zonedInstant(today, clock.hour, clock.minute, ctx.timezone);
   if (target === null) return chosen;
 
-  // Esa hora ya pasó hoy: entonces hablaba de mañana. "Avísame a las 8" dicho a
-  // las once de la noche es mañana a las 8, no dentro de un año.
+  // That time already went by today, so they meant tomorrow. "Remind me at 8" said at
+  // eleven at night is tomorrow at 8, not a year from now.
   if (target.getTime() < now.getTime() - DRIFT_TOLERANCE_MS) {
     const tomorrow = localTomorrow(now, ctx.timezone);
     target = zonedInstant(tomorrow, clock.hour, clock.minute, ctx.timezone) ?? target;
@@ -144,8 +144,8 @@ function correct(
   detail: Record<string, unknown>,
 ): string {
   const corrected = target.toISOString();
-  // Se registra siempre: es la única forma de saber cuánto se equivoca el modelo
-  // sin depender de que el usuario lo note.
+  // Always logged: it is the only way to know how often the model is wrong without
+  // depending on the user noticing.
   console.warn(
     JSON.stringify({
       event: 'deadline_corrected',
@@ -159,10 +159,10 @@ function correct(
 }
 
 /**
- * Quita el "recordar" del título.
+ * Strips the "remind me to" out of the title.
  *
- * El prompt prohíbe los títulos tipo "Recordar llamar a David" y el modelo los
- * escribe igual. La tarea es llamar a David; recordarlo es lo que hace el cron.
+ * The prompt forbids titles like "Recordar llamar a David" and the model writes them
+ * anyway. The task is calling David; remembering it is what the cron does.
  */
 export function cleanTitle(title: string): string {
   const cleaned = title.replace(

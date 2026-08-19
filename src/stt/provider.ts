@@ -1,9 +1,9 @@
 /**
- * Contrato de transcripción. Mismo criterio que en la capa de LLM: el resto del
- * código no sabe quién transcribe.
+ * The transcription contract. Same criterion as in the LLM layer: the rest of the code
+ * does not know who transcribes.
  */
 export interface TranscribeOptions {
-  /** Tope para esta llamada. Lo fija el presupuesto global del mensaje. */
+  /** Cap for this call. Set by the message's global budget. */
   timeoutMs?: number;
 }
 

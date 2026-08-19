@@ -1,34 +1,34 @@
-# Jarvis — Asistente personal por Telegram
+# Jarvis — a personal assistant over Telegram
 
-Documento de arquitectura. Fuente de verdad de las decisiones técnicas.
-Última revisión: 2026-08-19.
-
----
-
-## 1. Qué es
-
-Un agente de IA al que se le escribe o se le manda audios por Telegram. El agente
-razona, decide qué herramientas ejecutar (crear tareas, apuntar citas en el
-calendario, consultar, recordar cosas) y responde. Todo corre en Cloudflare Workers, sin servidor propio, con Supabase
-como base de datos.
-
-**Usuario único** (o lista blanca corta). No es un producto multi-tenant.
+Architecture document. The source of truth for technical decisions.
+Last revised: 2026-08-19.
 
 ---
 
-## 2. Decisiones tomadas
+## 1. What this is
 
-| Decisión | Elección | Motivo |
+An AI agent you write to, or send voice notes to, over Telegram. The agent reasons,
+decides which tools to run (create tasks, put appointments on the calendar, look
+things up, remember facts) and answers. It all runs on Cloudflare Workers, with no
+server of our own, and Supabase as the database.
+
+**Single user** (or a short whitelist). This is not a multi-tenant product.
+
+---
+
+## 2. Decisions taken
+
+| Decision | Choice | Why |
 |---|---|---|
-| Plan Cloudflare | **Free** | Uso personal. 200 OK inmediato y trabajo en `waitUntil()` acotado (ver §11). Migrable a Queues sin rediseñar. |
-| Proveedor LLM | **OpenAI** (`gpt-4.1-mini`) tras capa de abstracción | Se empezó con NVIDIA NIM por su free tier y no aguantó producción: encolaba las peticiones y un saludo se iba de 45 s. La capa se queda: el motivo por el que existe sigue vigente. |
-| STT | **OpenAI Whisper** (`whisper-1`) | Acepta el OGG/Opus de Telegram sin convertir y acierta más en español. Workers AI queda como alternativa gratis por env var. |
-| DB | **Supabase** | Postgres gestionado + free tier + REST. |
-| Lenguaje | **TypeScript** | Tipado en los contratos de tools, que es donde más duele el error. |
+| Cloudflare plan | **Free** | Personal use. Immediate 200 OK plus bounded work in `waitUntil()` (see §11). Migratable to Queues without a redesign. |
+| LLM provider | **OpenAI** (`gpt-4.1-mini`) behind an abstraction layer | It started on NVIDIA NIM for the free tier and that did not survive production: it queued requests and a greeting took 45 s. The layer stays: the reason it exists still holds. |
+| STT | **OpenAI Whisper** (`whisper-1`) | It accepts Telegram's OGG/Opus without conversion and is more accurate in Spanish. Workers AI remains as the free alternative behind an env var. |
+| DB | **Supabase** | Managed Postgres, free tier, REST. |
+| Language | **TypeScript** | Typing in the tool contracts, which is where mistakes hurt most. |
 
 ---
 
-## 3. Diagrama de flujo
+## 3. Flow diagram
 
 ```
 Telegram
@@ -37,104 +37,106 @@ Telegram
 ┌─────────────────────────── Cloudflare Worker ───────────────────────────┐
 │                                                                          │
 │  [1] Guard                                                               │
-│      ├─ verifica X-Telegram-Bot-Api-Secret-Token                         │
-│      ├─ whitelist de telegram_user_id                                    │
-│      └─ dedupe update_id en KV (TTL 24h)                                 │
+│      ├─ verifies X-Telegram-Bot-Api-Secret-Token                         │
+│      ├─ whitelist of telegram_user_id                                    │
+│      └─ update_id dedupe in KV (TTL 24h)                                 │
 │                                                                          │
-│  [2] 200 OK inmediato + procesamiento en ctx.waitUntil()                 │
-│      acotado por un presupuesto global de 27 s; ver §11                  │
+│  [2] Immediate 200 OK + processing inside ctx.waitUntil()                │
+│      bounded by a global budget of 27 s; see §11                         │
 │                                                                          │
-│  [3] Normalización de entrada                                            │
-│      ├─ texto      → tal cual                                            │
-│      ├─ voz/audio  → getFile → descarga OGG → Whisper (OpenAI)  → texto  │
-│      └─ otro       → respuesta "no soportado aún"                        │
+│  [3] Input normalisation                                                 │
+│      ├─ text       → as is                                               │
+│      ├─ voice      → getFile → download OGG → Whisper (OpenAI) → text    │
+│      └─ anything   → "not supported yet" reply                           │
 │                                                                          │
 │  [4] sendChatAction("typing")                                            │
 │                                                                          │
-│  [5] Construcción del contexto                                           │
-│      system prompt + memorias + últimos N mensajes + mensaje actual       │
+│  [5] Building the context                                                │
+│      system prompt + memories + last N messages + current message        │
 │                                                                          │
-│  [6] Loop agéntico (máx 3 iteraciones)                                   │
+│  [6] Agentic loop (max 3 iterations)                                     │
 │      ┌──────────────────────────────────────────┐                        │
 │      │ LLM.chat(messages, tools)                │                        │
-│      │   ├─ finish_reason=stop      → salir     │                        │
+│      │   ├─ finish_reason=stop      → exit      │                        │
 │      │   └─ finish_reason=tool_calls            │                        │
-│      │        ├─ requiresConfirmation? → pausa  │──▶ inline keyboard      │
-│      │        ├─ ejecuta handler → Supabase     │                        │
-│      │        ├─ log en tool_call_logs          │                        │
-│      │        └─ push resultado a messages ─────┘                        │
+│      │        ├─ requiresConfirmation? → pause  │──▶ inline keyboard      │
+│      │        ├─ run handler → Supabase         │                        │
+│      │        ├─ log to tool_call_logs          │                        │
+│      │        └─ push result to messages ───────┘                        │
 │      └──────────────────────────────────────────┘                        │
 │                                                                          │
-│  [7] Persistencia + sendMessage                                          │
+│  [7] Persistence + sendMessage                                           │
 └──────────────────────────────────────────────────────────────────────────┘
 
-Cron Trigger (cada 5 min, UTC) ──▶  ¿toca briefing en hora local?  ──▶ sendMessage
-                               └─▶  ¿toca algún aviso ya?           ──▶ sendMessage
+Cron Trigger (every 5 min, UTC) ──▶  briefing due in local time?  ──▶ sendMessage
+                                └─▶  any reminder due?            ──▶ sendMessage
 ```
 
 ---
 
-## 4. Estructura de ficheros
+## 4. File layout
 
 ```
 jarvis/
 ├─ src/
 │  ├─ index.ts                 # entrypoint: fetch (webhook) + scheduled (cron)
-│  ├─ agent.ts                 # loop agéntico y confirmaciones
-│  ├─ config.ts                # lectura y validación de env
-│  ├─ types.ts                 # Env + tipos de la Telegram API
+│  ├─ agent.ts                 # agentic loop and confirmations
+│  ├─ config.ts                # env reading and validation
+│  ├─ types.ts                 # Env + Telegram API types
 │  │
 │  ├─ lib/
-│  │  ├─ deadline.ts           # presupuesto de tiempo compartido del mensaje
-│  │  ├─ localtime.ts          # hora local del usuario (Intl, cambios de hora)
-│  │  └─ relative-time.ts      # "en 5 minutos" leído del mensaje del usuario
+│  │  ├─ deadline.ts           # time budget shared across a message
+│  │  ├─ localtime.ts          # the user's local time (Intl, clock changes)
+│  │  ├─ relative-time.ts      # "en 5 minutos" read from the user's message
+│  │  └─ slots.ts              # interval arithmetic: busy time and free gaps
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
 │  │  ├─ client.ts             # sendMessage, sendChatAction, getFile, answerCallbackQuery
-│  │  └─ handler.ts            # router de updates + comandos
+│  │  └─ handler.ts            # update router + commands
 │  │
 │  ├─ llm/
-│  │  ├─ provider.ts           # interfaz LLMProvider  ◄── la capa de abstracción
-│  │  ├─ index.ts              # selección de proveedor por env
+│  │  ├─ provider.ts           # LLMProvider interface  ◄── the abstraction layer
+│  │  ├─ index.ts              # provider selection by env
 │  │  └─ providers/
-│  │     └─ openai-compatible.ts   # openai, groq y nvidia hablan el mismo protocolo
+│  │     └─ openai-compatible.ts   # openai, groq and nvidia speak the same protocol
 │  │
 │  ├─ tools/
 │  │  ├─ registry.ts           # Map<name, ToolDefinition>
-│  │  ├─ types.ts              # ToolDefinition, ToolContext, validadores de args
-│  │  ├─ guardrails.ts         # correcciones a lo que manda el modelo (fechas, títulos)
+│  │  ├─ types.ts              # ToolDefinition, ToolContext, argument validators
+│  │  ├─ guardrails.ts         # corrections applied to the model's output (dates, titles)
 │  │  ├─ tasks.ts              # create/list/update/complete/delete_task
-│  │  ├─ calendar.ts           # create_event
+│  │  ├─ calendar.ts           # create/list/update/delete_event + overlap check
+│  │  ├─ agenda.ts             # find_free_slots, what_now
 │  │  ├─ memory.ts             # remember, recall
-│  │  └─ pending.ts            # acciones a la espera de confirmación (KV)
+│  │  └─ pending.ts            # actions awaiting confirmation (KV)
 │  │
 │  ├─ stt/
-│  │  ├─ provider.ts           # interfaz Transcriber
-│  │  ├─ index.ts              # selección por env
-│  │  ├─ openai.ts             # Whisper de OpenAI
-│  │  └─ workers-ai.ts         # Whisper en el propio Worker
+│  │  ├─ provider.ts           # Transcriber interface
+│  │  ├─ index.ts              # selection by env
+│  │  ├─ openai.ts             # OpenAI's Whisper
+│  │  └─ workers-ai.ts         # Whisper inside the Worker itself
 │  │
 │  ├─ calendar/
-│  │  ├─ provider.ts           # interfaz CalendarClient (solo escritura)
-│  │  ├─ index.ts              # selección de proveedor
-│  │  ├─ google.ts             # Google Calendar por REST
-│  │  └─ google-auth.ts        # JWT RS256 con WebCrypto + token cacheado en KV
+│  │  ├─ provider.ts           # CalendarClient interface
+│  │  ├─ index.ts              # provider selection
+│  │  ├─ google.ts             # Google Calendar over REST
+│  │  └─ google-auth.ts        # RS256 JWT with WebCrypto + token cached in KV
 │  │
 │  ├─ db/
-│  │  ├─ client.ts             # PostgREST a mano (service_role)
-│  │  ├─ identity.ts           # users + conversations, cacheados en KV
-│  │  ├─ messages.ts           # historial de conversación
+│  │  ├─ client.ts             # hand-written PostgREST (service_role)
+│  │  ├─ identity.ts           # users + conversations, cached in KV
+│  │  ├─ messages.ts           # conversation history
 │  │  ├─ logs.ts               # tool_call_logs
-│  │  └─ types.ts              # filas de las tablas
+│  │  └─ types.ts              # table rows
 │  │
 │  ├─ prompts/
-│  │  └─ system.ts             # personalidad + reglas + memorias + fecha/hora/TZ
+│  │  └─ system.ts             # personality + rules + memories + date/time/TZ
 │  │
 │  └─ cron/
-│     ├─ index.ts              # qué se hace en cada disparo
-│     ├─ briefing.ts           # briefing diario a la hora local
-│     └─ reminders.ts          # avisos de tareas que vencen
+│     ├─ index.ts              # what happens on every tick
+│     ├─ briefing.ts           # daily briefing at the local hour
+│     └─ reminders.ts          # alerts for tasks falling due
 │
 ├─ supabase/
 │  └─ schema.sql
@@ -146,10 +148,10 @@ jarvis/
 
 ---
 
-## 5. Esquema de base de datos
+## 5. Database schema
 
 ```sql
--- Usuarios autorizados
+-- Authorised users
 create table users (
   id              uuid primary key default gen_random_uuid(),
   telegram_id     bigint unique not null,
@@ -159,7 +161,7 @@ create table users (
   created_at      timestamptz not null default now()
 );
 
--- Una conversación por chat de Telegram
+-- One conversation per Telegram chat
 create table conversations (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null references users(id) on delete cascade,
@@ -168,21 +170,21 @@ create table conversations (
   updated_at      timestamptz not null default now()
 );
 
--- Historial. role sigue el estándar OpenAI para poder replayearlo tal cual.
+-- History. `role` follows the OpenAI standard so it can be replayed verbatim.
 create table messages (
   id              uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references conversations(id) on delete cascade,
   role            text not null check (role in ('user','assistant','tool','system')),
   content         text,
-  tool_calls      jsonb,          -- cuando role='assistant' y pide tools
-  tool_call_id    text,           -- cuando role='tool'
+  tool_calls      jsonb,          -- when role='assistant' and it asks for tools
+  tool_call_id    text,           -- when role='tool'
   source          text not null default 'text' check (source in ('text','voice')),
-  transcript_raw  text,           -- audio original transcrito, antes de limpiar
+  transcript_raw  text,           -- the original transcribed audio, before cleanup
   created_at      timestamptz not null default now()
 );
 create index on messages (conversation_id, created_at desc);
 
--- Memoria de largo plazo. La escribe el propio agente con la tool remember().
+-- Long-term memory. Written by the agent itself through the remember() tool.
 create table memories (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null references users(id) on delete cascade,
@@ -193,26 +195,26 @@ create table memories (
   unique (user_id, key)
 );
 
--- Dominio: tareas
+-- Domain: tasks
 create table tasks (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null references users(id) on delete cascade,
   title           text not null,
   notes           text,
   due_at          timestamptz,
-  remind_at       timestamptz,             -- cuándo avisar, si no es al vencer
-  priority        smallint not null default 2 check (priority between 1 and 3), -- 1 alta
+  remind_at       timestamptz,             -- when to alert, when it is not at the deadline
+  priority        smallint not null default 2 check (priority between 1 and 3), -- 1 high
   status          text not null default 'pending'
                     check (status in ('pending','done','cancelled')),
   completed_at    timestamptz,
-  reminded_at     timestamptz,             -- evita recordatorios duplicados
+  reminded_at     timestamptz,             -- prevents duplicate reminders
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
 create index on tasks (user_id, status, due_at);
 create index on tasks (user_id, status, remind_at);
 
--- Observabilidad
+-- Observability
 create table tool_call_logs (
   id              uuid primary key default gen_random_uuid(),
   conversation_id uuid references conversations(id) on delete set null,
@@ -226,8 +228,8 @@ create table tool_call_logs (
 );
 create index on tool_call_logs (created_at desc);
 
--- RLS activo en todas. El Worker entra con service_role, que la bypasea.
--- Esto blinda la DB si algún día se expone la anon key.
+-- RLS is on for all of them. The Worker connects as service_role, which bypasses it.
+-- This hardens the database should the anon key ever be exposed.
 alter table users            enable row level security;
 alter table conversations    enable row level security;
 alter table messages         enable row level security;
@@ -236,51 +238,51 @@ alter table tasks            enable row level security;
 alter table tool_call_logs   enable row level security;
 ```
 
-### Historial: cómo se lee y se escribe
+### History: how it is read and written
 
-Vivió en KV durante las fases 1-3 y desde la fase 4 está en `messages`. El motivo
-no fue estético: el plan free da **1.000 escrituras de KV al día** y el historial
-gastaba una por mensaje, compitiendo con el dedupe de `update_id`, que no es
-negociable. Además era lo único fuera de la base de datos, así que releer una
-conversación pasada solo se podía hacer por los logs del Worker.
+It lived in KV through phases 1-3 and has been in `messages` since phase 4. The
+reason was not aesthetic: the free plan gives **1,000 KV writes a day** and the
+history spent one per message, competing with the `update_id` dedupe, which is not
+negotiable. It was also the only thing outside the database, so re-reading a past
+conversation could only be done through the Worker's logs.
 
-Tres decisiones que no se ven en el esquema:
+Three decisions that the schema does not show:
 
-- **Se guarda el turno completo**, no solo el texto visible: también el mensaje
-  `assistant` con sus `tool_calls` y cada resultado `tool`. Guardando solo el texto
-  el modelo perdía constancia de lo que ya había hecho y repetía acciones — creaba
-  dos veces la misma tarea al volver a mencionarla en el mensaje siguiente.
-- **Se escribe de golpe al final del turno**, en un único INSERT con varias filas.
-  Escribir a medida que ocurren dejaría turnos a medias si algo falla por el
-  camino, y un `assistant` con `tool_calls` sin sus resultados es contexto que la
-  API rechaza con un 400.
-- **`created_at` lo pone el Worker**, un milisegundo por fila, en vez de dejar el
-  `now()` de la columna. `now()` es el mismo instante para todas las filas de un
-  INSERT, así que al releerlas ordenadas por fecha volverían en orden arbitrario, y
-  un mensaje `tool` delante de la llamada que lo originó es otro 400.
+- **The whole turn is stored**, not just the visible text: the `assistant` message
+  with its `tool_calls` and every `tool` result go in too. Storing only the text made
+  the model lose track of what it had already done and repeat actions — it created
+  the same task twice when the user mentioned it again on the next message.
+- **It is written in one shot at the end of the turn**, in a single multi-row INSERT.
+  Writing as things happen would leave half turns behind if something failed on the
+  way, and an `assistant` with `tool_calls` and no results is context the API rejects
+  with a 400.
+- **`created_at` is set by the Worker**, one millisecond apart per row, instead of
+  leaving the column's `now()`. `now()` is the same instant for every row of an
+  INSERT, so reading them back ordered by date would return them in arbitrary order,
+  and a `tool` message ahead of the call that produced it is another 400.
 
-La lectura pide las `HISTORY_WINDOW` filas más recientes (orden descendente, que es
-justo el del índice) y las invierte. Si el corte cae dentro de un turno, se
-descartan las filas iniciales hasta una que pueda abrir el contexto: un `user`, o un
-`assistant` sin `tool_calls`. Aceptar el segundo importa porque un turno con muchas
-herramientas puede llenar la ventana entero y entonces no hay ningún `user` que
-encontrar.
+Reading asks for the `HISTORY_WINDOW` most recent rows (descending order, which is
+exactly the index's) and reverses them. If the cut lands inside a turn, the leading
+rows are dropped until one that can open the context: a `user`, or an `assistant`
+without `tool_calls`. Accepting the second matters because a turn with many tools can
+fill the whole window, and then there is no `user` left to find.
 
-`/reset` borra las filas de la conversación. Borrado real y no marca de corte: si el
-usuario pide olvidar, se olvida. La auditoría de lo que el agente *hizo* no se pierde
-por eso — vive en `tool_call_logs`, que es la tabla que se mira cuando algo salió mal.
-Las memorias de largo plazo tampoco se tocan: son otra tabla y otro contrato.
+`/reset` deletes the conversation's rows. A real delete and not a cut-off marker: if
+the user asks to forget, it is forgotten. The audit trail of what the agent *did* is
+not lost with it — that lives in `tool_call_logs`, which is the table you look at
+when something went wrong. Long-term memories are untouched too: another table,
+another contract.
 
-La tabla crece sin límite y de momento se acepta: 500 MB dan para años de
-conversación de una persona. Si algún día aprieta, es un `delete` por antigüedad en
-el cron, no un rediseño.
+The table grows without bound and that is accepted for now: 500 MB is years of one
+person's conversation. If it ever gets tight, it is a `delete` by age in the cron,
+not a redesign.
 
 ---
 
-## 6. Capa de abstracción del LLM
+## 6. The LLM abstraction layer
 
-El punto que permitió cambiar de proveedor sin tocar `agent.ts` cuando NVIDIA no
-aguantó. Ya se ha usado en serio una vez, así que se queda.
+The thing that made it possible to switch providers without touching `agent.ts` when
+NVIDIA did not hold up. It has already been used in anger once, so it stays.
 
 ```ts
 // src/llm/provider.ts
@@ -305,50 +307,50 @@ export interface LLMProvider {
 }
 ```
 
-Selección en runtime por `LLM_PROVIDER`. Cambiar de proveedor son dos vars más su
-API key; el agente no se entera.
+Selection happens at runtime through `LLM_PROVIDER`. Switching provider is two vars
+plus its API key; the agent never notices.
 
-| `LLM_PROVIDER` | Base URL | Modelo en uso / sugerido | Secret |
+| `LLM_PROVIDER` | Base URL | Model in use / suggested | Secret |
 |---|---|---|---|
-| `openai` (**en producción**) | `https://api.openai.com/v1` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
+| `openai` (**in production**) | `https://api.openai.com/v1` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
 | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` | `NVIDIA_API_KEY` |
 
-Los tres hablan el formato de OpenAI, así que comparten un único adaptador
-([openai-compatible.ts](src/llm/providers/openai-compatible.ts)) escrito con
-`fetch` directo: el SDK `openai` no entra en el bundle del Worker por peso y
-dependencias de Node. El adaptador reintenta una vez ante 429 y 5xx, nunca ante
-timeout (duplicaría el peor caso cuando ya vamos tarde) y limpia los bloques
-`<think>` que emiten los modelos de razonamiento.
+All three speak OpenAI's format, so they share a single adapter
+([openai-compatible.ts](src/llm/providers/openai-compatible.ts)) written with plain
+`fetch`: the `openai` SDK does not enter the Worker bundle, on weight and Node
+dependency grounds. The adapter retries once on 429 and 5xx, never on a timeout (that
+would double the worst case when we are already late) and strips the `<think>` blocks
+reasoning models emit.
 
-Gemini queda fuera a propósito: su API nativa no es compatible y necesitaría su
-propio adaptador.
+Gemini is left out on purpose: its native API is not compatible and would need an
+adapter of its own.
 
-> **Al cambiar de modelo, dos comprobaciones.** Que soporte function calling, o la
-> Fase 2 entera deja de funcionar. Y en OpenAI, evitar la serie "o" de
-> razonamiento: rechaza `max_tokens` y `temperature`, que el adaptador siempre manda.
+> **Two checks when changing model.** That it supports function calling, or the whole
+> of phase 2 stops working. And on OpenAI, avoid the "o" reasoning series: it rejects
+> `max_tokens` and `temperature`, which the adapter always sends.
 
-### Por qué se abandonó NVIDIA NIM
+### Why NVIDIA NIM was abandoned
 
-Era la elección inicial por su free tier. En producción, su cola de peticiones
-gratuitas hacía que un simple saludo tardara más de 45 s. Con ese tiempo no cabe
-ninguna arquitectura sobre el plan free de Workers: es lo que forzó el diseño de
-§11. Con OpenAI la misma respuesta tarda 2-5 s y el problema desapareció.
+It was the initial choice for its free tier. In production, its queue for free
+requests meant a simple greeting took over 45 s. No architecture on Workers' free plan
+fits inside that: it is what forced the design in §11. With OpenAI the same reply
+takes 2-5 s and the problem disappeared.
 
 ---
 
-## 7. Contrato de las tools
+## 7. The tool contract
 
-No hay "manual de instrucciones" en el prompt. Las funciones se declaran como
-JSON Schema y se pasan en el campo `tools` de la petición. El prompt solo lleva
-personalidad y reglas de negocio.
+There is no "instruction manual" in the prompt. The functions are declared as JSON
+Schema and passed in the request's `tools` field. The prompt only carries personality
+and business rules.
 
 ```ts
 export interface ToolDefinition {
   name: string;
-  description: string;              // el modelo decide por esto: ser explícito
+  description: string;              // the model decides from this: be explicit
   parameters: JSONSchema;
-  requiresConfirmation: boolean;    // acciones destructivas → confirmación humana
+  requiresConfirmation: boolean;    // destructive actions → human confirmation
   handler: (args: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -356,229 +358,249 @@ export interface ToolContext {
   userId: string;
   conversationId: string;
   timezone: string;
-  db: Db;                           // cliente PostgREST propio, no el SDK
+  db: Db;                           // our own PostgREST client, not the SDK
+  env: Env;                         // secrets and bindings
+  config: Config;                   // env already parsed: the day's window, among others
+  deadline: Deadline;               // the message's time budget
+  userMessage: string;              // what the user wrote on this turn
 }
 
 export type ToolResult =
   | { ok: true;  data: unknown }
-  | { ok: false; error: string };   // el error vuelve al modelo para que reaccione
+  | { ok: false; error: string };   // the error goes back to the model so it can react
 ```
 
-### Catálogo inicial
+### The catalogue
 
-| Tool | Descripción | Confirmación |
+| Tool | Description | Confirmation |
 |---|---|---|
-| `create_task` | Crea una tarea, con fecha límite y hora de aviso opcionales, en ISO o en minutos desde ahora. Rechaza duplicados. | No |
-| `list_tasks` | Lista con filtros: status, rango de fechas, prioridad. | No |
-| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado de una tarea existente. Reabre el aviso si cambia una fecha. | No |
-| `complete_task` | Marca como hecha. | No |
-| `delete_task` | Elimina permanentemente. | **Sí** |
-| `create_event` | Crea una cita en el calendario, con hora o de día completo. | No |
-| `list_events` | Citas de un rango de días, con búsqueda por texto. Da los ids. | No |
-| `update_event` | Cambia hora, día, título o sitio de una cita. Conserva lo que no se toca. | No |
-| `delete_event` | Borra una cita permanentemente. | **Sí** |
-| `remember` | Guarda un hecho de largo plazo sobre el usuario. | No |
-| `recall` | Busca en memorias. | No |
+| `create_task` | Creates a task, with an optional deadline and alert time, in ISO or in minutes from now. Rejects duplicates. | No |
+| `list_tasks` | Lists with filters: status, date range, priority. | No |
+| `update_task` | Changes the deadline, alert time, title, notes, priority or status of an existing task. Reopens the alert when a date changes. | No |
+| `complete_task` | Marks it as done. | No |
+| `delete_task` | Deletes permanently. | **Yes** |
+| `create_event` | Creates a calendar appointment, timed or all-day. Warns when it overlaps something. | No |
+| `list_events` | Appointments over a range of days, with text search. Returns the ids. | No |
+| `update_event` | Changes the time, day, title or location of an appointment. Preserves what is not touched. | No |
+| `delete_event` | Deletes an appointment permanently. | **Yes** |
+| `find_free_slots` | The free gaps in the calendar over one or more days, within the user's day window. | No |
+| `what_now` | Time left until the next appointment plus the pending tasks that fit, already crossed. | No |
+| `remember` | Stores a long-term fact about the user. | No |
+| `recall` | Searches the memories. | No |
 
-### Regla de fechas
+The tool descriptions and the `error` strings stay in Spanish: they are read by the
+model and end up shaping what reaches the chat, so they are product rather than code.
 
-El modelo no calcula fechas. Suena a precaución teórica y no lo es: `gpt-4o-mini`
-fechó una tarea de "en 5 minutos" **al día siguiente** —hora correcta, día equivocado,
-copiado del año-mes-día de otra tarea del historial—, y el aviso se quedó esperando 24
-horas. Cuatro medidas, en orden inverso al que se probaron:
+### The date rule
 
-1. **Lo que dijo el usuario manda, y lo aplica el handler.** Dos casos, y hubo que
-   cubrir los dos porque el modelo falla igual en ambos:
-   - **Plazos.** `lib/relative-time.ts` lee "en 5 minutos", "dentro de media hora" o
-     "en un par de horas" del mensaje y fija la fecha con la hora real del Worker.
-   - **Horas concretas.** "Avísame a las 13:14" no lleva día, así que el día es hoy.
-     Se conserva la hora que puso el modelo —eso lo hace bien— y se le cambia el día,
-     rodando a mañana si esa hora ya pasó. Si el mensaje **sí** menciona otro día
-     ("el jueves", "el 19 de septiembre", "la semana que viene"), no se toca nada.
+The model does not compute dates. That sounds like a theoretical precaution and it is
+not: `gpt-4o-mini` dated an "in 5 minutes" task **to the following day** —right time,
+wrong day, copied from the year-month-day of another task in the history— and the
+alert sat waiting for 24 hours. Four measures, in reverse order of when they were
+tried:
 
-   Solo se corrige cuando la desviación pasa de diez minutos, y nunca sin mensaje del
-   usuario: en el camino de los botones de confirmación no hay texto que interpretar y
-   corregir a ciegas sería inventarse la intención.
-2. **Plazos relativos como parámetro.** `create_task` y `update_task` aceptan
-   `due_in_minutes` y `remind_in_minutes`. Cuando el modelo los usa, no hay aritmética
-   de calendario que pueda salir mal. El problema es que muchas veces no los usa.
-3. **Anclas en el prompt.** Además de la fecha en castellano se inyecta el instante en
-   ISO 8601 con desplazamiento (`2026-08-18T12:27:00+02:00`) y las fechas de hoy y
-   mañana sueltas. Ayuda, pero no es suficiente por sí solo.
-4. **Que diga la fecha que guardó.** El prompt le pide repetir en la respuesta la fecha
-   tal como la devolvió la herramienta, para que el usuario detecte el error en el acto.
+1. **What the user said wins, and the handler applies it.** Two cases, and both had to
+   be covered because the model fails equally at each:
+   - **Delays.** `lib/relative-time.ts` reads "en 5 minutos", "dentro de media hora"
+     or "en un par de horas" out of the message and sets the date from the Worker's
+     real clock.
+   - **Explicit times.** "Remind me at 13:14" carries no day, so the day is today. The
+     hour the model set is kept —it does get that right— and the day is swapped,
+     rolling to tomorrow when that hour has already passed. If the message **does**
+     mention another day ("on Thursday", "on 19 September", "next week"), nothing is
+     touched.
 
-Las ambigüedades del tipo "el martes" siguen resolviéndose contra la TZ del usuario. No
-hay tool `get_current_time`: sería una vuelta más del bucle para un dato que ya viaja
-en el prompt.
+   Correction only happens past a ten-minute deviation, and never without a message
+   from the user: on the confirmation-button path there is no text to interpret, and
+   correcting blindly would mean inventing intent.
+2. **Relative delays as a parameter.** `create_task` and `update_task` accept
+   `due_in_minutes` and `remind_in_minutes`. When the model uses them there is no
+   calendar arithmetic left to go wrong. The problem is that it often does not.
+3. **Anchors in the prompt.** Along with the Spanish date, the instant is injected in
+   ISO 8601 with offset (`2026-08-18T12:27:00+02:00`) plus today's and tomorrow's
+   dates on their own. It helps, but it is not enough by itself.
+4. **Make it state the date it stored.** The prompt asks it to repeat, in its reply,
+   the date exactly as the tool returned it, so the user catches the mistake on the
+   spot.
 
-### Guardarraíles en los handlers
+Ambiguities like "on Tuesday" are still resolved against the user's TZ. There is no
+`get_current_time` tool: that would be another loop iteration for a value that
+already travels in the prompt.
 
-La lección de la fase de pruebas, y probablemente la más importante del proyecto:
-**una regla que el modelo tiene que cumplir voluntariamente no es una garantía.** Con
-`gpt-4o-mini` se documentaron tres reglas explícitas —no dupliques tareas, no titules
-"Recordar X", usa los campos en minutos— y las tres se incumplieron en el mismo turno,
-con el prompt nuevo ya en producción. Lo que el sistema no puede permitirse se hace
-cumplir en código, y el prompt se queda como ayuda, no como control.
+### Guardrails in the handlers
 
-| Guardarraíl | Qué impide |
+The lesson from the testing phase, and probably the most important one in the project:
+**a rule the model has to follow voluntarily is not a guarantee.** With `gpt-4o-mini`
+three explicit rules were documented —do not duplicate tasks, do not title things
+"Remember X", use the minute fields— and all three were broken in the same turn, with
+the new prompt already in production. What the system cannot afford is enforced in
+code, and the prompt stays as help rather than control.
+
+| Guardrail | What it prevents |
 |---|---|
-| El plazo del mensaje corrige la fecha del modelo | Avisos fechados mañana |
-| Sin día en el mensaje, la hora del modelo se lleva al día de hoy | Lo mismo, cuando el usuario dice una hora concreta |
-| `create_task` limpia los títulos "Recordar X" / "Avisar de X" | Tareas que se llaman como su propio aviso |
-| `create_task` rechaza una tarea que repite las palabras de otra pendiente, y devuelve el id de la existente | Filas duplicadas para la misma cosa |
-| En un evento de día completo, la corrección de día no se aplica | Que un "todo el día" del 25 acabe hoy: sin hora, la premisa del corrector no existe |
-| `update_event` manda solo los campos que cambian | Borrar el sitio o las notas que el usuario puso desde el móvil |
-| Mover una cita sin decir duración lee la que tenía | Convertir "muévela al viernes" en una cita de otra longitud |
+| The message's delay overrides the model's date | Alerts dated tomorrow |
+| With no day in the message, the model's time is moved to today | The same, when the user names an explicit hour |
+| `create_task` cleans up "Recordar X" / "Avisar de X" titles | Tasks named after their own alert |
+| `create_task` rejects a task repeating another pending one's words, and returns the existing id | Duplicate rows for the same thing |
+| On an all-day event, the day correction is not applied | An "all day" on the 25th ending up today: with no time, the corrector's premise does not exist |
+| `update_event` sends only the fields that change | Wiping the location or the notes the user set from their phone |
+| Moving an appointment without a stated duration reads the one it had | Turning "move it to Friday" into an appointment of a different length |
+| `create_event` checks the overlap **after** writing, and only with budget to spare | An appointment left unwritten because a courtesy lookup ate the message's time |
+| Free gaps and overlaps are computed in `lib/slots.ts`, never by the model | Invented gaps, which raise no error and sound exactly as confident |
 
-El rechazo del duplicado no es un `throw`: es un `{ok: false, error}` que le dice al
-modelo qué id tiene que usar con `update_task`, así que se corrige en la vuelta
-siguiente del bucle. Tiene escape: `force: true` para cuando de verdad son dos cosas
-distintas. Cuesta un SELECT antes del INSERT, que a esta escala no se nota.
+Rejecting a duplicate is not a `throw`: it is an `{ok: false, error}` telling the model
+which id to use with `update_task`, so it corrects itself on the next loop iteration.
+There is an escape hatch: `force: true` for when they really are two different things.
+It costs a SELECT before the INSERT, which at this scale nobody notices.
 
-Los guardarraíles se quedan, pero la conclusión práctica fue **cambiar de modelo**.
-`gpt-4o-mini` era el problema tanto como el diseño, así que en producción va
+The guardrails stay, but the practical conclusion was **changing model**.
+`gpt-4o-mini` was as much the problem as the design, so production runs
 `gpt-4.1-mini`.
 
-| Modelo | Entrada | Entrada cacheada | Salida |
+| Model | Input | Cached input | Output |
 |---|---|---|---|
-| `gpt-4o-mini` | 0,15 $/M | 0,075 $/M | 0,60 $/M |
-| `gpt-4.1-mini` | 0,40 $/M | 0,10 $/M | 1,60 $/M |
+| `gpt-4o-mini` | $0.15/M | $0.075/M | $0.60/M |
+| `gpt-4.1-mini` | $0.40/M | $0.10/M | $1.60/M |
 
-De lista es 2,7 veces más caro; en la práctica, mucho menos. Nuestra carga es ~97%
-tokens de entrada y la mayor parte es el prefijo estable —prompt y esquemas de
-herramientas—, que va al precio cacheado: ahí la diferencia es del 33%. La salida son
-30-60 tokens por respuesta y no mueve la aguja. A un volumen de uso personal el salto
-es de unos pocos euros al mes, y cambiarlo son dos líneas de `wrangler.toml`.
+List price is 2.7 times higher; in practice, far less. Our load is ~97% input tokens
+and most of it is the stable prefix —prompt and tool schemas—, which is billed at the
+cached rate: there the difference is 33%. Output is 30-60 tokens per reply and does
+not move the needle. At personal-use volume the jump is a few euros a month, and
+changing it is two lines of `wrangler.toml`.
 
-### El system prompt
+### The system prompt
 
-Personalidad y reglas de negocio, nunca la descripción de las herramientas: eso va
-como JSON Schema en el campo `tools`, y duplicarlo en prosa garantiza que las dos
-versiones se desincronicen.
+Personality and business rules, never the tool descriptions: those go as JSON Schema
+in the `tools` field, and duplicating them in prose guarantees the two versions drift
+apart.
 
-Tiene tres partes y el orden no es estético:
+It has three parts and the order is not cosmetic:
 
-1. **Qué puede y qué NO puede hacer**, enumerado. Sin esa lista el modelo ofrecía
-   buscar en internet y prometía "estar pendiente" de avisos que no había programado.
-   Declarar los límites sale más barato que arreglar una promesa incumplida.
-2. **Reglas de herramientas y de estilo**: texto plano (Telegram no renderiza nuestro
-   markdown), contar solo lo que la herramienta devolvió, sin halagos, y **preguntar
-   antes que suponer**. Esto último es una preferencia explícita del usuario: ante dos
-   tareas que encajan, un día ambiguo o la duda entre crear y actualizar, una pregunta
-   corta gana a acertar por casualidad. Cuando sí decide solo, tiene que decir qué ha
-   dado por supuesto en la misma frase.
-3. **Lo volátil, al final**: memorias y contexto temporal. OpenAI cachea el prefijo
-   común entre peticiones y cobra la mitad por esa parte; el prefijo se corta en el
-   primer carácter que difiere, así que la hora —que cambia cada minuto— puesta arriba
-   invalidaría el prompt entero en cada mensaje. Con ~97% de tokens de entrada, eso se
-   nota en la factura.
+1. **What it can and cannot do**, enumerated. Without that list the model offered to
+   search the internet and promised to "keep an eye on" alerts it had never scheduled.
+   Declaring the limits is cheaper than fixing a broken promise.
+2. **Tool and style rules**: plain text (Telegram does not render our markdown), tell
+   only what the tool returned, no flattery, and **ask rather than assume**. That last
+   one is an explicit preference of the user's: faced with two matching tasks, an
+   ambiguous day, or the choice between creating and updating, a short question beats
+   getting it right by luck. When it does decide alone, it has to say what it assumed
+   in the same sentence.
+3. **The volatile part, last**: memories and temporal context. OpenAI caches the
+   common prefix between requests and charges half for that part; the prefix is cut at
+   the first character that differs, so the time —which changes every minute— placed
+   at the top would invalidate the whole prompt on every message. With ~97% input
+   tokens, that shows up on the bill.
 
-### Flujo de confirmación
+The prompt's text is in Spanish, and stays that way: it is what the bot sounds like.
 
-1. El modelo pide `delete_task({id})`.
-2. El agente detecta `requiresConfirmation` y **no ejecuta**.
-3. Se guarda la tool call pendiente en KV (TTL 15 min). Confirmar la consume:
-   pulsar dos veces no ejecuta dos veces.
-4. Se envía inline keyboard: `✅ Confirmar` / `❌ Cancelar`.
-5. El `callback_query` recupera la llamada pendiente y ejecuta o descarta.
+### The confirmation flow
 
-Motivo: "borra la tarea de mañana" con tres tareas mañana es un fallo silencioso
-e irreversible. El modelo se equivoca; la confirmación lo contiene.
+1. The model asks for `delete_task({id})`.
+2. The agent sees `requiresConfirmation` and **does not execute**.
+3. The pending tool call is stored in KV (TTL 15 min). Confirming consumes it:
+   pressing twice does not execute twice.
+4. An inline keyboard is sent: `✅ Confirmar` / `❌ Cancelar`.
+5. The `callback_query` retrieves the pending call and runs or discards it.
+
+Why: "delete tomorrow's task" with three tasks tomorrow is a silent, irreversible
+failure. The model gets things wrong; the confirmation contains it.
 
 ---
 
-## 8. Loop agéntico
+## 8. The agentic loop
 
 ```
-messages = [system, ...memorias, ...historial, userMessage]
+messages = [system, ...memories, ...history, userMessage]
 
-para i en 1..MAX_AGENT_ITERATIONS (3):
-    si no queda presupuesto de tiempo: cortar con un mensaje honesto
-    res = llm.chat(messages, toolSchemas, {timeoutMs: lo que quede, máx 15 s})
-    si res.finishReason != 'tool_calls': devolver res.content
-    messages.push(assistant con tool_calls)
-    para cada tc en res.toolCalls:
-        si requiresConfirmation: guardar pendiente, salir del loop, pedir confirmación
-        result = ejecutar(tc)  # try/catch → los errores vuelven como contenido de tool
+for i in 1..MAX_AGENT_ITERATIONS (3):
+    if no time budget left: stop with an honest message
+    res = llm.chat(messages, toolSchemas, {timeoutMs: whatever is left, max 15 s})
+    if res.finishReason != 'tool_calls': return res.content
+    messages.push(assistant with tool_calls)
+    for each tc in res.toolCalls:
+        if requiresConfirmation: store pending, leave the loop, ask for confirmation
+        result = run(tc)  # try/catch → errors come back as tool content
         log(tc, result)
         messages.push({role:'tool', tool_call_id: tc.id, content: JSON(result)})
 
-si se agotan las iteraciones: pedir al modelo una respuesta final sin tools
+if the iterations run out: ask the model for a final answer with no tools
 ```
 
-**Por qué el límite:** sin tope, un modelo confundido llama tools en bucle y
-quema la cuota en una sola conversación. Bajado de 5 a 3 porque cada vuelta es una
-llamada al modelo y las tres deben caber en el presupuesto de tiempo del mensaje.
+**Why the limit:** without a cap, a confused model calls tools in a loop and burns the
+quota in a single conversation. Lowered from 5 to 3 because every round is a model
+call and all three have to fit the message's time budget.
 
-**Errores de tool:** nunca se propagan como excepción al usuario. Se devuelven al
-modelo como `{ok:false, error}` para que se autocorrija o lo explique.
+**Tool errors:** never propagated to the user as an exception. They go back to the
+model as `{ok:false, error}` so it can correct itself or explain.
 
-**Y se quedan en el historial, con un efecto secundario que costó una prueba entera.**
-Al configurar el calendario, la primera llamada devolvió "el calendario no está
-configurado", y esa frase se persistió en `messages` como resultado de herramienta. En
-los turnos siguientes el modelo la leía y contestaba de memoria **sin volver a llamar a
-la herramienta**: `finish_reason=stop` con la lista de `tool_calls` vacía, aunque el
-secret que faltaba ya estuviera puesto. Insistir no servía; hizo falta un `/reset`.
+**And they stay in the history, with a side effect that cost a whole test run.** While
+setting up the calendar, the first call returned "the calendar is not configured", and
+that sentence was persisted in `messages` as a tool result. On the following turns the
+model read it and answered from memory **without calling the tool again**:
+`finish_reason=stop` with an empty `tool_calls` list, even though the missing secret
+was already in place. Insisting did not help; it took a `/reset`.
 
-Es coherente con cómo funciona un LLM —el contexto dice que eso no se puede hacer— pero
-tiene una consecuencia práctica: **al arreglar una configuración, hay que borrar la
-conversación antes de volver a probar**, o la prueba mide el historial y no el arreglo.
-No se corrige en código: filtrar los errores del historial le quitaría al modelo la
-memoria de lo que ya intentó, que es justo lo que evita que repita acciones.
+This is consistent with how an LLM works —the context says that cannot be done— but it
+has a practical consequence: **after fixing a configuration, the conversation has to be
+wiped before testing again**, or the test measures the history instead of the fix. It
+is not corrected in code: filtering errors out of the history would take away the
+model's memory of what it already tried, which is precisely what stops it repeating
+actions.
 
 ---
 
-## 9. Seguridad
+## 9. Security
 
-| Vector | Mitigación |
+| Vector | Mitigation |
 |---|---|
-| Bot público — cualquiera puede escribirle | Whitelist `ALLOWED_TELEGRAM_IDS`. Los no autorizados se ignoran en silencio. |
-| Webhook falso | `secret_token` en `setWebhook`, validado contra `X-Telegram-Bot-Api-Secret-Token` en cada petición. |
-| Fuga de credenciales | Todo en `wrangler secret put`. `wrangler.toml` no contiene secretos y va a git. |
-| Acceso directo a la DB | RLS activa en todas las tablas. Solo `service_role`, solo desde el Worker. |
-| Doble ejecución por reintento | Dedupe de `update_id` en KV, TTL 24h. |
-| Prompt injection vía contenido | Los handlers validan a mano los argumentos del modelo (`tools/types.ts`); nunca se construye SQL desde texto del modelo. Sin Zod: son siete herramientas y no justifica la dependencia. |
-| Agotamiento de cuota | La whitelist es la defensa real, y `MAX_AGENT_ITERATIONS` acota el gasto por mensaje. No hay contador diario: con un solo usuario autorizado no hay a quién limitar. |
+| Public bot — anyone can message it | `ALLOWED_TELEGRAM_IDS` whitelist. Unauthorised users are ignored silently. |
+| Forged webhook | `secret_token` on `setWebhook`, validated against `X-Telegram-Bot-Api-Secret-Token` on every request. |
+| Credential leak | Everything under `wrangler secret put`. `wrangler.toml` holds no secrets and goes to git. |
+| Direct database access | RLS enabled on every table. Only `service_role`, only from the Worker. |
+| Double execution on retry | `update_id` dedupe in KV, TTL 24h. |
+| Prompt injection through content | The handlers validate the model's arguments by hand (`tools/types.ts`); SQL is never built from model text. No Zod: it is a handful of tools and does not justify the dependency. |
+| Quota exhaustion | The whitelist is the real defence, and `MAX_AGENT_ITERATIONS` bounds the spend per message. There is no daily counter: with a single authorised user there is nobody to rate-limit. |
 
-### Variables de entorno
+### Environment variables
 
 ```
-# Secrets — se ponen una vez y sobreviven a todos los deploys
+# Secrets — set once, they survive every deploy
 TELEGRAM_BOT_TOKEN
 TELEGRAM_WEBHOOK_SECRET
-ALLOWED_TELEGRAM_IDS      # secret, no var: el repo es público
-OPENAI_API_KEY            # LLM y transcripción, la misma clave
+ALLOWED_TELEGRAM_IDS      # a secret, not a var: the repo is public
+OPENAI_API_KEY            # LLM and transcription, the same key
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
-GOOGLE_SA_EMAIL           # calendario: client_email de la service account
-GOOGLE_SA_PRIVATE_KEY     # calendario: private_key del mismo JSON, PEM incluido
-GOOGLE_CALENDAR_ID        # calendario: el id del calendario compartido, nunca "primary"
-GROQ_API_KEY              # opcional, solo si LLM_PROVIDER = "groq"
-NVIDIA_API_KEY            # opcional, solo si LLM_PROVIDER = "nvidia"
+GOOGLE_SA_EMAIL           # calendar: the service account's client_email
+GOOGLE_SA_PRIVATE_KEY     # calendar: private_key from the same JSON, PEM included
+GOOGLE_CALENDAR_ID        # calendar: the shared calendar's id, never "primary"
+GROQ_API_KEY              # optional, only with LLM_PROVIDER = "groq"
+NVIDIA_API_KEY            # optional, only with LLM_PROVIDER = "nvidia"
 
-# Vars (wrangler.toml) — se SOBRESCRIBEN en cada deploy
+# Vars (wrangler.toml) — OVERWRITTEN on every deploy
 LLM_PROVIDER = "openai"
 LLM_MODEL    = "gpt-4.1-mini"
-STT_PROVIDER = "openai"       # o "workers-ai" (gratis, dentro de Cloudflare)
+STT_PROVIDER = "openai"       # or "workers-ai" (free, inside Cloudflare)
 STT_MODEL    = "whisper-1"
-STT_LANGUAGE = "es"           # fijarlo acierta más que autodetectar
+STT_LANGUAGE = "es"           # pinning it is more accurate than autodetecting
 DEFAULT_TIMEZONE     = "Europe/Madrid"
-BRIEFING_HOUR        = "8"    # hora LOCAL del briefing diario, 0-23
+BRIEFING_HOUR        = "8"    # LOCAL hour of the daily briefing, 0-23
+DAY_START_HOUR       = "9"    # the day window free slots are searched in
+DAY_END_HOUR         = "21"   # 24 means midnight
 MAX_AGENT_ITERATIONS = "3"
-HISTORY_WINDOW       = "30"   # filas de `messages`, no intercambios: un turno con
-                              # herramientas gasta cuatro o cinco
+HISTORY_WINDOW       = "30"   # rows of `messages`, not exchanges: a turn with
+                              # tools spends four or five
 LOG_LEVEL            = "info"
 ```
 
-> Editar una var en el dashboard no sirve: el siguiente push la revierte al valor
-> de `wrangler.toml`. Los secrets funcionan al revés y los deploys no los tocan.
+> Editing a var in the dashboard does nothing: the next push reverts it to the value
+> in `wrangler.toml`. Secrets work the other way round and deploys do not touch them.
 
-### Despliegue
+### Deployment
 
-**Cloudflare Workers Builds** conectado a `jcm-developer/jarvis`. Cada push a `main`
-ejecuta `npm run typecheck` y, solo si pasa, `npx wrangler deploy`. El typecheck actúa
-de barrera: un push que no compila no llega a producción.
+**Cloudflare Workers Builds** connected to `jcm-developer/jarvis`. Every push to
+`main` runs `npm run typecheck` and, only if it passes, `npx wrangler deploy`. The
+typecheck acts as the gate: a push that does not compile never reaches production.
 
 ### Bindings
 
@@ -587,10 +609,10 @@ de barrera: un push que no compila no llega a producción.
 binding = "AI"                    # Workers AI (Whisper)
 
 [[kv_namespaces]]
-binding = "STATE"                 # dedupe, confirmaciones pendientes, cuotas
+binding = "STATE"                 # dedupe, pending confirmations, quotas
 
 [triggers]
-crons = ["0 * * * *"]             # briefing y recordatorios
+crons = ["*/5 * * * *"]           # briefing and reminders
 ```
 
 ---
@@ -598,161 +620,165 @@ crons = ["0 * * * *"]             # briefing y recordatorios
 ## 10. Audio
 
 1. `message.voice.file_id` → `getFile` → `https://api.telegram.org/file/bot<token>/<path>`
-2. Descarga (`ArrayBuffer`). Límite duro: **rechazar > 20 MB** (tope de la API de Telegram).
-3. Transcripción, con el proveedor que diga `STT_PROVIDER`:
-   - `openai` (en producción): `POST /audio/transcriptions` con `whisper-1`. Acepta el
-     OGG/Opus de Telegram sin convertir y acierta más en español.
-   - `workers-ai`: `env.AI.run('@cf/openai/whisper-large-v3-turbo', ...)`. Gratis y sin
-     salto de red, pero peor con audio de móvil en español.
-4. Transcripción → misma ruta que un mensaje de texto, con `source='voice'`.
-5. Se guarda `transcript_raw` para depurar cuando el agente entienda algo raro.
+2. Download (`ArrayBuffer`). Hard limit: **reject anything over 20 MB** (the Telegram
+   API's cap).
+3. Transcription, with whichever provider `STT_PROVIDER` names:
+   - `openai` (in production): `POST /audio/transcriptions` with `whisper-1`. It
+     accepts Telegram's OGG/Opus without conversion and is more accurate in Spanish.
+   - `workers-ai`: `env.AI.run('@cf/openai/whisper-large-v3-turbo', ...)`. Free and
+     with no network hop, but worse with Spanish phone audio.
+4. Transcript → the same path as a text message, with `source='voice'`.
+5. `transcript_raw` is stored, to debug the cases where the agent understands
+   something odd.
 
-Si la transcripción viene vacía o falla, se responde pidiendo repetir — nunca se
-manda una cadena vacía al LLM.
+If the transcript comes back empty or fails, the reply asks the user to repeat — an
+empty string is never sent to the LLM.
 
-**Reparto del presupuesto** (topes que cada paso pide al `Deadline`, no fijos):
-descarga 6 s por intento con un reintento, transcripción 10 s, cada llamada al
-modelo 15 s. `getFile` y la descarga comparten ese tope en vez de tener cada uno
-el suyo: cuando `getFile` gastaba 8 s propios por fuera, una descarga "dentro de
-tope" podía llevarse 23 s de los 27 y dejar al modelo sin tiempo para responder.
+**Budget split** (caps each step asks the `Deadline` for, not fixed values): download
+6 s per attempt with one retry, transcription 10 s, each model call 15 s. `getFile`
+and the download share that cap instead of each having its own: when `getFile` spent
+its own 8 s outside it, a download that was "within cap" could take 23 s of the 27 and
+leave the model with no time to answer.
 
-La descarga tuvo 15 s por el diagnóstico de que las notas largas tardaban más.
-No se sostiene: Telegram las manda en OGG/Opus a ~16 kbps, así que un minuto de
-audio son ~120 KB. Los fallos de descarga son picos puntuales del servidor de
-ficheros, no cuestión de tamaño, y por eso pasaban con el mismo audio unas veces
-sí y otras no. Se corta antes y se reintenta una vez, solo si queda presupuesto
-para transcribir y contestar después. Si aun así falla, el bot lo dice sin
-inventarse la causa, y el log `voice_download_failed` lleva duración, tamaño,
-tiempo gastado y presupuesto restante para poder mirarlo.
+The download had 15 s based on the diagnosis that long notes took longer. That does
+not hold: Telegram sends them as OGG/Opus at ~16 kbps, so a minute of audio is ~120
+KB. Download failures are momentary spikes on the file server, not a size issue, which
+is why the same audio failed some times and not others. It now cuts sooner and retries
+once, only when there is budget left to transcribe and answer afterwards. If it still
+fails, the bot says so without inventing a cause, and the `voice_download_failed` log
+carries duration, size, time spent and remaining budget so it can be looked at.
 
 ---
 
-## 11. Restricciones del free plan
+## 11. Free plan constraints
 
-| Recurso | Límite | ¿Aprieta? |
+| Resource | Limit | Does it bite? |
 |---|---|---|
-| Workers requests | 100.000/día | No |
-| Workers CPU | 10 ms/petición | **No** — la espera de red (LLM, Supabase) no cuenta como CPU |
-| Workers AI | ~10.000 Neurons/día | No aplica: la transcripción va por OpenAI. Solo cuenta con `STT_PROVIDER = "workers-ai"` |
-| KV escrituras | 1.000/día | Justo. Una por mensaje (dedupe) más una al día (marca del briefing); no añadir más |
-| Cron triggers | Incluidos, hasta 1 min de granularidad | No. Cada 5 min son 288 invocaciones al día |
+| Workers requests | 100,000/day | No |
+| Workers CPU | 10 ms/request | **No** — network waiting (LLM, Supabase) does not count as CPU |
+| Workers AI | ~10,000 Neurons/day | Not applicable: transcription goes through OpenAI. Only counts with `STT_PROVIDER = "workers-ai"` |
+| KV writes | 1,000/day | Tight. One per message (dedupe) plus one a day (the briefing marker); do not add more |
+| Cron triggers | Included, down to 1 min granularity | No. Every 5 min is 288 invocations a day |
 | Supabase | 500 MB | No |
-| OpenAI | Créditos de pago, sin cola | No aprieta: unos pocos euros al mes a este volumen (ver §6) |
-| `waitUntil` tras responder | ~30 s, y luego cancela | **Sí** — es el techo que marca todo el diseño |
+| OpenAI | Paid credits, no queue | Not biting: a few euros a month at this volume (see §6) |
+| `waitUntil` after responding | ~30 s, then cancelled | **Yes** — it is the ceiling that shapes everything |
 
-### El tiempo: dos límites opuestos (Fases 1 y 3)
+### Time: two opposing limits (phases 1 and 3)
 
-Este punto costó dos iteraciones y es la restricción que más ha moldeado el código.
-Estamos entre dos paredes:
+This point took two iterations and is the constraint that shaped the code most. We sit
+between two walls:
 
-- **Si esperamos a terminar antes de responder, corta Telegram.** Medido en
-  producción: reintenta a los ~4 s y, al desconectarse el cliente, Cloudflare cancela
-  la ejecución. Silencio total.
-- **Si procesamos en `waitUntil()` sin control, corta Cloudflare.** Pasado un margen
-  tras la respuesta las tareas mueren así:
+- **If we wait to finish before answering, Telegram cuts us off.** Measured in
+  production: it retries after ~4 s and, once the client disconnects, Cloudflare
+  cancels the execution. Total silence.
+- **If we process inside `waitUntil()` with no control, Cloudflare cuts us off.** Past
+  a margin after the response, the tasks die like this:
 
 ```
 (warn) waitUntil() tasks did not complete within the allowed time
 after invocation end and have been cancelled.
 ```
 
-Con NVIDIA tardando 45 s no había hueco entre ambas paredes: se probó a *awaitar* el
-procesamiento y respondía Telegram cortando antes. Al pasar a OpenAI la respuesta bajó
-a 2-5 s y sí cabe, así que el diseño actual es **200 OK inmediato + trabajo en
-`ctx.waitUntil()`** con un presupuesto global de **27 s**
-([src/lib/deadline.ts](src/lib/deadline.ts)) que deja margen para enviar un mensaje de
-error honesto si algún paso se pasa. Cada paso pide al `Deadline` lo que queda del
-reloj en vez de fijar su propio tope: tres pasos de 20 s cumplen sus timeouts
-individuales y aun así se salen del presupuesto conjunto.
+With NVIDIA taking 45 s there was no gap between the two walls: awaiting the
+processing was tried and Telegram cut in first. Moving to OpenAI brought the reply
+down to 2-5 s and it does fit, so the current design is **immediate 200 OK + work
+inside `ctx.waitUntil()`** with a global budget of **27 s**
+([src/lib/deadline.ts](src/lib/deadline.ts)), leaving room to send an honest error
+message when a step overruns. Every step asks the `Deadline` what is left on the clock
+instead of setting its own cap: three 20 s steps honour their individual timeouts and
+still blow the combined budget.
 
-El dedupe de `update_id` estaba desde el día 1 y por eso esto es viable: si Telegram
-reintenta un update que ya estamos procesando, no se ejecuta dos veces.
+The `update_id` dedupe has been there since day one, and that is what makes this
+viable: if Telegram retries an update we are already processing, it does not run twice.
 
-**Ruta de migración si aprieta:** el paso a Workers Paid ($5/mes) habilita Queues
-con reintentos y dead-letter queue. El cambio afecta solo a `index.ts`; el resto del
-código no se toca. Está diseñado así a propósito.
+**Migration path if it gets tight:** moving to Workers Paid ($5/month) enables Queues
+with retries and a dead-letter queue. The change touches only `index.ts`; the rest of
+the code stays. It is designed that way on purpose.
 
 ---
 
-## 12. Proactividad: el cron
+## 12. Being proactive: the cron
 
-Un Cron Trigger cada cinco minutos (`*/5 * * * *`) y dos trabajos independientes por
-usuario, cada uno con su `try`: que falle un aviso no debe dejar al usuario sin el otro.
+One Cron Trigger every five minutes (`*/5 * * * *`) and two independent jobs per user,
+each with its own `try`: one alert failing must not leave the user without the other.
 
-**Empezó siendo cada hora en punto y no servía.** Un "recuérdamelo a las 12:10" pedido
-en un mensaje de las 12:07 no podía salir antes de las 13:00, casi una hora tarde: la
-precisión de un aviso no puede ser peor que el periodo del cron. Cada cinco minutos son
-288 invocaciones al día frente a las 100.000 del plan free, y no añaden ni una escritura
-de KV, porque lo único que se escribe ahí es la marca del briefing, una vez al día.
+**It started running hourly and that did not work.** A "remind me at 12:10" asked for
+in a 12:07 message could not go out before 13:00, almost an hour late: an alert's
+precision cannot be worse than the cron's period. Every five minutes is 288
+invocations a day against the free plan's 100,000, and it adds no KV writes at all,
+because the only thing written there is the briefing marker, once a day.
 
-El `scheduled` **awaita** su trabajo en vez de mandarlo a `waitUntil()`. Aquí no hay
-respuesta que devolver, así que no existe el margen corto que obliga a la gimnasia
-del webhook. Aun así lleva presupuesto (25 s): una llamada colgada no debe dejar el
-briefing a medias.
+The `scheduled` handler **awaits** its work instead of handing it to `waitUntil()`.
+There is no response to return here, so the short margin that forces the webhook's
+gymnastics does not exist. It still carries a budget (25 s): one hung call must not
+leave the briefing half done.
 
-A quién se escribe sale del cruce de `users` y `conversations`, filtrado por
-`ALLOWED_TELEGRAM_IDS`. **La whitelist se vuelve a comprobar aquí a propósito:** es
-el único camino del código en el que no hay un update de Telegram que validar, así
-que si nadie mira la lista, un usuario retirado seguiría recibiendo mensajes.
+Who gets written to comes from joining `users` and `conversations`, filtered by
+`ALLOWED_TELEGRAM_IDS`. **The whitelist is checked again here on purpose:** this is
+the only path in the code with no Telegram update to validate, so if nobody looks at
+the list, a removed user would keep receiving messages.
 
-### Briefing diario
+### Daily briefing
 
-Sale a la hora **local** del usuario (`BRIEFING_HOUR`, por defecto las 8). El cron
-dispara en UTC, así que la hora local se calcula en cada ejecución con `Intl`
-([src/lib/localtime.ts](src/lib/localtime.ts)) y no con un offset fijo: España
-cambia de horario dos veces al año, y un cron a las 06:00 UTC sería las 7 en
-invierno y las 8 en verano.
+It goes out at the user's **local** hour (`BRIEFING_HOUR`, 8 by default). The cron
+fires in UTC, so the local hour is computed on every run with `Intl`
+([src/lib/localtime.ts](src/lib/localtime.ts)) and not with a fixed offset: Spain
+changes its clocks twice a year, and a cron at 06:00 UTC would be 7 in winter and 8 in
+summer.
 
-- **Una vez al día**, con marca en KV `briefing:<userId>:<fecha local>` y TTL de 48 h.
-  La fecha de la clave es la local, no la UTC: es la que define "hoy" para quien lee.
-  Una escritura de KV al día no se nota en el presupuesto de 1.000.
-- **La ventana de envío son 3 horas**: con `BRIEFING_HOUR = 8`, se manda en el disparo
-  de las 8, las 9 o las 10. Si el primero se pierde, el siguiente lo recupera. Sin
-  ventana no habría briefing ese día; sin límite llegaría un "buenos días" a medianoche.
-- **El texto se compone en código, sin pasar por el modelo.** Es una lista de tareas
-  con fechas: el LLM no añade nada y sí añade coste, latencia y la posibilidad de
-  inventarse una tarea. El briefing tiene que ser aburrido y exacto.
-- Contenido: vencidas, lo que vence hoy con su hora, y las de prioridad alta sin
-  fecha. Las pendientes sin fecha ni prioridad no entran: es el día, no el inventario.
+- **Once a day**, with a KV marker `briefing:<userId>:<local date>` and a 48 h TTL.
+  The key's date is the local one, not UTC: that is what defines "today" for whoever
+  reads it. One KV write a day does not dent the 1,000 budget.
+- **The sending window is 3 hours**: with `BRIEFING_HOUR = 8`, it goes out on the 8,
+  9 or 10 tick. If the first is missed, the next one recovers it. Without a window
+  there would be no briefing that day; without a limit a "good morning" would land at
+  midnight.
+- **The text is composed in code, without going through the model.** It is a list of
+  tasks with dates: the LLM adds nothing and does add cost, latency and the chance of
+  inventing a task. The briefing has to be boring and exact.
+- Contents: what is overdue, what is due today with its time, and high-priority items
+  with no date. Pending things with neither a date nor a priority stay out: this is
+  the day, not the inventory.
 
-### Recordatorios
+### Reminders
 
-Hay **dos clases de aviso** y no se miden con la misma vara:
+There are **two classes of alert** and they are not held to the same standard:
 
-| Clase | Campo | Cuándo sale | Por qué |
+| Class | Field | When it goes out | Why |
 |---|---|---|---|
-| A la hora pedida | `remind_at` | En los 5 min siguientes a esa hora | "Recuérdamelo a las 12:10" tiene que llegar a las 12:10 |
-| Antes de vencer | `due_at` sin `remind_at` | 1 h antes del vencimiento | Avisar justo al vencer no da margen para nada |
+| At the requested time | `remind_at` | Within 5 min of that time | "Remind me at 12:10" has to arrive at 12:10 |
+| Before it is due | `due_at` with no `remind_at` | 1 h before the deadline | Warning right at the deadline leaves no room for anything |
 
-Son dos consultas en paralelo, no una con `or`: los conjuntos son disjuntos —una exige
-`remind_at`, la otra que sea nulo—, así que no hay nada que deduplicar y cada filtro usa
-sintaxis PostgREST ya probada en el resto del código. Aun así el merge deduplica por id,
-que es barato y evita que un cambio futuro en un filtro se traduzca en avisos repetidos.
+They are two parallel queries rather than one with `or`: the sets are disjoint —one
+requires `remind_at`, the other requires it to be null— so there is nothing to
+deduplicate, and each filter uses PostgREST syntax already proven elsewhere in the
+code. The merge still deduplicates by id, which is cheap and prevents a future change
+in one filter from turning into repeated alerts.
 
-`remind_at` existe para no convertir un aviso en una tarea aparte. Sin ese campo, "llamo
-a David a las 17:30, recuérdamelo a las 12:10" solo se podía representar creando una
-segunda tarea "recordar llamar a David", que es lo que hacía el modelo: dos filas para
-una sola cosa que hacer.
+`remind_at` exists so an alert does not become a task of its own. Without that field,
+"I'm calling David at 17:30, remind me at 12:10" could only be represented by creating
+a second "remember to call David" task, which is what the model did: two rows for one
+thing to do.
 
-- `reminded_at` es lo que evita repetir el aviso en cada disparo hasta que la tarea se
-  complete.
-- **Se marca después de enviar, nunca antes.** Si el envío falla, la tarea sigue sin
-  marcar y el aviso se reintenta al disparo siguiente. Al revés, un 500 de Telegram se
-  convertiría en un recordatorio que nunca llega.
-- Tope de 10 por ejecución. La primera vez que esto corre, todo lo vencido de antes
-  entra en el lote, y no queremos que llegue como una avalancha.
-- **`update_task` pone `reminded_at` a null cuando cambia cualquiera de las dos fechas.**
-  Sin eso, aplazar una tarea de la que ya se avisó la dejaría sin recordatorio para
-  siempre: el cron solo mira las que lo tienen a null.
+- `reminded_at` is what stops the alert repeating on every tick until the task is
+  completed.
+- **It is marked after sending, never before.** If the send fails, the task stays
+  unmarked and the alert is retried on the next tick. The other way round, a 500 from
+  Telegram would turn into a reminder that never arrives.
+- Cap of 10 per run. The first time this ran, everything overdue from before came into
+  the batch, and we do not want it arriving as an avalanche.
+- **`update_task` sets `reminded_at` to null when either date changes.** Without that,
+  postponing a task that was already announced would leave it without a reminder
+  forever: the cron only looks at the ones with a null `reminded_at`.
 
-### Cómo suenan los avisos
+### What the alerts sound like
 
-El texto se escribe en código, no con el modelo, pero eso no es excusa para que suene
-a máquina. La primera versión decía `Recordatorio: "Llamar a David a las seis" venció
-a las 13:25` y en el chat se leía como una alarma de sistema: comillas alrededor del
-título, el verbo "vencer" y la hora repetida aunque fuera la de ese mismo instante.
+The text is written in code, not by the model, but that is no excuse for sounding like
+a machine. The first version said `Recordatorio: "Llamar a David a las seis" venció a
+las 13:25` and in the chat it read like a system alarm: quotes around the title, the
+verb "expired", and the time repeated even when it was the current one.
 
-Ahora sale como lo diría una persona:
+It now comes out the way a person would say it:
 
 ```
 Acuérdate de llamar a David a las 18:00.
@@ -766,264 +792,479 @@ Tienes tres cosas encima:
 - sacar la basura
 ```
 
-Cuatro detalles que hacen la diferencia, y ninguno necesita un LLM:
+Four details that make the difference, and none of them needs an LLM:
 
-- **La hora solo se dice si aporta.** Nada si el aviso es para ahora mismo, nada si el
-  título ya la lleva ("Llamar a David a las seis" con un "a las 13:25" detrás confunde
-  más que ayuda).
-- **Días con nombre**: "ayer", "mañana", "el 20 de agosto a las 09:00". No `20 ago, 09:00`.
-- **Un aviso a la hora pedida no es un incumplimiento.** "Vencido" se reserva para lo
-  que de verdad se pasó hace rato.
-- **La frase de entrada varía** entre tareas, elegida por el id, no al azar: el mismo
-  aviso repetido se lee igual, y dos avisos distintos no suenan calcados.
+- **The time is only stated when it adds something.** Nothing when the alert is for
+  right now, nothing when the title already carries it ("Llamar a David a las seis"
+  with an "a las 13:25" after it confuses more than it helps).
+- **Named days**: "yesterday", "tomorrow", "on 20 August at 09:00". Not `20 ago, 09:00`.
+- **An alert at the requested time is not a breach.** "Overdue" is reserved for what
+  genuinely slipped a while ago.
+- **The opening phrase varies** between tasks, picked by id rather than at random: the
+  same alert repeated reads the same, and two different alerts do not sound identical.
 
-Los mensajes proactivos se guardan en `messages` como turnos del asistente. Sin eso,
-un "hecho" o un "posponlo" como respuesta al aviso no tendría referente en el
-contexto y el modelo preguntaría de qué se le habla.
+Proactive messages are stored in `messages` as assistant turns. Without that, a "done"
+or a "push it back" in reply to an alert would have no referent in the context and the
+model would ask what it is being told about.
 
-Una tarea que vence dentro de la misma hora del briefing sale en los dos mensajes.
-Se acepta: son cosas distintas —planificar el día y avisar de lo inminente— y
-suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
+A task falling due within the briefing's own hour appears in both messages. That is
+accepted: they are different things —planning the day and flagging what is imminent—
+and suppressing the reminder would silence precisely the most urgent thing of the day.
 
 ---
 
-## 13. Calendario
+## 13. Calendar
 
-Cuatro herramientas: `create_event`, `list_events`, `update_event` y `delete_event`.
+Four tools: `create_event`, `list_events`, `update_event` and `delete_event`.
 
-**La Fase 6 fue solo escritura y duró un mensaje.** Nada más probarla llegó un "bórrala
-que al final no puedo ir", y luego un "pues muévela al viernes": el bot contestó bien
-—dijo que no podía en vez de fingir— pero una cita mal puesta solo se arreglaba desde el
-móvil, que es exactamente el trabajo que este proyecto existe para ahorrar. La Fase 7
-añadió leer, modificar y borrar.
+**Phase 6 was write-only and lasted one message.** The moment it was tried, in came a
+"delete it, I can't make it after all", and then a "actually move it to Friday": the
+bot answered well —it said it could not rather than pretending— but a badly placed
+appointment could only be fixed from the phone, which is exactly the work this project
+exists to save. Phase 7 added reading, modifying and deleting.
 
-Lo que sigue fuera es la lectura **masiva** para el briefing: eso sí arrastra tokens de
-sincronización incremental, expansión de recurrentes y zonas horarias de las
-recurrencias. Buscar "el dentista del jueves" en un rango de fechas no arrastra nada de
-eso, y el scope `calendar.events` que ya usábamos lo permitía sin tocar nada en Google.
+What remains out is **bulk** reading for the briefing: that one does drag in
+incremental sync tokens, recurrence expansion and the time zones of recurrences.
+Searching for "Thursday's dentist" over a date range drags in none of that, and the
+`calendar.events` scope we were already using allowed it without touching anything on
+Google's side.
 
-`create_event` es una tool aparte de `create_task` y no un campo suyo. La frontera es
-si la cosa ocupa un hueco del día a una hora concreta —el médico el jueves a las diez—
-o es algo que hay que hacer cuando se pueda —comprar pan—. Ahora que el modelo puede
-mirar los dos sitios, el prompt le pide buscar en ambos antes de decir que algo no
-existe: el primer intento de mover la cita falló porque buscó solo en tareas.
+`create_event` is a separate tool from `create_task` rather than a field of it. The
+boundary is whether the thing takes up a slot of the day at a specific time —the
+doctor on Thursday at ten— or is something to do whenever possible —buy bread. Now
+that the model can look in both places, the prompt asks it to search both before
+saying something does not exist: the first attempt at moving an appointment failed
+because it only searched the tasks.
 
-### Autenticación: service account, no OAuth de usuario
+### Authentication: a service account, not user OAuth
 
-El flujo OAuth de usuario se descartó y el motivo es dedicado: una app de Google Cloud
-en estado *Testing* emite refresh tokens que **caducan a los siete días**, así que el
-bot se habría quedado muerto cada semana; y publicarla con el scope de Calendar exige
-pasar la verificación de Google. Con una service account y el calendario personal
-compartido con su email no caduca nada.
+The user OAuth flow was ruled out and the reason is specific: a Google Cloud app in
+*Testing* state issues refresh tokens that **expire after seven days**, so the bot
+would have gone dead every week; and publishing it with the Calendar scope requires
+passing Google's verification. With a service account and the personal calendar shared
+with its email, nothing expires.
 
-El precio es firmar un JWT RS256 a mano con WebCrypto y canjearlo por un access token
-([src/calendar/google-auth.ts](src/calendar/google-auth.ts)). Tres detalles que
-importan:
+The price is signing an RS256 JWT by hand with WebCrypto and exchanging it for an
+access token ([src/calendar/google-auth.ts](src/calendar/google-auth.ts)). Three
+details that matter:
 
-- **Scope `calendar.events`**, no `calendar`: puede crear y editar eventos, no
-  administrar ni borrar calendarios. La service account además no tiene **ningún** rol
-  de IAM, así que la clave no da acceso a nada más del proyecto.
-- **El token se cachea en KV 55 minutos**, no 60: uno recién sacado de la caché tiene
-  que sobrevivir a la petición que va a hacer con él. Son ~26 escrituras al día, lejos
-  del límite de 1.000 que ya gasta el dedupe.
-- **El `private_key` llega desde un secret en una sola línea, con `\n` literales**, que
-  es como está en el JSON de Google. El parser acepta esa forma, la de saltos reales y
-  la de comillas pegadas al copiar: es una cadena de 1.700 caracteres que se pega a
-  mano una vez, y un fallo ahí se manifiesta como un `401 invalid_grant` que no explica
-  nada.
+- **Scope `calendar.events`**, not `calendar`: it can create and edit events, not
+  administer or delete calendars. The service account also has **no** IAM role at all,
+  so the key grants access to nothing else in the project.
+- **The token is cached in KV for 55 minutes**, not 60: one just pulled from the cache
+  has to outlive the request it is about to make. That is ~26 writes a day, far from
+  the 1,000 limit the dedupe already spends against.
+- **The `private_key` arrives from a secret on a single line, with literal `\n`**,
+  which is how it sits in Google's JSON. The parser accepts that form, the one with
+  real newlines, and the one with quotes stuck on from copying: it is a
+  1,700-character string pasted by hand once, and a slip there shows up as a
+  `401 invalid_grant` that explains nothing.
 
-Alternativas descartadas: **Google Tasks** encaja mejor con el nombre del producto pero
-no admite service accounts, así que devuelve al refresh token que caduca. **CalDAV de
-iCloud** sigue siendo el plan B —autenticación más simple, app-specific password y
-Basic auth— pero obliga a descubrir la URL del calendario con `PROPFIND` y a escribir
-iCalendar a mano: CRLF, plegado a 75 octetos, `DTSTART` con `TZID`, escapado del
-`SUMMARY`. Falla en silencio, con el evento a la hora equivocada.
+Alternatives ruled out: **Google Tasks** fits the product's name better but does not
+support service accounts, which puts us back on the expiring refresh token.
+**iCloud's CalDAV** remains the plan B —simpler authentication, an app-specific
+password and Basic auth— but it forces discovering the calendar's URL with `PROPFIND`
+and writing iCalendar by hand: CRLF, folding at 75 octets, `DTSTART` with `TZID`,
+escaping the `SUMMARY`. It fails silently, with the event at the wrong time.
 
-### La trampa de la organización
+### The organisation trap
 
-Google aplica de oficio en las organizaciones nuevas la política
-`iam.disableServiceAccountKeyCreation` ("secure by default"), que **impide crear la
-clave** con un diálogo que no dice que se pueda quitar. Se desactiva solo en este
-proyecto, no en toda la organización:
+Google applies the `iam.disableServiceAccountKeyCreation` policy ("secure by
+default") to new organisations, which **prevents creating the key** behind a dialog
+that does not mention it can be turned off. It is disabled for this project only, not
+for the whole organisation:
 
 ```bash
 gcloud resource-manager org-policies disable-enforce \
   iam.disableServiceAccountKeyCreation --project=<PROJECT_ID>
 ```
 
-La consola cachea el estado, así que hay que recargar la pestaña antes de reintentar —o
-crear la clave desde Cloud Shell, que no pasa por ahí.
+The console caches the state, so the tab has to be reloaded before retrying — or the
+key created from Cloud Shell, which does not go through it.
 
-### Modificar sin romper lo que no se pidió
+### Modifying without breaking what was not asked for
 
-Tres decisiones de `update_event`, todas nacidas de que el modelo manda lo que le apetece
-y lo que hay en el calendario no lo puso él:
+Three `update_event` decisions, all born of the fact that the model sends whatever it
+feels like and what is in the calendar was not put there by it:
 
-- **Solo viajan los campos que cambian.** Un `PATCH` con el objeto entero pondría a vacío
-  la descripción, el sitio o los invitados que el usuario tenga puestos desde el móvil,
-  sin que nadie lo haya pedido y sin dejar rastro. `undefined` es "no lo toques"; `null`
-  es "bórralo".
-- **Mover una cita lee antes su duración.** "Muévela al viernes" quiere decir la misma
-  cita otro día, no una cita de otra longitud, y cuánto duraba solo lo sabe Google. Son
-  dos llamadas —`GET` y luego `PATCH`— y cada una pide su tope al `Deadline` por
-  separado.
-- **`singleEvents=true` al listar**, que expande las series en repeticiones concretas. El
-  id que devuelve es el de *esa* instancia, así que mover "el standup del lunes" no toca
-  el resto de la serie. Es lo que queremos, pero el usuario no lo adivina: cuando el
-  evento venía de una serie, el resultado lleva una nota para que el modelo lo diga.
+- **Only the fields that change travel.** A `PATCH` with the whole object would blank
+  out the description, the location or the guests the user has set from their phone,
+  with nobody asking and no trace left. `undefined` means "do not touch it"; `null`
+  means "clear it".
+- **Moving an appointment reads its duration first.** "Move it to Friday" means the
+  same appointment on another day, not an appointment of a different length, and only
+  Google knows how long it was. That is two calls —`GET` and then `PATCH`— and each
+  asks the `Deadline` for its cap separately.
+- **`singleEvents=true` when listing**, which expands series into concrete
+  occurrences. The id it returns belongs to *that* instance, so moving "Monday's
+  standup" does not touch the rest of the series. That is what we want, but the user
+  will not guess it: when the event came from a series, the result carries a note so
+  the model says so.
 
-`delete_event` va con confirmación por botones, como `delete_task`, y la pregunta se
-construye leyendo el título del evento: "¿borro la cita 7f3a-...?" no lo revisa nadie. Si
-no se puede leer, se pregunta en genérico — lo que no puede pasar es borrar sin preguntar.
+`delete_event` goes through button confirmation, like `delete_task`, and the question
+is built by reading the event's title: nobody reviews "delete appointment 7f3a-...?".
+If it cannot be read, the question is asked generically — what must never happen is
+deleting without asking.
 
-### Varios días, y el día de más que no se le dice al usuario
+### Several days, and the extra day the user is never told about
 
-Un "me voy del 23 al 26" es un evento de día completo de cuatro días, y en Google el
-último día es **exclusivo**: se guarda como 23 → 27. Un off-by-one aquí no da ningún
-error, solo un viaje que en el calendario acaba el 25.
+An "I'm away from the 23rd to the 26th" is a four-day all-day event, and in Google the
+last day is **exclusive**: it is stored as 23 → 27. An off-by-one here raises no error
+at all, just a trip that ends on the 25th in the calendar.
 
-Así que el modelo manda `end_date` con el último día **incluido**, que es lo que dice el
-usuario, y el `+1` lo pone el handler. En la respuesta se vuelve a restar: al usuario se
-le dice "del 23 de agosto al 26 de agosto", nunca el 27. Es el mismo reparto de trabajo
-que con los plazos relativos — el modelo aporta lo que oyó, la aritmética la hace el
-código.
+So the model sends `end_date` with the last day **included**, which is what the user
+says, and the `+1` is added by the handler. It is subtracted again in the reply: the
+user is told "from 23 August to 26 August", never the 27th. Same division of labour as
+with relative delays — the model contributes what it heard, the code does the
+arithmetic.
 
-Mover un evento así conserva los días que ocupaba. Sin eso, "pásalo a septiembre" dejaría
-el viaje en un solo día, porque el patch reconstruye las dos fechas y solo una viene del
-usuario.
+Moving an event like that preserves the days it spanned. Without it, "push it to
+September" would collapse the trip into a single day, because the patch rebuilds both
+dates and only one of them comes from the user.
 
-Las fechas sueltas se suman en UTC, no con `Intl`: un 'YYYY-MM-DD' no es un instante, y
-meter la zona horaria en medio es exactamente lo que hace que un viaje amanezca un día
-antes.
+Bare dates are added in UTC, not through `Intl`: a 'YYYY-MM-DD' is not an instant, and
+dragging the time zone into it is exactly what makes a trip start a day early.
 
-### Categorías: el modelo elige el tipo, el código elige el color
+### Categories: the model picks the kind, the code picks the colour
 
-Un viaje se ve de un color distinto en la app del calendario. La tool acepta una
-`category` de una lista cerrada —viaje, trabajo, estudios, personal, salud, social— y el
-handler la traduce a uno de los once `colorId` de Google.
+A trip shows up in a different colour in the calendar app. The tool accepts a
+`category` from a closed list —viaje, trabajo, estudios, personal, salud, social— and
+the handler translates it into one of Google's eleven `colorId` values.
 
-**El reparto es deliberado y es el mismo de siempre en este proyecto:** dejarle al modelo
-mandar el `colorId` daría los viajes de un color distinto cada semana. No hay forma de que
-sea consistente con un número entre 1 y 11 a lo largo de meses de conversaciones, y un
-color solo sirve si siempre es el mismo. Elige el tipo, que es lo que sabe deducir del
-mensaje; la tabla la mantiene el código.
+**The split is deliberate and it is the same one as everywhere in this project:**
+letting the model send the `colorId` would give us trips in a different colour every
+week. There is no way it stays consistent with a number between 1 and 11 across months
+of conversations, and a colour is only useful when it is always the same. It picks the
+kind, which is what it can infer from the message; the table is maintained by the code.
 
-Una categoría desconocida no rompe la cita: se crea sin color, que es lo que pasaba antes
-de que esto existiera. Y al listar, un `colorId` solo se traduce de vuelta si está en
-nuestra tabla — los colores que el usuario haya puesto a mano desde la app no significan
-nada aquí, y darles un nombre sería inventarse un dato.
+An unknown category does not break the appointment: it is created without a colour,
+which is what happened before this existed. And when listing, a `colorId` is only
+translated back if it is in our table — colours the user set by hand from the app mean
+nothing here, and naming them would be inventing data.
 
-### Repeticiones: y el alcance, que es lo peligroso
+### Recurrence: and scope, which is the dangerous part
 
-Un cumpleaños es un evento de día completo con `RRULE:FREQ=YEARLY`. El modelo elige la
-frecuencia de una lista cerrada —anual, mensual, semanal, diario, laborables— y la cadena
-la escribe el código, por el mismo motivo que con los colores pero con más razón: una
-RRULE tiene su propia gramática, y una regla mal escrita **la API la acepta** y repite el
-cumpleaños el día equivocado durante los próximos veinte años.
+A birthday is an all-day event with `RRULE:FREQ=YEARLY`. The model picks the frequency
+from a closed list —anual, mensual, semanal, diario, laborables— and the string is
+written by the code, for the same reason as with the colours but with more force: an
+RRULE has a grammar of its own, and a badly written rule **is accepted by the API**
+and repeats the birthday on the wrong day for the next twenty years.
 
-Añadir repeticiones obligó a arreglar algo antes de que existieran. Con
-`singleEvents=true`, los ids que devuelve `list_events` son de **repeticiones concretas**,
-así que un `delete_event` con ese id borra solo ese día: "borra el cumpleaños de mi
-hermana" habría dejado los otros veinte años puestos, y el usuario no se enteraría hasta
-el año siguiente. Por eso `update_event` y `delete_event` llevan `scope`:
+Adding recurrence forced fixing something that predated it. With `singleEvents=true`,
+the ids `list_events` returns belong to **concrete occurrences**, so a `delete_event`
+with one of those ids deletes that day only: "delete my sister's birthday" would have
+left the other twenty years in place, and the user would not find out until the
+following year. That is why `update_event` and `delete_event` carry `scope`:
 
-| `scope` | Sobre qué actúa |
+| `scope` | What it acts on |
 |---|---|
-| `esta` (por defecto) | Solo esa repetición |
-| `serie` | Todas, usando el `recurringEventId` que viene dentro del evento |
+| `esta` (default) | That occurrence only |
+| `serie` | All of them, using the `recurringEventId` that comes inside the event |
 
-El defecto es el menos destructivo, y **el alcance va en el texto de la confirmación**, no
-en una nota posterior: entre saltarse un cumpleaños y borrarlo para siempre no hay vuelta
-atrás, y es exactamente lo que el botón está confirmando.
+The default is the least destructive one, and **the scope goes in the confirmation's
+text**, not in a note afterwards: between skipping a birthday and deleting it forever
+there is no way back, and that is exactly what the button is confirming.
 
-**Cambiar la hora de una serie entera no se hace.** Reanclar la serie desde aquí es donde
-se rompe en silencio: una regla con días fijos —los laborables— movida a un sábado deja de
-cuadrar con su propio patrón y desaparece una semana entera de citas sin ningún error. Se
-puede mover una repetición suelta, o cambiarle a la serie el título, el sitio o la
-categoría; para reprogramarla, la app del calendario. La herramienta lo dice en el error y
-el prompt lo declara en la lista de límites, que sale más barato que gastar una iteración
-en descubrirlo.
+**Changing the time of a whole series is not done.** Re-anchoring the series from here
+is where it breaks silently: a rule with fixed days —weekdays— moved onto a Saturday
+stops matching its own pattern and a whole week of appointments disappears with no
+error. A single occurrence can be moved, or a series can have its title, location or
+category changed; for rescheduling, the calendar app. The tool says so in the error
+and the prompt declares it in the list of limits, which is cheaper than spending an
+iteration discovering it.
 
-### El día completo no pasa por el corrector de fechas
+### All-day events do not go through the date corrector
 
-`correctDay` parte de que el modelo acierta la **hora** y falla el día. En un evento de
-día completo no hay hora, así que la premisa no existe: aplicárselo traía la cita a hoy
-cuando el mensaje no nombraba un día que el detector reconociera. Ahora los "todo el día"
-usan la fecha del modelo tal cual, que es lo que sí hace bien.
+`correctDay` assumes the model gets the **time** right and the day wrong. On an all-day
+event there is no time, so the premise does not exist: applying it dragged the
+appointment to today whenever the message did not name a day the detector recognised.
+"All day" entries now use the model's date as is, which is the part it does well.
 
-Ese fallo destapó otro más viejo, que afectaba también a las tareas:
-`mentionsAnotherDay` reconocía "el 25 de agosto" pero exigía el "el", así que "pásalo
-**al** 25 de agosto", "quedamos **para el** 3 de septiembre" y "la cita **del** 12 de
-enero" se le escapaban, y con ellas el corrector cambiaba la fecha a hoy. Ahora basta un
-número de día seguido de "de \<mes\>", con la lista de meses explícita para no confundir
-"el capítulo 12 de la serie" con una fecha.
+That failure exposed an older one that also affected tasks: `mentionsAnotherDay`
+recognised "el 25 de agosto" but demanded the "el", so "pásalo **al** 25 de agosto",
+"quedamos **para el** 3 de septiembre" and "la cita **del** 12 de enero" all slipped
+through, and with them the corrector moved the date to today. A day number followed by
+"de \<month\>" is now enough, with the month list spelled out so "el capítulo 12 de la
+serie" is not mistaken for a date.
 
-### Dos límites que no se arreglan con código
+### Two limits that code does not fix
 
-- **No se pueden invitar asistentes.** Una service account sin *domain-wide delegation*
-  —que requiere Google Workspace, no una cuenta Gmail— no puede añadir invitados y la
-  API lo rechaza. "Apúntame la cita" sí; "invita a David" no.
-- **Los avisos de la cita los da Google Calendar**, con la configuración del propio
-  calendario. Nuestro cron solo sabe de la tabla `tasks`, así que el prompt le prohíbe
-  al modelo prometer un aviso de un evento como si lo fuera a mandar él.
-- **Los eventos privados llegan sin título.** El permiso compartido que usamos es el que
-  los muestra como hueco ocupado y nada más. Se puede mover y borrar uno —el id sí
-  viaja—, pero no identificarlo por su nombre, así que `list_events` lo devuelve marcado
-  como privado en vez de dejar que el modelo se invente de qué es. Subir el permiso a
-  *Make changes and see all event details* lo resuelve, a cambio de darle a la
-  credencial acceso de lectura a todo.
+- **Guests cannot be invited.** A service account without *domain-wide delegation*
+  —which requires Google Workspace, not a Gmail account— cannot add attendees and the
+  API rejects it. "Put the appointment in" yes; "invite David" no.
+- **An event's reminders come from Google Calendar**, using that calendar's own
+  settings. Our cron only knows about the `tasks` table, so the prompt forbids the
+  model from promising an event alert as though it were going to send it.
+- **Private events arrive with no title.** The shared permission we use is the one that
+  shows them as an occupied slot and nothing more. One can be moved and deleted —the
+  id does travel— but not identified by name, so `list_events` returns it flagged as
+  private instead of letting the model invent what it is about. Raising the permission
+  to *Make changes and see all event details* fixes that, at the price of giving the
+  credential read access to everything.
 
-### Lo que comparte con las tareas
+### What it shares with tasks
 
-Los guardarraíles de fecha salieron de `tasks.ts` a
-[src/tools/guardrails.ts](src/tools/guardrails.ts) sin cambiarlos: el modelo se
-equivoca de día igual apuntando una cita que una tarea, y en una cita duele más porque
-ocupa un hueco de la agenda que el usuario cree libre. `honourUserInstant` es la
-variante de un solo campo —una cita empieza a una hora y no tiene el par
-fecha-límite/aviso—; el reparto entre los dos campos que hace `honourUserDeadlines` no
-aplica, las dos correcciones sí.
+The date guardrails moved out of `tasks.ts` into
+[src/tools/guardrails.ts](src/tools/guardrails.ts) unchanged: the model gets the day
+wrong just as often booking an appointment as creating a task, and on an appointment it
+hurts more, because it takes up a slot the user believes is free. `honourUserInstant`
+is the single-field variant —an appointment starts at a time and has no
+deadline/reminder pair—; the split between two fields that `honourUserDeadlines` makes
+does not apply, both corrections do.
 
-`ToolContext` ganó `env` y `deadline` aquí: es la primera herramienta que habla con un
-servicio de fuera por su cuenta, y hasta ahora a los handlers les bastaba `db`. La
-autenticación y la escritura **comparten un solo presupuesto** en vez de tener cada una
-su tope, que es la misma lección que dejó el audio en §10. Por debajo de 3 s no se
-intenta: decirle al usuario que lo repita es mejor que lanzar una escritura que
-Cloudflare va a cancelar a mitad, dejándonos sin saber si el evento se creó.
+`ToolContext` gained `env` and `deadline` here: this is the first tool to talk to an
+outside service on its own, and until then `db` was all the handlers needed.
+Authentication and the write **share a single budget** instead of each having its own
+cap, which is the same lesson the audio path left in §10. Below 3 s it is not
+attempted: telling the user to repeat themselves beats firing a write that Cloudflare
+will cancel halfway, leaving us unable to tell whether the event was created.
 
 ---
 
-## 14. Roadmap
+## 14. The agenda: gaps, overlaps and what to do now
 
-| Fase | Alcance | Estado |
+Phases 8 and 9. Two tools —`find_free_slots` and `what_now`— plus the overlap warning
+on `create_event`. They share one premise, which is the project's oldest:
+**the model asks, the code computes.**
+
+That premise is not a style preference here. A free gap and the minutes left until the
+next appointment are hour arithmetic, and that is what an LLM gets wrong **without
+raising any error**: it invents a plausible gap and reports it with exactly the same
+confidence as when it is right. A wrong date at least gets caught by the user reading
+the reply; an invented gap gets caught when they show up to a meeting that was already
+taken. So the interval arithmetic lives in [src/lib/slots.ts](src/lib/slots.ts), with
+no dependencies, and the prompt has one extra line forbidding the model from working
+gaps out for itself.
+
+### `lib/slots.ts`: three functions and one distinction that matters
+
+`overlaps`, `mergeIntervals` and `freeGaps`, all on epoch milliseconds. Time zones are
+resolved before reaching them, in `lib/localtime.ts`: mixing both concerns in one
+function is what makes a gap come out an hour off on the two clock-change days.
+
+**Touching is not overlapping.** A 10:00-11:00 appointment and an 11:00-12:00 one are
+back to back, not a conflict, so the comparisons in `overlaps` are strict. That is not
+pedantry: Google returns events that end exactly when the search window starts as
+being "inside the range", so without the strict comparison every appointment would
+warn about the one before it.
+
+The reverse holds when subtracting busy time: `mergeIntervals` **does** merge blocks
+that touch, because two back-to-back meetings from 10 to 12 are one busy block, and
+treating them separately would leave a zero-minute free gap between them.
+
+It is the one part of these phases that can be wrong in silence, so it is also the one
+with tests: compiled on its own and exercised from a `.mjs` with 26 cases, including
+appointments arriving from yesterday, ones running into tomorrow, one contained inside
+another, and gaps exactly at the minimum. Two of them failed on the first run and both
+were wrong expectations in the test, not in the code.
+
+### The day window, which has to be declared somewhere
+
+`DAY_START_HOUR` and `DAY_END_HOUR` (9 to 21 by default). Without a declared window,
+"you are free from 03:00 to 07:00" is a technically correct and completely useless
+answer: the calendar is empty at night because people sleep, not because there is room
+for anything.
+
+It lives in the config and not in a memory because it is the user's decision and it
+must not depend on `recall` getting it right. `DAY_END_HOUR` accepts 24 so that "until
+midnight" is expressible; the window ending "at 24" is asked for as the next day's
+midnight rather than 23:59, which would drop a minute from every day. The tool also
+takes `from_hour` and `to_hour` so "what afternoons am I free?" narrows the window — the
+model naming a range the user asked for is fine, it is doing the arithmetic that is not.
+
+`ToolContext` gained `config` for this. Re-parsing the env inside each handler would
+mean two different readings of the same var.
+
+### What counts as busy
+
+- **All-day events do not take up time.** A birthday or an "I'm travelling" fills the
+  day in the calendar without preventing a meeting at eleven. If they blocked, any week
+  with a name day in it would come back with no free slot at all and the tool would be
+  useless.
+- **Private appointments do.** They arrive with no title, but the shared permission we
+  use returns them as an occupied slot, which is exactly the piece of data needed here.
+  The gap is busy; what it is about stays unknown.
+- **Gaps that already went by are not gaps.** For today, only what is left of the
+  window counts, rounded up to the next five minutes: "from 12:35 to 14:00" reads like
+  a person talking, "from 12:33" reads like machine output.
+
+One read covers the whole range, no matter how many days were asked for, capped at 100
+appointments and at 14 days. If the cap is reached, the result says so and tells the
+model to say so too: a range with more appointments than fit in one page would
+otherwise be reported as "I checked everything" having checked half.
+
+### The overlap warning: it warns, and it goes after the write
+
+`create_event` now says when the appointment it just created runs into another one. Two
+decisions carry the weight.
+
+**It warns, it does not block.** Two things at the same hour is something people do on
+purpose. The warning travels inside an `{ok:true}` for the model to relay, not as an
+`{ok:false}` — that would send it hunting for another hour nobody asked for.
+
+**The check runs after writing, not before.** The appointment is what the user asked
+for and it cannot end up unwritten because a courtesy lookup ate the message's budget.
+Going after the write means the primary action always gets the full budget, and the
+worst case is losing the warning. Two consequences fall out of that order:
+
+- The check only runs when there is room for **the lookup plus the reply**
+  (`CONFLICT_MAX_MS` + 5 s). The first version only required the lookup to fit, and the
+  test caught it: with 8 s left, the lookup fitted and the reply that had to report it
+  did not. The warning would have been paid for with silence, which is the failure this
+  project has been avoiding since phase 1.
+- The just-created appointment shows up in its own search, so it has to be filtered
+  out. By its id — and **also by the series id**, because a recurring event comes back
+  with the occurrence's id, which is not the one the POST returned. Without that, a
+  weekly class would warn about clashing with itself.
+
+A failure in the check never becomes a `create_event` error: the appointment is already
+written, and telling the model something failed would have it report that to the user
+as if nothing had been created.
+
+`update_event` does **not** warn. It already spends a `GET` and a `PATCH`, and a third
+call is not affordable inside a 27 s budget. It is a real gap: "move it to Friday at
+14:00" can land on something taken and nothing will be said. Left as is on purpose,
+noted here rather than pretended away.
+
+### `what_now`: crossing three things, promising nothing
+
+The answer to "what should I do?" crosses the clock, the calendar and the task list:
+minutes until the next appointment, whatever is currently in progress, all-day entries
+as context, and the pending things worth suggesting.
+
+Which pending things is the briefing's criterion, for the same reason: what is overdue,
+what is due today, and what matters with no date. A task with neither a date nor a
+priority stays out — that is the inventory, not the day. Capped at three, and when more
+qualify the count travels in a note so the model does not enumerate them.
+
+**A task carries no estimated duration, so "it fits" cannot be asserted.** The phase's
+own example was *"two of your pending things fit"*, and that is a hunch, not a
+calculation. The result carries a note telling the model to give the free time and the
+options without claiming it measured anything. Adding a duration field to `tasks` was
+the alternative and it is not worth it yet: an estimate the user has to type in is a
+field that goes stale.
+
+**If the calendar cannot be read, the tasks still arrive.** The Google call is wrapped
+in its own `try` and a failure degrades the answer to the task half plus a note saying
+the calendar could not be read. It is the same split as the cron, where every job
+carries its own `try`: on a "what should I do?", losing the tasks over a 500 from Google
+would trade a useful answer for an error.
+
+Both tools were exercised the same way as `lib/slots.ts` — a fake calendar and a `Db`
+double, 26 more cases — covering the failing calendar, the exhausted budget, the
+inverted window, the day already past, and a range crossing October's clock change.
+
+---
+
+## 15. Roadmap
+
+| Phase | Scope | Status |
 |---|---|---|
-| **0** | Scaffold, webhook, guard de seguridad, echo | ✅ Hecha |
-| **1** | Provider NVIDIA + conversación de texto | ✅ Hecha |
-| **2** | Registry de tools + tareas en Supabase + confirmaciones | ✅ Hecha |
-| **3** | Audio con Whisper | ✅ Hecha |
-| **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
-| **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
-| **6** | Eventos en Google Calendar (escritura) | ✅ Hecha |
-| **7** | Consultar, mover y borrar citas del calendario | ✅ Hecha |
+| **0** | Scaffold, webhook, security guard, echo | ✅ Done |
+| **1** | NVIDIA provider + text conversation | ✅ Done |
+| **2** | Tool registry + tasks in Supabase + confirmations | ✅ Done |
+| **3** | Audio with Whisper | ✅ Done |
+| **4** | History in Supabase + long-term memory | ✅ Done |
+| **5** | Cron: morning briefing and due-date reminders | ✅ Done |
+| **6** | Google Calendar events (write) | ✅ Done |
+| **7** | Reading, moving and deleting calendar appointments | ✅ Done |
+| **8** | Overlap warning on create and free-slot search | ✅ Done |
+| **9** | "What should I do now?": tasks + agenda + clock in one answer | ✅ Done |
+| **10** | Images with vision: the universal capture | ⬜ Pending |
+| **11** | Audio replies (TTS) | ⬜ Pending |
+| **12** | The briefing covering the day's meetings | ⬜ Pending |
+| **13** | The Sunday review | ⬜ Pending |
 
-Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
-chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
+Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
+and becomes an assistant; phase 5 is where it becomes proactive.
 
-Con la Fase 5 cerrada, el roadmap inicial está completo. La Fase 6 es el primer
-añadido de después; el resto sale de la lista del final, y ya no por orden.
+Phases 6 and 7 shipped back to back on the same day: 6 left the calendar write-only and
+the first real conversation made clear that would not hold. It is told in §13, because
+the lesson is not about the calendar but about where trimmed-down scopes break.
 
-Las fases 6 y 7 salieron seguidas y en el mismo día: la 6 dejó el calendario en solo
-escritura y la primera conversación real dejó claro que eso no se sostenía. Está contado
-en §13, porque la lección no es sobre el calendario sino sobre por dónde se rompen los
-alcances recortados.
+Phases 8 and 9 shipped together for the opposite reason: 9 is almost free once 8 exists
+—the interval arithmetic is the same— and splitting them would have meant two deploys
+for one idea. Both are told in §14.
 
-### Ideas para después
+**From 10 to 13 the order is about risk, not importance.** Phase 10 is the only one
+that opens up the LLM layer, and it comes after the agenda is complete so a contract
+change is not mixed in with new functionality. If only one were ever built, 10 is the
+one that saves the most manual work.
 
-- **El briefing contando las reuniones del día**, ahora que sabemos leer el calendario.
-  Es la lectura masiva que sigue fuera: haría falta decidir qué hacer con las series y
-  con las citas sin hora, y el briefing tiene que seguir siendo aburrido y exacto.
-- Más dominios de tools: notas, gastos, listas de compra.
-- Búsqueda web como tool.
-- Respuesta en audio (TTS) para contestar a los audios en el mismo formato.
-- Imágenes → modelo con visión (facturas, pizarras).
-- Panel web en Cloudflare Pages leyendo de Supabase.
-- Embeddings en `memories` (`pgvector`) cuando el recall por clave se quede corto.
+### Phase 10 — Images with vision: the universal capture
+
+The photo of the school letter, the concert poster, the receipt or a meeting's
+whiteboard, and out come the tasks and appointments. It is what saves the most manual
+work of anything left, and the only item that forces opening a contract:
+
+- **`LLMMessage.content` goes from `string | null` to accepting parts** (text +
+  image). It is the biggest change to the LLM layer since phase 1 and it has to stay
+  inside `src/llm/`: `agent.ts` must not learn that an image exists. In `messages` the
+  reference gets stored, never the base64 — one photo per turn would fill the history
+  window on its own.
+- **The budget.** Downloading the photo plus a call with an image costs more than text:
+  take the already-compressed size Telegram offers in `message.photo` —whichever one
+  will do, not the original— and ask the `Deadline` for the cap, exactly like the audio
+  path in §10.
+- **The predictable trap is the dates again.** A photo with five things in it fires
+  several tools in one turn, and here **there is no user message to read**: the
+  corrector in §7 has nothing to hold on to, the same hole as the confirmation-button
+  path. So this phase summarises what it understood and asks for **one** confirmation
+  before writing anything. It is slower, and it is what prevents five badly dated rows
+  at once.
+- A photo's `caption` is user text and does feed the corrector.
+
+### Phase 11 — Audio replies (TTS)
+
+Answering a voice note with a voice note. It is the detail that stops it feeling like a
+bot, and one of the cheap ones: `ChatAction` already covers `upload_voice` and
+`record_voice`, so what is missing is `sendVoice` on the client and a provider behind an
+interface in `src/tts/`, like the STT.
+
+- **Opus, not MP3.** That is what Telegram accepts as a voice note without conversion,
+  the same stroke of luck we already have with the incoming OGG. An MP3 arrives as a
+  file attachment, which is not the same thing in a chat.
+- **Voice only when the message came in as voice, and the text always too.** An alert
+  that only arrives as audio is an alert that cannot be read in a meeting.
+- It goes at the end of the turn with whatever budget is left. If it does not fit, the
+  text is sent and nothing is said: an audio is no reason to lose the reply.
+
+### Phase 12 — The briefing covering the day's meetings
+
+Already noted, and still the bulk reading that stays out. The non-negotiable
+requirement: the text is composed in code, without the model, because the briefing has
+to be boring and exact. What needs deciding is what to do with series
+—`singleEvents=true` already expands them—, with appointments that have no time, which
+go separately from the ones holding a slot, and with private ones, which get named as
+"something at 10:00" instead of having a title invented for them.
+
+And one new operational risk: the briefing starts depending on Google. If that call
+fails, the task briefing still has to go out — the per-job `try` already in the cron is
+exactly for this, and `what_now` in §14 is the precedent for how it degrades.
+
+### Phase 13 — The Sunday review
+
+One message a week: what got closed, what is still open, and what has been postponed
+for three weeks. That last one is what impresses, and what no app says out loud.
+
+Counting postponements needs the data, and today it is not there: `updated_at` does not
+tell moving a date apart from fixing a title. Start by reading it from
+`tool_call_logs`, which already stores every `update_task` with its arguments, before
+adding a counter to `tasks`.
+
+In code like the briefing, and with a KV marker like its own: one write a week.
+
+### Ideas with no phase assigned
+
+- **Forwarding Jarvis a message or a link** so it pulls the appointment out of it. Very
+  useful, but bringing in a URL from outside puts unpredictable size and latency inside
+  the 27 s: a download cap has to be decided first, along with what gets handed to the
+  model, because a page's raw HTML is tens of thousands of tokens.
+- **Web search as a tool.** Useful, not spectacular, and it would be the first third
+  party we do not control sitting inside a message's budget.
+- More tool domains: notes, expenses, shopping lists. There is nothing to learn there,
+  it is repeating the `tasks` pattern.
+- A web panel on Cloudflare Pages reading from Supabase. It takes the product out of
+  Telegram, which is where it works.
+- Embeddings on `memories` (`pgvector`) once key-based recall genuinely falls short.
+  Today it does not, and it would be invisible work.

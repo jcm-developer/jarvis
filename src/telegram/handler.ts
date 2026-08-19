@@ -20,22 +20,21 @@ export interface HandlerContext {
 }
 
 /**
- * Topes por paso, acotados además por el presupuesto global.
+ * Per-step caps, further bounded by the global budget.
  *
- * La descarga tenía 15 s partiendo de que las notas largas tardan más. No se
- * sostiene: Telegram manda las notas de voz en OGG/Opus a ~16 kbps, así que un
- * minuto de audio son unos 120 KB y bajan en menos de un segundo. Cuando la
- * descarga falla no es por el tamaño, es un pico puntual del servidor de
- * ficheros. Esperar 15 s a un fichero de 120 KB no lo arregla y deja al modelo
- * sin presupuesto; cortar antes y reintentar, sí.
+ * The download used to get 15 s on the assumption that long notes take longer. That does
+ * not hold: Telegram sends voice notes as OGG/Opus at ~16 kbps, so a minute of audio is
+ * about 120 KB and comes down in under a second. When the download fails it is not about
+ * size, it is a momentary spike on the file server. Waiting 15 s for a 120 KB file does
+ * not fix that and leaves the model without budget; cutting sooner and retrying does.
  */
 const MAX_DOWNLOAD_MS = 6_000;
 const MAX_STT_MS = 10_000;
 
 /**
- * Lo que hay que dejarle al agente después de transcribir para poder reintentar
- * la descarga. Es el mismo mínimo que `MIN_ROOM_FOR_CALL_MS` en agent.ts: por
- * debajo de eso el agente ni intenta llamar al modelo.
+ * What has to be left for the agent after transcribing in order to afford retrying the
+ * download. Same minimum as `MIN_ROOM_FOR_CALL_MS` in agent.ts: below that the agent
+ * does not even try to call the model.
  */
 const MIN_AGENT_MS = 4_000;
 
@@ -84,11 +83,11 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
     }
 
     const prompt = text ?? (await transcribeVoice(voice!, ctx));
-    // La transcripción devuelve un Reply ya formateado si falla.
+    // Transcription returns an already formatted Reply when it fails.
     if (typeof prompt !== 'string') return prompt;
 
-    // El historial guarda de dónde salió el mensaje: cuando el agente entiende
-    // algo raro, lo primero que se mira es si venía de un audio.
+    // The history records where the message came from: when the agent understands
+    // something odd, the first thing to check is whether it came from audio.
     const origin = text
       ? { source: 'text' as const }
       : { source: 'voice' as const, transcriptRaw: prompt };
@@ -104,7 +103,7 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
 
 type VoiceLike = { file_id: string; duration: number; mime_type?: string; file_size?: number };
 
-/** Devuelve el texto transcrito, o un Reply ya formateado si algo falla. */
+/** Returns the transcribed text, or an already formatted Reply when something fails. */
 async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<string | Reply> {
   if ((voice.file_size ?? 0) > MAX_DOWNLOAD_BYTES) {
     return { kind: 'text', text: new SttError('too_large', 'supera el límite').userMessage };
@@ -116,9 +115,9 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
     audio = await downloadVoice(voice, ctx);
   } catch (error) {
     const timedOut = isTimeout(error);
-    // El fallo se registra con los mismos datos que el éxito. Antes solo se
-    // volcaba la excepción, y un AbortError pelado no dice si se atascó getFile,
-    // la descarga, o si simplemente ya no quedaba presupuesto al llegar aquí.
+    // The failure is logged with the same data as the success. Only the exception used
+    // to be dumped, and a bare AbortError does not say whether getFile got stuck, the
+    // download did, or there was simply no budget left by the time we got here.
     console.error(
       JSON.stringify({
         event: 'voice_download_failed',
@@ -145,7 +144,7 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
       timeoutMs: ctx.deadline.budgetFor(MAX_STT_MS),
     });
 
-    // Desglosado por etapas: cuando algo se pasa de presupuesto, esto dice dónde.
+    // Broken down by stage: when something blows the budget, this says where.
     console.info(
       JSON.stringify({
         event: 'transcription',
@@ -160,7 +159,7 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
     );
 
     if (!transcript) {
-      // Nunca mandar una cadena vacía al modelo: respondería cualquier cosa.
+      // Never send an empty string to the model: it would answer anything.
       return { kind: 'text', text: new SttError('empty', 'sin texto').userMessage };
     }
     return transcript;
@@ -169,21 +168,21 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
       console.error(`stt_error kind=${error.kind}`, error.message);
       return { kind: 'text', text: error.userMessage };
     }
-    // Lo que no sea de transcripción sube: este catch llegó a tragarse cualquier
-    // fallo del STT y contestaba que no se había podido descargar el audio,
-    // mandando a mirar donde no era.
+    // Anything that is not about transcription propagates: this catch once swallowed
+    // every STT failure and answered that the audio could not be downloaded, sending
+    // people to look in the wrong place.
     throw error;
   }
 }
 
 /**
- * Descarga con un reintento.
+ * Download with one retry.
  *
- * Es el arreglo del "unas veces sí y otras no": el fallo típico no es el audio,
- * es un pico puntual del servidor de ficheros de Telegram, y al segundo intento
- * suele responder al instante. Solo se reintenta si después queda presupuesto
- * para transcribir y contestar; si no, mejor un mensaje ahora que quedarse a
- * medias cuando Cloudflare corte.
+ * This is the fix for the "sometimes it works and sometimes it does not": the typical
+ * failure is not the audio, it is a momentary spike on Telegram's file server, and the
+ * second attempt usually answers instantly. It only retries when there is budget left
+ * afterwards to transcribe and reply; otherwise a message now beats being cut off
+ * halfway by Cloudflare.
  */
 async function downloadVoice(voice: VoiceLike, ctx: HandlerContext): Promise<ArrayBuffer> {
   try {
@@ -198,7 +197,7 @@ async function downloadVoice(voice: VoiceLike, ctx: HandlerContext): Promise<Arr
 async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext): Promise<void> {
   const data = query.data ?? '';
 
-  // Responder cuanto antes: si no, Telegram deja el botón girando 30 segundos.
+  // Answer as soon as possible: otherwise Telegram leaves the button spinning for 30 s.
   await ctx.telegram.answerCallbackQuery(query.id).catch(() => {});
 
   const isConfirm = data.startsWith(CONFIRM_PREFIX);
@@ -233,7 +232,7 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
   }
 }
 
-/** Traduce excepciones a algo que una persona pueda leer en un chat. */
+/** Turns exceptions into something a person can read in a chat. */
 function describeError(error: unknown): string {
   if (error instanceof DeadlineExceededError) {
     console.warn('presupuesto agotado antes de terminar');
@@ -259,7 +258,7 @@ async function handleCommand(
   message: TelegramMessage,
   ctx: HandlerContext,
 ): Promise<string> {
-  // "/reset@mi_bot arg" → "reset"
+  // "/reset@my_bot arg" -> "reset"
   const command = text.split(/\s+/)[0]!.slice(1).split('@')[0]!.toLowerCase();
 
   switch (command) {
@@ -308,13 +307,13 @@ async function handleCommand(
   }
 }
 
-/** Telegram descarta el indicador "escribiendo…" a los 5 s, y el modelo tarda más. */
+/** Telegram drops the "typing…" indicator after 5 s, and the model takes longer. */
 const TYPING_REFRESH_MS = 4_000;
 
 async function withTyping<T>(ctx: HandlerContext, work: () => Promise<T>): Promise<T> {
   const ping = () => {
     ctx.telegram.sendChatAction(ctx.actor.chatId, 'typing').catch(() => {
-      // Que falle el indicador no debe abortar la respuesta.
+      // A failing indicator must not abort the reply.
     });
   };
 

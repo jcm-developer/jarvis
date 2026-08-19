@@ -5,18 +5,18 @@ import { LLMError } from './provider';
 import { OpenAICompatibleProvider } from './providers/openai-compatible';
 
 /**
- * Catálogo de proveedores.
+ * The provider catalogue.
  *
- * Los tres hablan el formato de OpenAI, así que comparten adaptador. Añadir uno
- * nuevo es una entrada aquí; el resto del código no se entera.
+ * All three speak OpenAI's format, so they share one adapter. Adding a new one is an
+ * entry here; the rest of the code does not notice.
  *
- * Gemini queda fuera a propósito: su API nativa no es compatible y necesitaría
- * su propio adaptador. Se añadirá si hace falta.
+ * Gemini is left out on purpose: its native API is not compatible and would need its
+ * own adapter. It will be added if the need shows up.
  *
- * ⚠️ Al elegir modelo de OpenAI: los de razonamiento (serie o) rechazan
- * `max_tokens` (esperan `max_completion_tokens`) y no admiten `temperature`.
- * El adaptador manda ambos parámetros, así que quédate en la familia gpt-4o /
- * gpt-4.1 salvo que se adapte antes.
+ * ⚠️ When picking an OpenAI model: the reasoning ones (the o series) reject
+ * `max_tokens` (they expect `max_completion_tokens`) and do not accept `temperature`.
+ * The adapter sends both parameters, so stay in the gpt-4o / gpt-4.1 family unless it
+ * gets adapted first.
  */
 const ENDPOINTS = {
   openai: {
@@ -40,8 +40,8 @@ export function isProviderName(value: string): value is ProviderName {
 }
 
 /**
- * Lanza LLMError si falta la clave. Es deliberado: el agente lo captura y avisa
- * por Telegram, en vez de morir en silencio como haría un fallo de configuración.
+ * Throws LLMError when the key is missing. That is deliberate: the agent catches it and
+ * warns over Telegram, instead of dying silently the way a configuration failure would.
  */
 export function createProvider(env: Env, config: Config): LLMProvider {
   const endpoint = ENDPOINTS[config.llmProvider];

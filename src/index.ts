@@ -9,25 +9,25 @@ import { handleUpdate } from './telegram/handler';
 import type { Env, TelegramUpdate } from './types';
 
 /**
- * Presupuesto total por mensaje.
+ * Total budget per message.
  *
- * Cloudflare concede 30 s a waitUntil() tras devolver la respuesta, compartidos
- * entre todas las tareas, y después las cancela sin más. 27 s deja margen para
- * enviar el mensaje de error si algún paso se pasa, en vez de morir en silencio.
+ * Cloudflare grants waitUntil() 30 s after the response is returned, shared across every
+ * task, and then cancels them without ceremony. 27 s leaves room to send the error
+ * message when a step overruns, instead of dying silently.
  *
- * Si esto se queda corto de forma habitual, la salida no es subirlo: es
- * Cloudflare Queues ($5/mes), que desacopla el trabajo de la petición y trae
- * reintentos. Afectaría solo a este fichero.
+ * If this turns out to be routinely short, the way out is not raising it: it is
+ * Cloudflare Queues ($5/month), which decouples the work from the request and brings
+ * retries. It would only affect this file.
  */
 const TOTAL_BUDGET_MS = 27_000;
 
 /**
- * Presupuesto del cron.
+ * The cron's budget.
  *
- * Más holgado que el del webhook porque aquí no hay nadie esperando una respuesta:
- * el trabajo se *awaita* directamente, sin waitUntil, así que no hay margen ajeno
- * que se agote. Sigue habiendo tope para que una llamada colgada no se coma la
- * ejecución entera y deje el briefing a medias.
+ * Looser than the webhook's because nobody is waiting for a response here: the work is
+ * awaited directly, without waitUntil, so there is no external margin to run out. There
+ * is still a cap so that one hung call does not eat the whole run and leave the briefing
+ * half done.
  */
 const CRON_BUDGET_MS = 25_000;
 
@@ -38,8 +38,8 @@ app.get('/', (c) => c.text('jarvis ok'));
 app.post('/webhook', async (c) => {
   const env = c.env;
 
-  // 1. Cabecera secreta. Lo más barato primero: descarta el ruido de internet
-  //    antes de tocar KV o parsear el cuerpo.
+  // 1. Secret header. Cheapest first: it discards internet noise before touching KV
+  //    or parsing the body.
   if (!verifyWebhookSecret(c.req.raw, env)) {
     console.warn('webhook rechazado: secret token inválido o ausente');
     return c.text('forbidden', 403);
@@ -51,8 +51,8 @@ app.post('/webhook', async (c) => {
   } catch (error) {
     if (error instanceof ConfigError) {
       console.error('configuración inválida:', error.message);
-      // 200 a propósito: el fallo es nuestro, no de Telegram. Un 5xx solo
-      // provocaría reintentos que volverían a fallar igual.
+      // 200 on purpose: the failure is ours, not Telegram's. A 5xx would only trigger
+      // retries that would fail the same way.
       return c.json({ ok: true });
     }
     throw error;
@@ -66,8 +66,8 @@ app.post('/webhook', async (c) => {
     return c.text('bad request', 400);
   }
 
-  // 2. Autorización. Silencio deliberado ante desconocidos: no confirmamos que
-  //    el bot existe ni damos pistas de por qué no responde.
+  // 2. Authorisation. Deliberate silence towards strangers: we neither confirm the bot
+  //    exists nor hint at why it does not answer.
   const actor = extractActor(update);
   if (!actor) {
     return c.json({ ok: true });
@@ -77,27 +77,28 @@ app.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
-  // 3. Dedupe. Si Telegram reintenta este update, no se vuelve a ejecutar.
+  // 3. Dedupe. If Telegram retries this update, it does not run again.
   const claimed = await claimUpdate(env, update.update_id);
   if (!claimed) {
     console.info(`update ${update.update_id} ya procesado, se ignora`);
     return c.json({ ok: true });
   }
 
-  // 4. Responder 200 al instante y procesar en background.
+  // 4. Answer 200 immediately and process in the background.
   //
-  //    Este punto costó dos iteraciones y conviene dejar escrito por qué está así.
+  //    This point cost two iterations and it is worth writing down why it looks like
+  //    this.
   //
-  //    Estamos entre dos límites opuestos:
-  //      · Si esperamos a terminar antes de responder, Telegram corta. Se midió
-  //        en producción: reintenta a los ~4 s, y al desconectarse el cliente
-  //        Cloudflare cancela la ejecución. Silencio total.
-  //      · Si procesamos en waitUntil() sin límite, Cloudflare cancela la tarea
-  //        pasado un margen tras la respuesta. También silencio.
+  //    We sit between two opposing limits:
+  //      - If we wait to finish before answering, Telegram cuts us off. Measured in
+  //        production: it retries after ~4 s, and once the client disconnects
+  //        Cloudflare cancels the execution. Total silence.
+  //      - If we process inside waitUntil() with no limit, Cloudflare kills the task
+  //        once a margin after the response has passed. Silence again.
   //
-  //    La salida es responder ya y caber en ese margen. Viable ahora que el
-  //    modelo tarda 2-5 s en vez de los 45 que tardaba NVIDIA. Deadline impone
-  //    el presupuesto y, si no llega, se responde con un mensaje honesto.
+  //    The way out is answering now and fitting inside that margin. Viable now that the
+  //    model takes 2-5 s instead of the 45 NVIDIA took. Deadline enforces the budget
+  //    and, when it does not make it, an honest message is sent.
   const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
   const started = Date.now();
   const deadline = Deadline.in(TOTAL_BUDGET_MS);
@@ -130,13 +131,13 @@ app.post('/webhook', async (c) => {
 });
 
 /**
- * Cron: briefing y recordatorios (Fase 5).
+ * Cron: briefing and reminders (Phase 5).
  *
- * Se *awaita* en vez de mandarlo a waitUntil: aquí no hay respuesta que devolver,
- * así que no existe el margen corto que obliga a la gimnasia del webhook.
+ * It is awaited instead of being handed to waitUntil: there is no response to return
+ * here, so the short margin that forces the webhook's gymnastics does not exist.
  *
- * Los fallos se registran y se tragan. Un throw haría que Cloudflare marcara la
- * ejecución como fallida, y ni la reintenta ni avisa: solo ensucia las métricas.
+ * Failures are logged and swallowed. A throw would have Cloudflare mark the run as
+ * failed, and it neither retries nor warns: it only dirties the metrics.
  */
 async function scheduled(env: Env): Promise<void> {
   let config;

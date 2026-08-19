@@ -1,45 +1,45 @@
 /**
- * Interfaz del calendario.
+ * The calendar interface.
  *
- * Mismo motivo que en llm/ y stt/: lo que sale hacia fuera va detrás de una
- * interfaz para que cambiar de proveedor sea una variable de entorno y no una
- * cirugía. Aquí no es teoría: ARCHITECTURE.md tiene el CalDAV de iCloud apuntado
- * como plan B por si Google se pone imposible, y sería otro fichero en este
- * directorio sin tocar las herramientas.
+ * Same reason as in llm/ and stt/: anything reaching outwards sits behind an interface
+ * so that switching providers is an environment variable and not surgery. That is not
+ * theory here: ARCHITECTURE.md keeps iCloud's CalDAV noted as the plan B should Google
+ * turn impossible, and it would be another file in this directory without touching the
+ * tools.
  *
- * La Fase 6 fue solo escritura. La Fase 7 añadió leer, modificar y borrar porque
- * sin eso una cita mal puesta solo se arreglaba desde el móvil. Lo que sigue
- * fuera es la lectura *masiva* para el briefing: eso sí arrastra tokens de
- * sincronización incremental y expansión de recurrentes, y es otro proyecto.
- * Buscar "el dentista del jueves" en un rango de fechas no arrastra nada de eso.
+ * Phase 6 was write-only. Phase 7 added reading, modifying and deleting, because
+ * without those a badly placed appointment could only be fixed from the phone. What
+ * remains out is *bulk* reading for the briefing: that one does drag in incremental
+ * sync tokens and recurrence expansion, and is another project. Searching for
+ * "Thursday's dentist" over a date range drags in none of that.
  */
 
 export interface CalendarEventInput {
   title: string;
   description: string | null;
   location: string | null;
-  /** Instante ISO del inicio. Null en un evento de día completo. */
+  /** ISO instant of the start. Null on an all-day event. */
   startAt: string | null;
   endAt: string | null;
-  /** 'YYYY-MM-DD' cuando es de día completo. El fin es exclusivo. */
+  /** 'YYYY-MM-DD' when it is all-day. The end is exclusive. */
   startDate: string | null;
   endDate: string | null;
-  /** Zona del usuario. Google la guarda con el evento y decide cómo mostrarlo. */
+  /** The user's zone. Google stores it with the event and decides how to show it. */
   timezone: string;
   /**
-   * Color del evento en la app del proveedor. Lo elige el código a partir de la
-   * categoría, no el modelo: ver CATEGORY_COLORS en tools/calendar.ts.
+   * The event's colour in the provider's app. Chosen by the code from the category,
+   * not by the model: see CATEGORY_COLORS in tools/calendar.ts.
    */
   colorId: string | null;
   /**
-   * Regla de repetición en formato RRULE, ya construida por el código. El modelo
-   * elige la frecuencia de una lista cerrada y nunca escribe la cadena: ver
-   * RECURRENCE_RULES en tools/calendar.ts.
+   * Recurrence rule in RRULE format, already built by the code. The model picks the
+   * frequency from a closed list and never writes the string: see RECURRENCE_RULES in
+   * tools/calendar.ts.
    */
   recurrence: string[] | null;
 }
 
-/** Solo los campos que se envían se tocan; el resto del evento se queda como está. */
+/** Only the fields sent get touched; the rest of the event stays as it is. */
 export interface CalendarEventPatch {
   title?: string;
   description?: string | null;
@@ -54,45 +54,45 @@ export interface CalendarEventPatch {
 
 export interface CalendarEvent {
   id: string;
-  /** Enlace al evento en la web del proveedor, si lo devuelve. */
+  /** Link to the event on the provider's site, when it returns one. */
   url: string | null;
 }
 
 export interface CalendarEventSummary extends CalendarEvent {
   /**
-   * Vacío cuando el evento es privado y el permiso compartido es el que oculta
-   * los detalles: ahí Google devuelve el hueco ocupado sin su título.
+   * Empty when the event is private and the shared permission is the one hiding the
+   * details: there Google returns the occupied slot without its title.
    */
   title: string;
   startAt: string | null;
   endAt: string | null;
-  /** 'YYYY-MM-DD' si ocupa el día entero. */
+  /** 'YYYY-MM-DD' when it takes up the whole day. */
   startDate: string | null;
   /**
-   * 'YYYY-MM-DD' **exclusivo**, como lo devuelve Google: un viaje del 23 al 26 llega
-   * con `endDate` = 27. Hace falta para conservar los días que dura al moverlo.
+   * 'YYYY-MM-DD' **exclusive**, as Google returns it: a trip from the 23rd to the 26th
+   * arrives with `endDate` = 27. Needed to preserve its length when moving it.
    */
   endDate: string | null;
   allDay: boolean;
-  /** El color con el que está guardado, si tiene uno propio. */
+  /** The colour it is stored with, when it has one of its own. */
   colorId: string | null;
   /**
-   * El evento es una repetición de una serie. Importa porque modificar esta
-   * instancia no toca las demás, y hay que decírselo al usuario.
+   * The event is one occurrence of a series. It matters because modifying this
+   * instance does not touch the others, and the user has to be told.
    */
   recurring: boolean;
   /**
-   * Id de la serie a la que pertenece esta repetición, cuando lo es. Es el id con
-   * el que se toca el cumpleaños entero en vez del de este año.
+   * Id of the series this occurrence belongs to, when it is one. It is the id that
+   * touches the whole birthday instead of just this year's.
    */
   seriesId: string | null;
 }
 
 export interface CalendarSearch {
-  /** Instante ISO desde el que buscar. */
+  /** ISO instant to search from. */
   from: string;
   to: string;
-  /** Texto libre que Google busca en título, descripción y sitio. */
+  /** Free text Google searches in title, description and location. */
   query: string | null;
   limit: number;
 }
@@ -100,9 +100,9 @@ export interface CalendarSearch {
 export interface CalendarClient {
   readonly name: string;
   /**
-   * `timeoutMs` es el presupuesto TOTAL de la operación, autenticación incluida.
-   * Se pasa desde el `Deadline` del mensaje: aquí no se fijan topes propios, que
-   * es la trampa que ya nos costó una fase (ver §11 de ARCHITECTURE.md).
+   * `timeoutMs` is the TOTAL budget for the operation, authentication included. It is
+   * passed down from the message's `Deadline`: no caps are set here, which is the trap
+   * that already cost us a phase (see §11 of ARCHITECTURE.md).
    */
   createEvent(input: CalendarEventInput, timeoutMs: number): Promise<CalendarEvent>;
   listEvents(search: CalendarSearch, timeoutMs: number): Promise<CalendarEventSummary[]>;

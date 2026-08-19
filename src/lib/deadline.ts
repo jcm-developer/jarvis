@@ -1,13 +1,13 @@
 /**
- * Presupuesto de tiempo compartido por todos los pasos de un mensaje.
+ * Time budget shared by every step of a single message.
  *
- * Existe porque el procesamiento vive en `ctx.waitUntil()`, y Cloudflare cancela
- * esas tareas sin avisar pasado un margen tras devolver la respuesta. Poner un
- * timeout por llamada no basta: tres pasos de 20 s cada uno cumplen sus timeouts
- * individuales y aun así se pasan del presupuesto conjunto.
+ * It exists because the processing lives in `ctx.waitUntil()`, and Cloudflare kills
+ * those tasks without warning once a margin after the response has passed. A timeout
+ * per call is not enough: three steps of 20 s each honour their individual timeouts
+ * and still blow the combined budget.
  *
- * Cada paso pide lo que le queda al reloj en vez de asumir un tope fijo, y si se
- * agota preferimos un mensaje honesto al silencio.
+ * Every step asks the clock what is left instead of assuming a fixed cap, and when it
+ * runs out we prefer an honest message to silence.
  */
 export class Deadline {
   private constructor(private readonly endsAt: number) {}
@@ -20,12 +20,12 @@ export class Deadline {
     return Math.max(0, this.endsAt - Date.now());
   }
 
-  /** Lo que queda, acotado por el máximo que ese paso admite de por sí. */
+  /** What is left, capped by the maximum that step accepts on its own. */
   budgetFor(maxMs: number): number {
     return Math.min(maxMs, this.remainingMs());
   }
 
-  /** Deja margen para enviar la respuesta a Telegram antes de que nos corten. */
+  /** Leaves room to send the reply to Telegram before we get cut off. */
   hasRoomFor(minimumMs: number): boolean {
     return this.remainingMs() >= minimumMs;
   }

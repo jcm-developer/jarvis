@@ -1,31 +1,31 @@
 /**
- * Contrato común a todos los proveedores de LLM.
+ * The contract shared by every LLM provider.
  *
- * Nada fuera de `src/llm/` debe saber qué proveedor está en uso. Cuando el free
- * tier de NVIDIA se agote, cambiar a Groq o Gemini debe ser una variable de
- * entorno, no una refactorización del agente.
+ * Nothing outside `src/llm/` should know which provider is in use. When NVIDIA's free
+ * tier runs out, switching to Groq or Gemini must be an environment variable, not a
+ * refactor of the agent.
  */
 
 export interface ToolCall {
   id: string;
   name: string;
-  /** Argumentos sin parsear, tal cual los emite el modelo. Puede ser JSON inválido. */
+  /** Unparsed arguments, exactly as the model emits them. May be invalid JSON. */
   arguments: string;
 }
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
-  /** Solo en role='assistant', cuando el modelo pide herramientas. */
+  /** Only on role='assistant', when the model asks for tools. */
   toolCalls?: ToolCall[];
-  /** Solo en role='tool', enlaza con la llamada que originó el resultado. */
+  /** Only on role='tool', links back to the call that produced the result. */
   toolCallId?: string;
 }
 
 export interface ToolSchema {
   name: string;
   description: string;
-  /** JSON Schema de los argumentos. */
+  /** JSON Schema of the arguments. */
   parameters: Record<string, unknown>;
 }
 
@@ -39,7 +39,7 @@ export interface LLMResponse {
 }
 
 export interface ChatOptions {
-  /** Tope para esta llamada concreta. Lo fija el presupuesto global del mensaje. */
+  /** Cap for this particular call. Set by the message's global budget. */
   timeoutMs?: number;
 }
 
@@ -70,7 +70,7 @@ export class LLMError extends Error {
     this.name = 'LLMError';
   }
 
-  /** Mensaje apto para enviar al usuario por Telegram. */
+  /** A message fit to send to the user over Telegram. */
   get userMessage(): string {
     switch (this.kind) {
       case 'auth':

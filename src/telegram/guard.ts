@@ -1,7 +1,7 @@
 import type { Config } from '../config';
 import type { Env, TelegramUpdate } from '../types';
 
-/** Un update repetido no se vuelve a procesar durante 24 h. */
+/** A repeated update is not processed again for 24 h. */
 const DEDUPE_TTL_SECONDS = 86_400;
 
 export interface Actor {
@@ -10,11 +10,11 @@ export interface Actor {
 }
 
 /**
- * Valida la cabecera secreta del webhook.
+ * Validates the webhook's secret header.
  *
- * Telegram la envía en cada petición si se registró el webhook con `secret_token`.
- * Sin esto, la URL del Worker es un endpoint público que cualquiera puede invocar
- * con updates falsos.
+ * Telegram sends it on every request when the webhook was registered with
+ * `secret_token`. Without this, the Worker's URL is a public endpoint anyone can call
+ * with forged updates.
  */
 export function verifyWebhookSecret(request: Request, env: Env): boolean {
   const received = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
@@ -22,7 +22,7 @@ export function verifyWebhookSecret(request: Request, env: Env): boolean {
   return timingSafeEqual(received, env.TELEGRAM_WEBHOOK_SECRET);
 }
 
-/** Comparación en tiempo constante. La longitud sí se filtra, y es aceptable. */
+/** Constant-time comparison. The length does leak, and that is acceptable. */
 function timingSafeEqual(a: string, b: string): boolean {
   const encoder = new TextEncoder();
   const left = encoder.encode(a);
@@ -36,7 +36,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Extrae quién habla y en qué chat, sea un mensaje o un botón pulsado. */
+/** Extracts who is talking and in which chat, be it a message or a button tap. */
 export function extractActor(update: TelegramUpdate): Actor | null {
   const message = update.message ?? update.edited_message;
   if (message?.from) {
@@ -56,15 +56,15 @@ export function isAuthorized(actor: Actor, config: Config): boolean {
 }
 
 /**
- * Reclama un update_id. Devuelve `true` solo la primera vez que se ve.
+ * Claims an update_id. Returns `true` only the first time it is seen.
  *
- * Telegram reintenta la entrega si el webhook no responde 200 a tiempo. Sin este
- * candado, un reintento reejecuta las acciones del agente: tareas duplicadas o,
- * peor, un borrado repetido.
+ * Telegram retries delivery when the webhook does not answer 200 in time. Without this
+ * lock, a retry re-runs the agent's actions: duplicated tasks or, worse, a repeated
+ * deletion.
  *
- * KV es eventualmente consistente, así que dos reintentos casi simultáneos podrían
- * colarse. Para un solo usuario el riesgo es despreciable; si algún día importa,
- * el reemplazo es un Durable Object.
+ * KV is eventually consistent, so two near-simultaneous retries could slip through. For
+ * a single user the risk is negligible; if it ever matters, the replacement is a Durable
+ * Object.
  */
 export async function claimUpdate(env: Env, updateId: number): Promise<boolean> {
   const key = `dedupe:update:${updateId}`;

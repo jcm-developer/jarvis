@@ -37,8 +37,8 @@ export interface MemoryRow {
 }
 
 /**
- * Fila de historial. `tool_calls` guarda la estructura del proveedor tal cual,
- * para poder reconstruir el contexto del modelo sin transformarla.
+ * A history row. `tool_calls` stores the provider's structure verbatim, so the model's
+ * context can be rebuilt without transforming it.
  */
 export interface MessageRow {
   role: 'user' | 'assistant' | 'tool' | 'system';

@@ -3,10 +3,10 @@ import type { Transcriber } from './provider';
 import { SttError } from './provider';
 
 /**
- * Transcripción con Workers AI, dentro de la propia red de Cloudflare.
+ * Transcription with Workers AI, inside Cloudflare's own network.
  *
- * Alternativa gratuita a OpenAI: entra en la cuota diaria de Neurons del plan
- * free y no sale del Worker, así que no añade latencia de red externa.
+ * The free alternative to OpenAI: it comes out of the free plan's daily Neuron quota and
+ * never leaves the Worker, so it adds no external network latency.
  */
 export class WorkersAiTranscriber implements Transcriber {
   readonly name = 'workers-ai';
@@ -17,13 +17,12 @@ export class WorkersAiTranscriber implements Transcriber {
     private readonly language: string,
   ) {}
 
-  // Workers AI corre dentro de Cloudflare y no acepta AbortSignal, así que aquí
-  // el presupuesto de tiempo no es aplicable.
+  // Workers AI runs inside Cloudflare and does not accept an AbortSignal, so the time
+  // budget does not apply here.
   async transcribe(audio: ArrayBuffer): Promise<string> {
     try {
-      // whisper-large-v3-turbo espera el audio en base64, no como array de bytes
-      // (eso era el @cf/openai/whisper antiguo). El tipado del binding es laxo,
-      // de ahí el cast.
+      // whisper-large-v3-turbo expects the audio as base64, not as a byte array (that
+      // was the old @cf/openai/whisper). The binding's typing is loose, hence the cast.
       const result = (await (this.ai as unknown as AiRunner).run(this.model, {
         audio: toBase64(audio),
         language: this.language,
@@ -42,7 +41,7 @@ interface AiRunner {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Por trozos: un spread de cientos de miles de bytes revienta la pila. */
+/** In chunks: spreading hundreds of thousands of bytes blows the stack. */
 function toBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   const CHUNK = 0x8000;

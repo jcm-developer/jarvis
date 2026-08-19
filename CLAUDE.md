@@ -13,8 +13,12 @@ mejorables están así por un motivo que ya está escrito ahí.
 
 ## Cómo trabajamos
 
-- **Idioma: español.** Respuestas, comentarios del código, documentación y textos
-  que ve el usuario en Telegram. La única excepción son los commits, en inglés.
+- **Idioma: el código y la documentación, en inglés.** Comentarios, nombres,
+  ARCHITECTURE.md, README.md y los mensajes de commit. En español se queda solo lo
+  que lee una persona o el modelo: los textos que salen por Telegram, el system
+  prompt, las descripciones de las tools y los `error` que vuelven al modelo. Eso es
+  producto, no código, y traducirlo cambiaría cómo suena el bot. Las respuestas de
+  este chat y este propio fichero también van en español.
 - **Vamos por fases.** El roadmap está al final de ARCHITECTURE.md. Cuando digo
   "el siguiente punto" o "continuamos", es la siguiente fase pendiente de esa tabla.
 - Al cerrar una fase se actualizan **los tres**: el código, el roadmap de

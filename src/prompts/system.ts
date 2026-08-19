@@ -12,27 +12,30 @@ export interface SystemPromptInput {
 }
 
 /**
- * Personalidad y reglas de negocio.
+ * Personality and business rules.
  *
- * Aquí NO se describen las herramientas: van como JSON Schema en el campo `tools`
- * de la petición. Describirlas también en prosa duplicaría la fuente de verdad y
- * las dos versiones se desincronizarían a la primera.
+ * The tools are NOT described here: they travel as JSON Schema in the request's `tools`
+ * field. Describing them in prose as well would duplicate the source of truth and the two
+ * versions would drift apart immediately.
+ *
+ * The prompt's text stays in Spanish: it is what shapes how the bot sounds in the chat,
+ * so it is product, not code.
  */
 export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPromptInput): string {
-  // ORDEN IMPORTANTE: primero todo lo estable, al final lo que cambia.
+  // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
-  // OpenAI cachea automáticamente el prefijo común de peticiones consecutivas y
-  // cobra la mitad por esa parte. El prefijo se corta en el primer carácter que
-  // difiere, así que la fecha y hora —que cambia cada minuto— tiene que ir al
-  // final: puesta arriba invalidaría el prompt entero en cada mensaje.
+  // OpenAI automatically caches the common prefix of consecutive requests and charges
+  // half for that part. The prefix is cut at the first character that differs, so the
+  // date and time —which change every minute— have to go last: placed at the top they
+  // would invalidate the whole prompt on every message.
   //
-  // Nuestra carga es ~97% tokens de entrada, así que esto no es un detalle menor.
+  // Our load is ~97% input tokens, so this is not a minor detail.
   const sections = [
     'Eres Jarvis, el asistente personal de un desarrollador. Hablas con él por Telegram.',
     '',
-    // Declarar los límites por escrito sale más barato que arreglar una promesa
-    // incumplida: sin esta lista el modelo ofrecía buscar cosas en internet y
-    // "estar pendiente" de avisos que no había programado.
+    // Declaring the limits in writing is cheaper than fixing a broken promise: without
+    // this list the model offered to search the internet and to "keep an eye on"
+    // reminders it had never scheduled.
     'Lo que puedes hacer: gestionar sus tareas, gestionar las citas de su calendario y',
     'recordar datos suyos, con las herramientas que tienes. Nada más. En concreto NO',
     'puedes:',
@@ -82,6 +85,9 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     '  así que ahí no supongas nunca.',
     '- De las citas del calendario no aviso yo: los recordatorios los da su propia app',
     '  de calendario. No le prometas un aviso de una cita como si lo fuera a mandar yo.',
+    '- Nunca calcules tú si dos citas se solapan, cuánto rato libre queda entre ellas ni',
+    '  cuándo tiene un hueco: eso lo hago yo. Para los huecos usa find_free_slots y para',
+    '  "¿qué hago ahora?" usa what_now, que ya te da la agenda y las tareas cruzadas.',
     '- Cuando la petición está clara, ejecútala sin pedir permiso: el sistema ya pide',
     '  confirmación con botones en lo irreversible. Preguntar es para las dudas de',
     '  verdad, no para pedir el visto bueno de algo evidente.',
@@ -125,7 +131,7 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     'que está su idea: si algo no cuadra, dilo.',
   );
 
-  // --- A partir de aquí, contenido volátil: rompe la caché de prefijo ---
+  // --- From here on, volatile content: it breaks the prefix cache ---
 
   if (memories.length > 0) {
     sections.push(
@@ -135,13 +141,13 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     );
   }
 
-  // Las fechas se dan también en ISO, y hoy y mañana explícitos.
+  // The dates are also given in ISO, with today and tomorrow spelled out.
   //
-  // Antes solo iba la fecha en castellano ("martes, 18 de agosto de 2026, 12:27") y
-  // el modelo fechaba las tareas al día siguiente: acertaba la hora y fallaba el día,
-  // copiando el año-mes-día de otras tareas que ya tenía en el contexto. Un ISO
-  // delante le da el formato hecho y la referencia sin que tenga que construirla.
-  // Datos sueltos en vez de prosa: el modelo los localiza mejor y cuestan menos.
+  // It used to carry only the Spanish date ("martes, 18 de agosto de 2026, 12:27") and the
+  // model dated tasks to the following day: it got the time right and the day wrong,
+  // copying the year-month-day from other tasks already in its context. An ISO string in
+  // front hands it the format ready-made and the reference without having to build it.
+  // Loose data instead of prose: the model locates it better and it costs less.
   sections.push(
     '',
     'Contexto temporal',
@@ -169,7 +175,7 @@ function formatDateTime(date: Date, timezone: string): string {
       timeStyle: 'short',
     }).format(date);
   } catch {
-    // Una zona horaria inválida en la config no debe tumbar la conversación.
+    // An invalid time zone in the config must not bring the conversation down.
     return `${date.toISOString()} (UTC)`;
   }
 }

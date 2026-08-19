@@ -13,26 +13,26 @@ import type { TelegramClient } from '../telegram/client';
 import type { Env } from '../types';
 
 /**
- * Briefing diario: lo que hay hoy, una vez al día y a la hora local del usuario.
+ * Daily briefing: what today holds, once a day and at the user's local hour.
  *
- * El texto se compone aquí, sin pasar por el modelo. Es una lista de tareas con
- * fechas: el LLM no añadiría nada y sí añadiría coste, latencia y la posibilidad
- * de inventarse una tarea que no existe. El briefing debe ser aburrido y exacto.
+ * The text is composed here, without going through the model. It is a list of tasks with
+ * dates: the LLM would add nothing and would add cost, latency and the chance of
+ * inventing a task that does not exist. The briefing has to be boring and exact.
  */
 
-/** La marca de "ya enviado hoy" caduca sola; no hace falta limpiarla. */
+/** The "already sent today" marker expires on its own; no cleanup needed. */
 const MARKER_TTL_SECONDS = 172_800; // 48 h
 
 /**
- * Ancho de la ventana de envío, en horas. Con BRIEFING_HOUR=8: 8, 9 o 10.
+ * Width of the sending window, in hours. With BRIEFING_HOUR=8: 8, 9 or 10.
  *
- * El cron puede no dispararse a su hora, y comparando la hora exacta ese día
- * simplemente no habría briefing. Con ventana se recupera; sin límite llegaría un
- * "buenos días" a las once de la noche.
+ * The cron may miss its tick, and comparing the exact hour would simply mean no briefing
+ * that day. A window recovers it; with no limit at all, a "good morning" would land at
+ * eleven at night.
  */
 const WINDOW_HOURS = 3;
 
-/** Suficiente para un día cargado, y acota el tamaño del mensaje. */
+/** Enough for a busy day, and it bounds the message's size. */
 const MAX_TASKS = 25;
 
 export interface BriefingDeps {
@@ -44,7 +44,7 @@ export interface BriefingDeps {
   briefingHour: number;
 }
 
-/** Devuelve true si se envió. */
+/** Returns true when it was sent. */
 export async function sendBriefingIfDue(deps: BriefingDeps): Promise<boolean> {
   const { env, db, telegram, target, now, briefingHour } = deps;
 
@@ -52,9 +52,8 @@ export async function sendBriefingIfDue(deps: BriefingDeps): Promise<boolean> {
   const hoursLate = local.hour - briefingHour;
   if (hoursLate < 0 || hoursLate >= WINDOW_HOURS) return false;
 
-  // La clave lleva la fecha LOCAL, no la UTC: es la que define "hoy" para quien
-  // lee el mensaje. Una escritura al día en KV, que del presupuesto de 1.000 no
-  // se nota.
+  // The key carries the LOCAL date, not the UTC one: that is what defines "today" for
+  // whoever reads the message. One KV write a day, which the 1,000 budget does not feel.
   const marker = `briefing:${target.userId}:${local.date}`;
   if (await env.STATE.get(marker)) return false;
 
@@ -67,8 +66,8 @@ export async function sendBriefingIfDue(deps: BriefingDeps): Promise<boolean> {
   const text = buildBriefingText(tasks, target.timezone, now);
   await telegram.sendMessage(target.chatId, text);
 
-  // La marca se pone tras enviar: si Telegram falla, se reintenta al disparo
-  // siguiente mientras siga dentro de la ventana.
+  // The marker is written after sending: if Telegram fails, the next tick retries while
+  // still inside the window.
   await env.STATE.put(marker, '1', { expirationTtl: MARKER_TTL_SECONDS });
 
   await saveTurns(db, target.conversationId, [{ role: 'assistant', content: text }]);
@@ -85,8 +84,8 @@ function buildBriefingText(tasks: TaskRow[], timezone: string, now: Date): strin
 
   for (const task of tasks) {
     if (!task.due_at) {
-      // Las tareas sin fecha y sin prioridad no entran: el briefing es lo de hoy,
-      // no el inventario completo de pendientes.
+      // Tasks with neither a date nor a priority stay out: the briefing is today, not
+      // the full inventory of pending things.
       if (task.priority === 1) undatedUrgent.push(task);
       continue;
     }
@@ -131,7 +130,7 @@ function flag(task: TaskRow): string {
   return task.priority === 1 ? ' (alta)' : '';
 }
 
-/** BRIEFING_HOUR es configurable, así que el saludo no puede dar por hecha la mañana. */
+/** BRIEFING_HOUR is configurable, so the greeting cannot assume it is morning. */
 function greeting(hour: number): string {
   if (hour < 14) return 'Buenos días';
   if (hour < 21) return 'Buenas tardes';

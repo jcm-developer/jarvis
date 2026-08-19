@@ -12,31 +12,31 @@ import {
 import type { TelegramClient } from '../telegram/client';
 
 /**
- * Recordatorios de tareas que vencen.
+ * Reminders for tasks falling due.
  *
- * Hay dos clases de aviso y no se pueden medir con la misma vara:
+ * There are two classes of alert and they cannot be held to the same standard:
  *
- * - **A la hora pedida** (`remind_at`): "recuérdamelo a las 12:10" tiene que llegar
- *   a las 12:10, no cuando venga bien. La precisión la marca el periodo del cron.
- * - **Antes de vencer** (`due_at` sin `remind_at`): aquí interesa el margen. Avisar
- *   justo al vencer no sirve de nada, así que se avisa con una hora de antelación.
+ * - **At the requested time** (`remind_at`): "remind me at 12:10" has to arrive at
+ *   12:10, not whenever convenient. The precision is set by the cron's period.
+ * - **Before it is due** (`due_at` with no `remind_at`): here what matters is the margin.
+ *   Warning right at the deadline is useless, so it goes out an hour ahead.
  *
- * Esto costó un fallo real: con el cron cada hora en punto, un aviso pedido a las
- * 12:10 desde un mensaje de las 12:07 no podía llegar antes de las 13:00. Por eso
- * el cron pasó a cada cinco minutos.
+ * This cost a real failure: with the cron running on the hour, an alert requested for
+ * 12:10 from a message sent at 12:07 could not arrive before 13:00. That is why the cron
+ * moved to every five minutes.
  *
- * `reminded_at` es lo que evita repetir el aviso en cada disparo hasta que la tarea
- * se complete. La primera vez que corre esto, las tareas ya vencidas de antes
- * también entran: son las que más falta hacía recordar.
+ * `reminded_at` is what stops the alert repeating on every tick until the task is
+ * completed. The first time this runs, tasks that were already overdue come in too: they
+ * are the ones that most needed reminding.
  */
 
-/** Igual que el periodo del cron: el aviso llega dentro de esos cinco minutos. */
+/** Same as the cron's period: the alert lands within those five minutes. */
 const PRECISE_HORIZON_MS = 5 * 60 * 1000;
 
-/** Antelación de cortesía para las tareas que solo tienen fecha límite. */
+/** Courtesy head start for tasks that only have a due date. */
 const DUE_HORIZON_MS = 60 * 60 * 1000;
 
-/** Tope por ejecución: un histórico de vencidas no debe llegar como una avalancha. */
+/** Per-run cap: a backlog of overdue tasks must not arrive as an avalanche. */
 const MAX_PER_RUN = 10;
 
 export interface ReminderDeps {
@@ -46,7 +46,7 @@ export interface ReminderDeps {
   now: Date;
 }
 
-/** Devuelve de cuántas tareas se avisó. */
+/** Returns how many tasks were announced. */
 export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
   const { db, telegram, target, now } = deps;
 
@@ -56,12 +56,12 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
     reminded_at: 'is.null',
   };
 
-  // Dos consultas en paralelo en vez de una con `or`: los dos conjuntos son
-  // disjuntos —una exige remind_at, la otra que sea nulo—, así que no hay nada que
-  // deduplicar, y cada filtro usa sintaxis que ya está probada en el resto del código.
+  // Two queries in parallel instead of one with `or`: the two sets are disjoint —one
+  // requires remind_at, the other requires it to be null— so there is nothing to
+  // deduplicate, and each filter uses syntax already proven elsewhere in the code.
   //
-  // `lte` sobre una columna nula no casa nunca, así que las tareas sin fecha se
-  // quedan fuera solas, sin filtrarlas aparte.
+  // `lte` never matches a null column, so tasks with no date drop out on their own,
+  // without a separate filter.
   const [requested, upcoming] = await Promise.all([
     db.select<TaskRow>('tasks', {
       filters: {
@@ -82,9 +82,9 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
     }),
   ]);
 
-  // El Map deduplica por id. Los dos conjuntos no deberían solaparse nunca, pero si
-  // algún día uno de los filtros cambia y sí lo hacen, el fallo sería un aviso
-  // repetido en el mismo mensaje: barato de evitar, feo de leer en el chat.
+  // The Map deduplicates by id. The two sets should never overlap, but if one of the
+  // filters ever changes and they do, the failure would be a repeated alert inside the
+  // same message: cheap to prevent, ugly to read in the chat.
   const tasks = [...new Map([...requested, ...upcoming].map((task) => [task.id, task])).values()]
     .sort((a, b) => alarmTime(a) - alarmTime(b))
     .slice(0, MAX_PER_RUN);
@@ -94,13 +94,13 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
   const text = buildReminderText(tasks, target.timezone, now);
   await telegram.sendMessage(target.chatId, text);
 
-  // Marcar DESPUÉS de enviar, y a propósito: si el envío falla, la tarea sigue sin
-  // marcar y el aviso se reintenta a la hora siguiente. Al revés, un fallo de
-  // Telegram se traduciría en un recordatorio que nunca llega.
+  // Marked AFTER sending, on purpose: if the send fails, the task stays unmarked and the
+  // alert is retried on the next tick. The other way round, a Telegram failure would turn
+  // into a reminder that never arrives.
   await markReminded(db, tasks, now);
 
-  // El aviso entra en el historial para que el modelo sepa de qué le hablan si el
-  // usuario contesta "hecho" o "posponlo".
+  // The alert goes into the history so the model knows what it is being told about when
+  // the user answers "done" or "push it back".
   await saveTurns(db, target.conversationId, [{ role: 'assistant', content: text }]);
 
   return tasks.length;
@@ -111,34 +111,34 @@ async function markReminded(db: Db, tasks: TaskRow[], now: Date): Promise<void> 
   try {
     await db.update('tasks', { id: `in.(${ids})` }, { reminded_at: now.toISOString() });
   } catch (error) {
-    // Un aviso repetido molesta; perderlo, no. Si esto falla se avisará otra vez
-    // dentro de una hora, y eso es el modo de fallo preferible.
+    // A repeated alert is annoying; a lost one is not merely annoying. If this fails the
+    // alert goes out again later, and that is the preferable failure mode.
     console.error('no se pudo marcar reminded_at:', error);
   }
 }
 
-/** Cuándo toca avisar de esta tarea: su aviso propio, o su vencimiento. */
+/** When this task is due to be announced: its own reminder, or its deadline. */
 function alarmTime(task: TaskRow): number {
   const iso = task.remind_at ?? task.due_at;
   return iso ? new Date(iso).getTime() : 0;
 }
 
 /**
- * El texto del aviso, escrito como lo escribiría una persona.
+ * The alert's text, written the way a person would write it.
  *
- * La primera versión era una plantilla —`Recordatorio: "X" venció a las 13:25`— y en
- * el chat se leía como una alarma de sistema: comillas alrededor del título, el verbo
- * "vencer" y la hora repetida aunque fuese la de ahora mismo. Un aviso que llega a la
- * hora pedida no es un incumplimiento, así que ya no se anuncia como tal.
+ * The first version was a template —`Recordatorio: "X" venció a las 13:25`— and in the
+ * chat it read like a system alarm: quotes around the title, the verb "expired" and the
+ * time repeated even when it was the current one. An alert arriving at the requested time
+ * is not a breach, so it is no longer announced as one.
  *
- * Se compone aquí y no con el modelo: cuesta cero tokens, no puede inventarse una
- * tarea y no depende de que el LLM esté disponible cuando salta el cron.
+ * Composed here and not with the model: it costs zero tokens, it cannot invent a task,
+ * and it does not depend on the LLM being available when the cron fires.
  */
 const OPENERS = ['Acuérdate de', 'No te olvides de', 'Oye, acuérdate de', 'Recuerda'];
 
 const COUNT_WORDS = ['', 'una', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho'];
 
-/** Margen dentro del cual la hora es "ahora" y no hace falta decirla. */
+/** Margin within which the time is "now" and does not need saying. */
 const IMMINENT_MS = 20 * 60 * 1000;
 
 function buildReminderText(tasks: TaskRow[], timezone: string, now: Date): string {
@@ -151,8 +151,8 @@ function buildReminderText(tasks: TaskRow[], timezone: string, now: Date): strin
       return `Se te ha pasado ${lowerFirst(task.title)}${when ? `, era ${when}` : ''}.`;
     }
 
-    // El saludo se elige por el id de la tarea: varía entre tareas y no cambia si el
-    // mismo aviso se repite, que quedaría raro.
+    // The opener is picked from the task's id: it varies between tasks and does not
+    // change when the same alert repeats, which would read oddly.
     const opener = OPENERS[hash(task.id) % OPENERS.length]!;
     const connector = opener.endsWith('de') ? '' : ':';
     return `${opener}${connector} ${lowerFirst(task.title)}${when ? ` ${when}` : ''}.`;
@@ -175,11 +175,11 @@ function isOverdue(task: TaskRow, now: Date): boolean {
 }
 
 /**
- * "a las 18:00", "ayer a las 09:00", "el 20 de agosto a las 09:00" o nada.
+ * "a las 18:00", "ayer a las 09:00", "el 20 de agosto a las 09:00" or nothing.
  *
- * Devuelve nada cuando la hora no aporta: si es dentro del margen de ahora mismo, o
- * si el propio título ya la lleva —"Llamar a David a las seis" con un "a las 13:25"
- * detrás es más confuso que decir solo el título—.
+ * It returns nothing when the time adds nothing: when it falls inside the right-now
+ * margin, or when the title already carries it —"Llamar a David a las seis" with an "a
+ * las 13:25" appended is more confusing than just the title.
  */
 function whenSuffix(task: TaskRow, timezone: string, now: Date): string | null {
   if (!task.due_at) return null;
@@ -197,12 +197,12 @@ function whenSuffix(task: TaskRow, timezone: string, now: Date): string | null {
   return `el ${formatDayAndTime(due, timezone)}`;
 }
 
-/** "Llamar a David" → "llamar a David", que es como se dice dentro de una frase. */
+/** "Llamar a David" -> "llamar a David", which is how it reads inside a sentence. */
 function lowerFirst(title: string): string {
   return title.charAt(0).toLowerCase() + title.slice(1);
 }
 
-/** Hash barato y estable. Solo se usa para elegir una frase, no para nada sensible. */
+/** Cheap, stable hash. Only used to pick a phrase, nothing sensitive. */
 function hash(value: string): number {
   let total = 0;
   for (let i = 0; i < value.length; i++) total = (total + value.charCodeAt(i)) % 997;

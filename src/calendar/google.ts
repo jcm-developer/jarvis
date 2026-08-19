@@ -11,26 +11,26 @@ import type {
 import { CalendarError } from './provider';
 
 /**
- * Google Calendar por su API REST, con `fetch` directo.
+ * Google Calendar over its REST API, with plain `fetch`.
  *
- * Sin `googleapis`: el SDK arrastra medio Node al bundle del Worker y de toda la
- * API usamos cuatro llamadas.
+ * No `googleapis`: the SDK drags half of Node into the Worker bundle, and out of the
+ * whole API we use four calls.
  */
 
 const API_BASE = 'https://www.googleapis.com/calendar/v3/calendars';
 
-/** Tope de la autenticación dentro del presupuesto total de la operación. */
+/** Cap for authentication inside the operation's total budget. */
 const AUTH_MAX_MS = 5_000;
 
-/** Por debajo de esto no merece la pena lanzar la petición: no va a llegar. */
+/** Below this the request is not worth firing: it will not make it. */
 const MIN_REQUEST_MS = 1_500;
 
 /**
- * Qué se estaba haciendo cuando Google dijo que no.
+ * What was being attempted when Google said no.
  *
- * Un 404 significa dos cosas distintas según la operación —el calendario no está
- * compartido, o el evento no existe— y mandar al usuario a revisar el secret
- * equivocado cuesta una tarde. Ya nos pasó.
+ * A 404 means two different things depending on the operation —the calendar is not
+ * shared, or the event does not exist— and sending the user to check the wrong secret
+ * costs an afternoon. It already happened to us.
  */
 type Operation = 'calendar' | 'event';
 
@@ -54,9 +54,9 @@ export class GoogleCalendar implements CalendarClient {
     const params = new URLSearchParams({
       timeMin: search.from,
       timeMax: search.to,
-      // Expande las series en sus repeticiones concretas. Es lo que permite
-      // modificar "el standup del lunes" sin tocar el resto de la serie: el id
-      // que devuelve es el de esa instancia, no el del patrón.
+      // Expands series into their concrete occurrences. That is what allows modifying
+      // "Monday's standup" without touching the rest of the series: the id it returns
+      // belongs to that instance, not to the pattern.
       singleEvents: 'true',
       orderBy: 'startTime',
       maxResults: String(search.limit),
@@ -82,8 +82,8 @@ export class GoogleCalendar implements CalendarClient {
       );
       return toSummary(raw);
     } catch (error) {
-      // Que no exista no es un fallo: es una respuesta, y quien llama decide qué
-      // decir. Los demás errores sí suben.
+      // Not existing is not a failure: it is an answer, and the caller decides what to
+      // say. Every other error does propagate.
       if (error instanceof CalendarError && (error.status === 404 || error.status === 410)) {
         return null;
       }
@@ -124,9 +124,9 @@ export class GoogleCalendar implements CalendarClient {
     },
     timeoutMs: number,
   ): Promise<T> {
-    // Autenticación y petición comparten un solo presupuesto en vez de tener cada
-    // una el suyo. Es la lección del audio (§10): dos pasos que cumplen su tope
-    // individual se salen del conjunto sin que nadie lo note.
+    // Authentication and request share a single budget instead of each having its own.
+    // That is the lesson from the audio path (§10): two steps honouring their individual
+    // caps blow the combined one without anybody noticing.
     const started = Date.now();
     const token = await getAccessToken(this.env, Math.min(AUTH_MAX_MS, timeoutMs));
     const left = timeoutMs - (Date.now() - started);
@@ -168,7 +168,7 @@ export class GoogleCalendar implements CalendarClient {
       throw new CalendarError(explain(response.status, request.operation), response.status);
     }
 
-    // DELETE devuelve 204 sin cuerpo.
+    // DELETE returns 204 with no body.
     if (!text) return null as T;
 
     try {
@@ -180,10 +180,10 @@ export class GoogleCalendar implements CalendarClient {
 }
 
 /**
- * Traduce los códigos que de verdad vamos a ver.
+ * Translates the status codes we are actually going to see.
  *
- * El mensaje vuelve al modelo como `{ok:false, error}` y acaba en el chat, así que
- * dice qué revisar sin inventarse la causa.
+ * The message goes back to the model as `{ok:false, error}` and ends up in the chat, so
+ * it says what to check without inventing the cause.
  */
 function explain(status: number, operation: Operation): string {
   if (status === 404 || status === 410) {
@@ -212,11 +212,11 @@ function explain(status: number, operation: Operation): string {
 }
 
 /**
- * Los eventos de día completo van con `date` y los de hora con `dateTime`; mezclar
- * los dos campos es un 400.
+ * All-day events travel with `date` and timed ones with `dateTime`; mixing the two
+ * fields is a 400.
  *
- * `timeZone` se manda aunque el `dateTime` ya lleve desplazamiento: es lo que
- * guarda Google con el evento y lo que decide cómo se muestra a quien lo abre.
+ * `timeZone` is sent even when the `dateTime` already carries an offset: it is what
+ * Google stores with the event and what decides how it is shown to whoever opens it.
  */
 function toGoogleEvent(input: CalendarEventInput): Record<string, unknown> {
   const when =
@@ -234,19 +234,19 @@ function toGoogleEvent(input: CalendarEventInput): Record<string, unknown> {
     ...(input.colorId ? { colorId: input.colorId } : {}),
     ...(input.recurrence ? { recurrence: input.recurrence } : {}),
     ...when,
-    // Los avisos del evento los da Google con la configuración del propio
-    // calendario. Nuestro cron no toca esto: solo sabe de la tabla `tasks`.
+    // The event's reminders come from Google, using the calendar's own settings. Our
+    // cron does not touch this: it only knows about the `tasks` table.
     reminders: { useDefault: true },
   };
 }
 
 /**
- * Solo viajan los campos presentes en el patch.
+ * Only the fields present in the patch travel.
  *
- * Un `PATCH` con el objeto entero sobrescribiría con vacío lo que el usuario tenga
- * puesto desde el móvil —la descripción, el sitio, los invitados— sin haberlo
- * pedido. `undefined` significa "no lo toques" y `null` "bórralo", que en la API
- * de Google es la cadena vacía.
+ * A `PATCH` with the whole object would blank out whatever the user set from their
+ * phone —the description, the location, the guests— without anyone asking. `undefined`
+ * means "leave it alone" and `null` means "clear it", which in Google's API is the
+ * empty string.
  */
 function toGooglePatch(patch: CalendarEventPatch): Record<string, unknown> {
   const body: Record<string, unknown> = {};
@@ -284,8 +284,8 @@ function toSummary(value: unknown): CalendarEventSummary | null {
   const raw = value as Record<string, unknown>;
 
   if (typeof raw['id'] !== 'string') return null;
-  // Con singleEvents=true aparecen también las instancias canceladas de una serie.
-  // Ofrecérselas al modelo sería ofrecerle mover algo que ya no está.
+  // With singleEvents=true the cancelled instances of a series show up too. Handing
+  // those to the model would be offering it something that is no longer there.
   if (raw['status'] === 'cancelled') return null;
 
   const start = asObject(raw['start']);

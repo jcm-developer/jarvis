@@ -1,13 +1,12 @@
 /**
- * Fecha y hora en la zona del usuario.
+ * Date and time in the user's zone.
  *
- * El cron de Cloudflare dispara en UTC, pero un briefing "de las 8 de la mañana"
- * solo tiene sentido en hora local, y España cambia de horario dos veces al año.
- * Así que nada de sumar offsets fijos: todo sale de `Intl`, que sí sabe cuándo
- * empieza el verano.
+ * Cloudflare's cron fires in UTC, but an "8 in the morning" briefing only makes sense
+ * in local time, and Spain shifts its clocks twice a year. So no adding fixed
+ * offsets: everything comes from `Intl`, which does know when summer time starts.
  *
- * Sin dependencias de fechas a propósito: son cuatro operaciones y `date-fns-tz`
- * pesa más que todo el Worker.
+ * No date library on purpose: this is four operations, and `date-fns-tz` weighs more
+ * than the whole Worker.
  */
 
 interface Parts {
@@ -20,11 +19,11 @@ interface Parts {
 }
 
 export interface LocalNow {
-  /** 'YYYY-MM-DD' en la zona del usuario. Sirve de clave "una vez al día". */
+  /** 'YYYY-MM-DD' in the user's zone. Doubles as the "once a day" key. */
   date: string;
-  /** Hora local, 0-23. */
+  /** Local hour, 0-23. */
   hour: number;
-  /** Minuto local, 0-59. */
+  /** Local minute, 0-59. */
   minute: number;
 }
 
@@ -34,12 +33,12 @@ export function localNow(instant: Date, timezone: string): LocalNow {
 }
 
 /**
- * El instante que corresponde a una hora local de un día local.
+ * The instant matching a local hour on a local day.
  *
- * Sirve para reconstruir "las 13:14 de hoy" a partir de la hora que puso el modelo
- * y el día que toca. Mismo truco de dos pasadas que `startOfLocalDay`: la primera
- * aproxima con el offset de ahora, la segunda lo corrige con el del propio
- * resultado, que es lo que salva los días de cambio de hora.
+ * Used to rebuild "13:14 today" from the hour the model picked and the day that
+ * actually applies. Same two-pass trick as `startOfLocalDay`: the first pass
+ * approximates with the current offset, the second corrects it with the offset of
+ * the result itself, which is what saves the clock-change days.
  */
 export function zonedInstant(
   date: string,
@@ -64,11 +63,11 @@ export function zonedInstant(
 }
 
 /**
- * Instante en que empieza el día local que contiene `instant`.
+ * The instant the local day containing `instant` begins.
  *
- * Se calcula por aproximación y una corrección: se aplica el offset de la zona en
- * `instant` y luego el de la medianoche estimada. La segunda pasada importa los
- * dos días del año en que el offset cambia justo en medio.
+ * Computed by approximation plus one correction: the zone offset at `instant` is
+ * applied first, then the offset at the estimated midnight. That second pass matters
+ * on the two days a year when the offset changes right in the middle.
  */
 export function startOfLocalDay(instant: Date, timezone: string): Date {
   const parts = zonedParts(instant, timezone);
@@ -80,11 +79,11 @@ export function startOfLocalDay(instant: Date, timezone: string): Date {
 }
 
 /**
- * Instante en que acaba el día local: la medianoche siguiente.
+ * The instant the local day ends: the next midnight.
  *
- * Se salta 26 h desde el inicio del día y se vuelve a pedir su medianoche, en vez
- * de sumar 24 h a pelo. Un día con cambio de hora dura 23 o 25 h, y sumar 24
- * dejaría fuera la última hora del día o metería la primera del siguiente.
+ * It jumps 26 h from the start of the day and asks for that day's midnight again,
+ * instead of adding a flat 24 h. A clock-change day lasts 23 or 25 h, and adding 24
+ * would either drop the day's last hour or pull in the next day's first one.
  */
 export function endOfLocalDay(instant: Date, timezone: string): Date {
   const start = startOfLocalDay(instant, timezone);
@@ -92,11 +91,11 @@ export function endOfLocalDay(instant: Date, timezone: string): Date {
 }
 
 /**
- * El instante en ISO 8601 con el desplazamiento del usuario:
- * '2026-08-18T12:27:00+02:00'.
+ * The instant in ISO 8601 with the user's offset: '2026-08-18T12:27:00+02:00'.
  *
- * Va al system prompt como plantilla. El modelo copia formatos mucho mejor que
- * calcula fechas, y sin un ISO delante escribía el día siguiente.
+ * It goes into the system prompt as a template. The model copies formats far better
+ * than it computes dates, and without an ISO string in front of it, it wrote the
+ * following day.
  */
 export function isoLocal(instant: Date, timezone: string): string {
   const p = zonedParts(instant, timezone);
@@ -111,28 +110,40 @@ export function isoLocal(instant: Date, timezone: string): string {
   );
 }
 
-/** 'YYYY-MM-DD' del día local siguiente. Para anclar "mañana" en el prompt. */
+/** 'YYYY-MM-DD' of the next local day. Anchors "tomorrow" in the prompt. */
 export function localTomorrow(instant: Date, timezone: string): string {
   return localNow(endOfLocalDay(instant, timezone), timezone).date;
 }
 
-/** 'YYYY-MM-DD' del día local anterior. Dos horas antes de medianoche es ayer. */
+/** 'YYYY-MM-DD' of the previous local day. Two hours before midnight is yesterday. */
 export function localYesterday(instant: Date, timezone: string): string {
   const beforeMidnight = startOfLocalDay(instant, timezone).getTime() - 2 * 60 * 60 * 1000;
   return localNow(new Date(beforeMidnight), timezone).date;
 }
 
-/** '23 de agosto' — un día suelto, sin hora ni día de la semana. Para los rangos. */
+/**
+ * Adds days to a 'YYYY-MM-DD' and returns another 'YYYY-MM-DD'.
+ *
+ * `Intl` is deliberately NOT involved: a bare date is not an instant, so the days
+ * are added in UTC and formatted back. Dragging the time zone into this is exactly
+ * what makes a trip start a day early.
+ */
+export function shiftDate(date: string, days: number): string {
+  const base = Date.parse(`${date}T00:00:00Z`);
+  return new Date(base + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/** '23 de agosto' — a bare day, no time and no weekday. Used inside ranges. */
 export function formatDay(instant: Date, timezone: string): string {
   return format(instant, timezone, { day: 'numeric', month: 'long' });
 }
 
-/** '17 de agosto a las 09:00' — para hablar de otro día sin sonar a formulario. */
+/** '17 de agosto a las 09:00' — another day without sounding like a form field. */
 export function formatDayAndTime(instant: Date, timezone: string): string {
   return `${formatDay(instant, timezone)} a las ${formatTime(instant, timezone)}`;
 }
 
-/** 'mar, 19 de agosto' — para encabezar el briefing. */
+/** 'mar, 19 de agosto' — the briefing's heading. */
 export function formatLongDate(instant: Date, timezone: string): string {
   return format(instant, timezone, { weekday: 'long', day: 'numeric', month: 'long' });
 }
@@ -142,7 +153,7 @@ export function formatTime(instant: Date, timezone: string): string {
   return format(instant, timezone, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
-/** '17 ago, 10:30' — para lo que venció otro día. */
+/** '17 ago, 10:30' — for whatever fell due on some other day. */
 export function formatShortDateTime(instant: Date, timezone: string): string {
   return format(instant, timezone, {
     day: 'numeric',
@@ -157,7 +168,7 @@ function format(instant: Date, timezone: string, options: Intl.DateTimeFormatOpt
   try {
     return new Intl.DateTimeFormat('es-ES', { timeZone: timezone, ...options }).format(instant);
   } catch {
-    // Una zona horaria inválida en la base de datos no debe tumbar el cron.
+    // An invalid time zone in the database must not bring the cron down.
     return instant.toISOString();
   }
 }
@@ -172,16 +183,16 @@ function offsetMs(instant: Date, timezone: string): number {
     parts.minute,
     parts.second,
   );
-  // Se redondea al segundo porque `instant` puede traer milisegundos y las
-  // partes formateadas no.
+  // Rounded to the second because `instant` may carry milliseconds while the
+  // formatted parts do not.
   return asIfUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
 /**
- * Descompone un instante en la zona indicada.
+ * Breaks an instant into parts in the given zone.
  *
- * `hourCycle: 'h23'` no es opcional: sin él, algunos entornos devuelven "24" a
- * medianoche y el resto del cálculo se va un día entero.
+ * `hourCycle: 'h23'` is not optional: without it some runtimes return "24" at
+ * midnight and the rest of the calculation drifts a whole day.
  */
 function zonedParts(instant: Date, timezone: string): Parts {
   const formatter = new Intl.DateTimeFormat('en-GB', {
@@ -215,7 +226,7 @@ function safeTimezone(timezone: string): string {
     new Intl.DateTimeFormat('en-GB', { timeZone: timezone });
     return timezone;
   } catch {
-    console.warn(`zona horaria inválida "${timezone}", se usa UTC`);
+    console.warn(`invalid time zone "${timezone}", falling back to UTC`);
     return 'UTC';
   }
 }

@@ -1,97 +1,105 @@
 # Jarvis
 
-Asistente personal por Telegram sobre Cloudflare Workers, con Supabase como base de datos.
+A personal assistant over Telegram, running on Cloudflare Workers with Supabase as the database.
 
-Diseño completo y decisiones técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
+Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Estado: Fase 5** — el roadmap inicial está completo: tareas, memoria, notas de voz, historial en Supabase y avisos proactivos por cron.
+**Status: phase 9** — tasks, memory, voice notes, history in Supabase, proactive cron
+alerts, a full read/write Google Calendar, free-slot search and a "what should I do
+now?" that crosses the agenda with the task list.
 
-Despliegue continuo con **Cloudflare Workers Builds**: cada push a `main` despliega.
+The bot talks Spanish: everything it says in the chat, the system prompt and the tool
+descriptions are written in Spanish on purpose. The code and the docs are in English.
+
+Continuous deployment with **Cloudflare Workers Builds**: every push to `main` deploys.
 
 ---
 
-## Puesta en marcha
+## Getting it running
 
-### 1. Bot de Telegram
+### 1. Telegram bot
 
-- [@BotFather](https://t.me/BotFather) → `/newbot` → guarda el **token**
-- [@userinfobot](https://t.me/userinfobot) → tu **user id** (un número)
+- [@BotFather](https://t.me/BotFather) → `/newbot` → keep the **token**
+- [@userinfobot](https://t.me/userinfobot) → your **user id** (a number)
 
-Ese id es la whitelist. Sin él, el bot no responde ni a ti.
+That id is the whitelist. Without it the bot will not answer even you.
 
 ### 2. KV namespace
 
-En el dashboard: **Storage & Databases → KV → Create Instance**, nombre `jarvis-STATE`.
-Copia el **Namespace ID** a [wrangler.toml](wrangler.toml).
+In the dashboard: **Storage & Databases → KV → Create Instance**, named `jarvis-STATE`.
+Copy the **Namespace ID** into [wrangler.toml](wrangler.toml).
 
-Por CLI es equivalente:
+The CLI is equivalent:
 
 ```bash
 npx wrangler kv namespace create STATE
 ```
 
-El id **debe estar commiteado antes del primer build**: Workers Builds despliega
-leyendo `wrangler.toml` del repo, y con el placeholder el deploy falla.
+The id **has to be committed before the first build**: Workers Builds deploys by
+reading `wrangler.toml` from the repo, and with the placeholder in place the deploy
+fails.
 
-### 3. Conectar Workers Builds
+### 3. Connecting Workers Builds
 
 **Workers & Pages → Create → Import a repository → `jcm-developer/jarvis`**
 
-| Campo | Valor |
+| Field | Value |
 |---|---|
-| Project name | `jarvis` (debe coincidir con `name` en `wrangler.toml`) |
+| Project name | `jarvis` (must match `name` in `wrangler.toml`) |
 | Build command | `npm run typecheck` |
 | Deploy command | `npx wrangler deploy` |
-| Builds for non-production branches | desmarcado |
+| Builds for non-production branches | unchecked |
 | Path | `/` |
-| API token | el que crea Cloudflare por defecto |
+| API token | the one Cloudflare creates by default |
 
-`npm run typecheck` como build command actúa de barrera: si el TypeScript no compila,
-el build falla y **no se despliega**. Sin eso, un push roto tumba el bot en producción.
+`npm run typecheck` as the build command acts as a gate: if the TypeScript does not
+compile, the build fails and **nothing is deployed**. Without it, one broken push takes
+the bot down in production.
 
 ### 4. Secrets
 
-Tras el primer deploy: **Worker → Settings → Variables and Secrets → Add**, tipo
-**Secret** (no *Text*), uno por cada:
+After the first deploy: **Worker → Settings → Variables and Secrets → Add**, of type
+**Secret** (not *Text*), one for each of:
 
-| Secret | Valor |
+| Secret | Value |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | el de BotFather |
-| `TELEGRAM_WEBHOOK_SECRET` | cadena aleatoria larga (ver abajo) |
-| `ALLOWED_TELEGRAM_IDS` | tu user id, varios separados por coma |
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → *Create new secret key*. Sirve para el modelo y para transcribir |
+| `TELEGRAM_BOT_TOKEN` | the one from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | a long random string (see below) |
+| `ALLOWED_TELEGRAM_IDS` | your user id, several separated by commas |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → *Create new secret key*. Used for the model and for transcription |
 | `SUPABASE_URL` | Supabase → Project Settings → API → *Project URL* |
-| `SUPABASE_SERVICE_ROLE_KEY` | ídem → *service_role*. Se salta RLS: trátala como la llave maestra |
-| `GOOGLE_SA_EMAIL` | desde la Fase 6. El `client_email` del JSON de la service account |
-| `GOOGLE_SA_PRIVATE_KEY` | ídem, el `private_key`: pégalo tal cual, con sus `\n` |
-| `GOOGLE_CALENDAR_ID` | ídem, el id del calendario compartido. Nunca `primary` |
+| `SUPABASE_SERVICE_ROLE_KEY` | same page → *service_role*. It bypasses RLS: treat it as the master key |
+| `GOOGLE_SA_EMAIL` | from phase 6 on. The `client_email` from the service account JSON |
+| `GOOGLE_SA_PRIVATE_KEY` | same JSON, the `private_key`: paste it as is, `\n` included |
+| `GOOGLE_CALENDAR_ID` | same, the shared calendar's id. Never `primary` |
 
-**Al terminar, pulsa Deploy.** Los secrets no se aplican hasta entonces.
+**Press Deploy when you are done.** The secrets do not take effect until then.
 
-Generar el secreto del webhook en PowerShell:
+Generating the webhook secret in PowerShell:
 
 ```powershell
 $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join ''
 ```
 
-Guárdalo: lo necesitas otra vez en el paso 5.
+Keep it: you need it again in step 5.
 
-> **Secrets vs vars.** Los secrets se ponen una vez y sobreviven a todos los deploys.
-> Las `[vars]` de `wrangler.toml` se sobrescriben en cada deploy, así que editarlas
-> en el dashboard no sirve de nada: el siguiente push las revierte. `wrangler.toml`
-> es la única fuente de verdad para las vars.
+> **Secrets vs vars.** Secrets are set once and survive every deploy. The `[vars]` in
+> `wrangler.toml` are overwritten on every deploy, so editing them in the dashboard is
+> pointless: the next push reverts them. `wrangler.toml` is the only source of truth
+> for vars.
 
-`ALLOWED_TELEGRAM_IDS` es un secret y no una var porque este repo es público.
+`ALLOWED_TELEGRAM_IDS` is a secret and not a var because this repo is public.
 
-### 5. Registrar el webhook
+### 5. Registering the webhook
 
-Una sola vez. El `secret_token` debe ser **idéntico** a `TELEGRAM_WEBHOOK_SECRET`;
-si no coincide, el Worker devuelve 403 a todo y el bot parece muerto sin dar pistas.
+Once only. The `secret_token` has to be **identical** to `TELEGRAM_WEBHOOK_SECRET`; if
+it does not match, the Worker answers 403 to everything and the bot looks dead without
+giving any clue.
 
 ```powershell
 $token  = "<TOKEN>"
-$secret = "<TU_WEBHOOK_SECRET>"
-$url    = "https://jarvis.<subdominio>.workers.dev/webhook"
+$secret = "<YOUR_WEBHOOK_SECRET>"
+$url    = "https://jarvis.<subdomain>.workers.dev/webhook"
 
 Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$token/setWebhook" `
   -ContentType "application/json" -Body (@{
@@ -101,316 +109,342 @@ Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$token/setWebho
   } | ConvertTo-Json)
 ```
 
-Se usa `Invoke-RestMethod` y no `curl` a propósito: en PowerShell `curl` es un alias de
-`Invoke-WebRequest` y no acepta los flags de curl, y `curl.exe` obliga a escapar el JSON
-a mano, que es donde falla casi todo el mundo. No olvides el `/webhook` final en la URL.
+`Invoke-RestMethod` is used rather than `curl` on purpose: in PowerShell `curl` is an
+alias for `Invoke-WebRequest` and does not accept curl's flags, while `curl.exe` forces
+escaping the JSON by hand, which is where almost everybody trips. Do not forget the
+trailing `/webhook` in the URL.
 
-Comprobar:
+To check:
 
 ```powershell
 Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" | Select-Object -ExpandProperty result
 ```
 
-`last_error_message` con contenido o `pending_update_count` alto = algo falla.
+A non-empty `last_error_message` or a high `pending_update_count` means something is
+wrong.
 
-### 6. Base de datos (desde la Fase 2)
+### 6. Database (from phase 2 on)
 
-Supabase → SQL Editor → pegar [supabase/schema.sql](supabase/schema.sql) → Run.
+Supabase → SQL Editor → paste [supabase/schema.sql](supabase/schema.sql) → Run.
 
-Es idempotente y se puede reejecutar: es como llegan los cambios de esquema de las fases
-siguientes (la última, `remind_at` en `tasks`, para los avisos a una hora concreta).
+It is idempotent and can be re-run: that is how later phases' schema changes arrive
+(the last one, `remind_at` on `tasks`, for alerts at a specific time).
 
-### 7. Probar
+### 7. Trying it
 
-`/start`, `/ping`, o cualquier texto.
+`/start`, `/ping`, or any text at all.
 
 ---
 
-## Desarrollo
+## Development
 
 ```bash
 npm install
-npm run dev         # servidor local
-npm run typecheck   # lo mismo que corre el CI
-npm run tail        # logs de producción en vivo
+npm run dev         # local server
+npm run typecheck   # the same thing CI runs
+npm run tail        # live production logs
 ```
 
-Para local, copia `.dev.vars.example` a `.dev.vars` y rellénalo. Está en `.gitignore`.
+For local work, copy `.dev.vars.example` to `.dev.vars` and fill it in. It is in
+`.gitignore`.
 
-Desplegar a mano, saltándose el CI:
+Deploying by hand, skipping CI:
 
 ```bash
 npm run deploy
 ```
 
-### Probar el cron sin esperar a la hora en punto
+### Testing the cron without waiting for the hour
 
-`wrangler dev` expone un endpoint para dispararlo a mano:
+`wrangler dev` exposes an endpoint to fire it by hand:
 
 ```bash
 npx wrangler dev --test-scheduled
-# en otra terminal
+# in another terminal
 curl.exe "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
 ```
 
-Cada ejecución deja una línea `cron_run` en los logs con cuántos usuarios miró, y
-cuántos recordatorios y briefings salieron. Si el briefing ya salió hoy no se repite:
-para volver a probarlo hay que borrar su clave de KV (`briefing:<userId>:<fecha>`).
+Every run leaves a `cron_run` line in the logs with how many users it looked at, and
+how many reminders and briefings went out. If the briefing already went out today it
+does not repeat: to test it again, delete its KV key
+(`briefing:<userId>:<date>`).
+
+### Testing delicate logic without a test framework
+
+There is no test framework. For anything where a mistake is silent, the pattern that
+works is compiling the module on its own and exercising it from a `.mjs` (or `.cjs`)
+with doubles:
+
+```bash
+# pure interval arithmetic: no dependencies, compiles alone
+npx tsc src/lib/slots.ts --outDir <scratchpad> --module es2022 --target es2022
+
+# whole tools, with a fake calendar and a Db double
+npx tsc -p tsconfig.json --outDir <scratchpad>/cjs --module commonjs \
+  --moduleResolution node --verbatimModuleSyntax false --noEmit false
+```
+
+With the CommonJS build you can replace `createCalendarClient` on the calendar
+module's exports object and drive `find_free_slots`, `what_now` or `create_event`
+against events you made up. It has already caught real bugs — the latest being an
+overlap check that fitted in the budget while the reply that had to report it did not.
 
 ---
 
 ## Troubleshooting
 
-### El bot no responde
+### The bot does not answer
 
-El Worker devuelve `200` en casi todos los modos de fallo (para que Telegram no
-reintente en bucle), así que desde Telegram no se ve nada. Diagnostica por capas:
+The Worker returns `200` in almost every failure mode (so Telegram does not retry in a
+loop), so from Telegram you see nothing. Diagnose in layers:
 
 ```powershell
-# 1. ¿Está vivo el Worker?  → debe responder "jarvis ok"
-curl.exe https://jarvis.<subdominio>.workers.dev/
+# 1. Is the Worker alive?  → it should answer "jarvis ok"
+curl.exe https://jarvis.<subdomain>.workers.dev/
 
-# 2. ¿Coincide el secret?  → 200 = sí, 403 = no
-curl.exe -s -o NUL -w "%{http_code}" -X POST https://jarvis.<subdominio>.workers.dev/webhook `
+# 2. Does the secret match?  → 200 = yes, 403 = no
+curl.exe -s -o NUL -w "%{http_code}" -X POST https://jarvis.<subdomain>.workers.dev/webhook `
   -H "Content-Type: application/json" `
-  -H "X-Telegram-Bot-Api-Secret-Token: <TU_SECRET>" -d '{\"update_id\":1}'
+  -H "X-Telegram-Bot-Api-Secret-Token: <YOUR_SECRET>" -d '{\"update_id\":1}'
 
-# 3. ¿Entrega Telegram?  → mira last_error_message
+# 3. Is Telegram delivering?  → look at last_error_message
 Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" | Select -ExpandProperty result
 ```
 
-Si el paso 2 da 200 y el bot sigue mudo, el problema es la whitelist: mira los logs
-(**Compute → Workers → jarvis → Logs**), donde `update ignorado de usuario no
-autorizado: N` te da tu id real.
+If step 2 returns 200 and the bot is still mute, the problem is the whitelist: check the
+logs (**Compute → Workers → jarvis → Logs**), where `update ignorado de usuario no
+autorizado: N` gives you your real id.
 
-### Límite conocido: todo tiene que caber en 27 s
+### Known limit: everything has to fit in 27 s
 
-El plan free de Cloudflare concede **30 s** a `ctx.waitUntil()` tras responder y
-luego cancela la tarea. Todo el procesamiento de un mensaje tiene que caber ahí,
-y el reparto lo controla [src/lib/deadline.ts](src/lib/deadline.ts) con un
-presupuesto de 27 s:
+Cloudflare's free plan grants **30 s** to `ctx.waitUntil()` after answering and then
+cancels the task. All of a message's processing has to fit in there, and the split is
+controlled by [src/lib/deadline.ts](src/lib/deadline.ts) with a 27 s budget:
 
-| Paso | Tope |
+| Step | Cap |
 |---|---|
-| Descarga del audio (`getFile` + fichero) | 6 s por intento, con un reintento |
-| Transcripción | 10 s |
-| Cada llamada al modelo | 15 s, o lo que quede |
+| Audio download (`getFile` + file) | 6 s per attempt, with one retry |
+| Transcription | 10 s |
+| Each model call | 15 s, or whatever is left |
+| Each calendar call | 10 s, or whatever is left |
 
-La descarga tuvo 15 s dando por hecho que las notas largas tardaban más. No es
-así: Telegram las manda en OGG/Opus a ~16 kbps, un minuto de audio son ~120 KB y
-bajan en menos de un segundo. Los fallos de descarga son **picos puntuales del
-servidor de ficheros de Telegram**, no cuestión de tamaño; por eso aparecían con
-el mismo audio unas veces sí y otras no. Ahora se corta antes y se reintenta una
-vez, siempre que quede presupuesto para transcribir y responder después.
+The download had 15 s on the assumption that long notes took longer. They do not:
+Telegram sends them as OGG/Opus at ~16 kbps, a minute of audio is ~120 KB and comes
+down in under a second. Download failures are **momentary spikes on Telegram's file
+server**, not a size issue; that is why the same audio failed some times and not
+others. It now cuts sooner and retries once, as long as there is budget left to
+transcribe and answer afterwards.
 
-La solución real es **Cloudflare Queues** ($5/mes): desacopla el trabajo de la
-petición y elimina el techo. El cambio afecta casi solo a
-[src/index.ts](src/index.ts) — está diseñado para eso desde el principio.
+The real fix is **Cloudflare Queues** ($5/month): it decouples the work from the request
+and removes the ceiling. The change touches almost only
+[src/index.ts](src/index.ts) — it has been designed for that from the start.
 
-### Dos trampas que cuestan tiempo
+### Two traps that cost time
 
-**Los secrets del dashboard no se aplican hasta pulsar Deploy.** Añadirlos en
-*Variables and Secrets* y salir de la pantalla no hace nada: el Worker sigue
-corriendo la versión anterior, sin ellos, y rechaza todo con 403.
+**Dashboard secrets do not take effect until you press Deploy.** Adding them under
+*Variables and Secrets* and leaving the screen does nothing: the Worker keeps running
+the previous version, without them, and rejects everything with 403.
 
-**`setWebhook` ignora el `secret_token` si la URL ya estaba registrada.** Telegram
-compara solo la URL, responde `{"ok":true,"description":"Webhook is already set"}`
-y descarta el resto de parámetros. Si ves `already set` en vez de `Webhook was set`,
-tu secret **no** se ha guardado. Hay que borrar primero:
+**`setWebhook` ignores the `secret_token` when the URL was already registered.**
+Telegram compares only the URL, answers
+`{"ok":true,"description":"Webhook is already set"}` and discards the rest of the
+parameters. If you see `already set` instead of `Webhook was set`, your secret has
+**not** been stored. It has to be deleted first:
 
 ```
 https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true
 https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/webhook&secret_token=<SECRET>
 ```
 
-## Qué hace la Fase 0
+## What phase 0 does
 
-Cada update pasa por cuatro filtros antes de procesarse:
+Every update goes through four filters before being processed:
 
-1. **Cabecera secreta** — `X-Telegram-Bot-Api-Secret-Token`, comparada en tiempo constante.
-2. **Whitelist** — solo los ids de `ALLOWED_TELEGRAM_IDS`. Los demás se ignoran en silencio.
-3. **Dedupe** — el `update_id` se reclama en KV con TTL de 24 h, así un reintento de
-   Telegram no reejecuta las acciones.
-4. **Respuesta inmediata** — `200 OK` al momento y el trabajo real en `ctx.waitUntil()`,
-   porque el agente tardará más que el timeout de Telegram.
+1. **Secret header** — `X-Telegram-Bot-Api-Secret-Token`, compared in constant time.
+2. **Whitelist** — only the ids in `ALLOWED_TELEGRAM_IDS`. Everyone else is ignored
+   silently.
+3. **Dedupe** — the `update_id` is claimed in KV with a 24 h TTL, so a Telegram retry
+   does not re-run the actions.
+4. **Immediate response** — `200 OK` right away and the real work inside
+   `ctx.waitUntil()`, because the agent will take longer than Telegram's timeout.
 
-## Qué hace la Fase 1
+## What phase 1 does
 
-Conversación real contra un LLM, con memoria de los últimos turnos.
+A real conversation against an LLM, with memory of the last few turns.
 
-**Capa de proveedor** ([src/llm/](src/llm/)). Nada fuera de ese directorio sabe qué
-proveedor está activo. OpenAI, Groq y NVIDIA hablan el mismo formato, así que
-comparten un único adaptador ([openai-compatible.ts](src/llm/providers/openai-compatible.ts))
-y cambiar entre ellos son dos líneas de `wrangler.toml` más su API key:
+**Provider layer** ([src/llm/](src/llm/)). Nothing outside that directory knows which
+provider is active. OpenAI, Groq and NVIDIA speak the same format, so they share a
+single adapter ([openai-compatible.ts](src/llm/providers/openai-compatible.ts)) and
+switching between them is two lines of `wrangler.toml` plus its API key:
 
 ```toml
 LLM_PROVIDER = "openai"
 LLM_MODEL = "gpt-4.1-mini"
 ```
 
-Eso es lo que corre en producción. Se empezó con NVIDIA NIM por su free tier y hubo
-que abandonarlo: encolaba las peticiones gratuitas y un simple saludo se iba de 45 s,
-más de lo que aguanta cualquier montaje sobre el plan free (ver
-[ARCHITECTURE.md §11](ARCHITECTURE.md)). Con OpenAI la misma respuesta tarda 2-5 s.
-`groq` (`llama-3.3-70b-versatile`) y `nvidia` siguen soportados como alternativa.
+That is what runs in production. It started on NVIDIA NIM for the free tier and had to
+be abandoned: it queued free requests and a simple greeting took over 45 s, more than
+any setup on the free plan can absorb (see
+[ARCHITECTURE.md §11](ARCHITECTURE.md)). With OpenAI the same reply takes 2-5 s.
+`groq` (`llama-3.3-70b-versatile`) and `nvidia` are still supported as alternatives.
 
-Dentro de OpenAI se empezó con `gpt-4o-mini` y se cambió a `gpt-4.1-mini` porque el
-primero se saltaba las instrucciones: duplicaba tareas y fechaba los avisos al día
-siguiente con las reglas delante. Es más caro de lista, pero casi todo lo que
-gastamos es prefijo cacheado, donde la diferencia baja al 33%.
+Within OpenAI it started on `gpt-4o-mini` and moved to `gpt-4.1-mini` because the first
+one ignored instructions: it duplicated tasks and dated alerts to the following day with
+the rules right in front of it. It is more expensive on paper, but almost everything we
+spend is cached prefix, where the difference drops to 33%.
 
-Se usa `fetch` directo en lugar del SDK de OpenAI para no engordar el bundle.
-Incluye timeout de 20 s por llamada —recortado por el presupuesto del mensaje—, un
-reintento ante 429 y 5xx, y limpieza de los bloques
-`<think>` que emiten los modelos de razonamiento.
+Plain `fetch` is used instead of OpenAI's SDK to keep the bundle small. It includes a
+20 s timeout per call —trimmed further by the message's budget—, one retry on 429 and
+5xx, and cleanup of the `<think>` blocks reasoning models emit.
 
-**Memoria de corto plazo.** Ventana deslizante de `HISTORY_WINDOW` mensajes. Nació
-en KV con TTL de 7 días como solución interina; en la Fase 4 se mudó a Supabase.
+**Short-term memory.** A sliding window of `HISTORY_WINDOW` messages. It was born in KV
+with a 7-day TTL as a stopgap; phase 4 moved it to Supabase.
 
-**Errores legibles.** Cuota agotada, clave inválida o timeout llegan a Telegram como
-una frase clara, no como silencio ni como un volcado de stack.
+**Readable errors.** Exhausted quota, an invalid key or a timeout reach Telegram as a
+clear sentence, not as silence and not as a stack dump.
 
-Comandos: `/ping`, `/reset`, `/help`. Todo lo demás va al modelo.
-Los audios se acusan recibo pero no se transcriben hasta la Fase 3.
+Commands: `/ping`, `/reset`, `/help`. Everything else goes to the model.
+Audio is acknowledged but not transcribed until phase 3.
 
-## Qué hace la Fase 2
+## What phase 2 does
 
-El agente deja de conversar y empieza a actuar.
+The agent stops conversing and starts acting.
 
-**Registry de herramientas** ([src/tools/](src/tools/)). Cada tool es una definición
-tipada con su JSON Schema, y se envían en el campo `tools` de la petición — no
-descritas en prosa dentro del prompt, que duplicaría la fuente de verdad.
+**Tool registry** ([src/tools/](src/tools/)). Every tool is a typed definition with its
+JSON Schema, and they are sent in the request's `tools` field — not described in prose
+inside the prompt, which would duplicate the source of truth.
 
-| Tool | Qué hace | Confirmación |
+| Tool | What it does | Confirmation |
 |---|---|---|
-| `create_task` | Crea tarea con fecha límite, hora de aviso, prioridad y notas | No |
-| `list_tasks` | Filtra por estado y vencimiento | No |
-| `update_task` | Cambia fecha límite, hora de aviso, título, notas, prioridad o estado | No |
-| `complete_task` | Marca como hecha | No |
-| `delete_task` | Borra permanentemente | **Sí** |
-| `remember` | Guarda un dato duradero del usuario | No |
-| `recall` | Busca entre lo recordado | No |
+| `create_task` | Creates a task with a deadline, alert time, priority and notes | No |
+| `list_tasks` | Filters by status and due date | No |
+| `update_task` | Changes the deadline, alert time, title, notes, priority or status | No |
+| `complete_task` | Marks it as done | No |
+| `delete_task` | Deletes permanently | **Yes** |
+| `remember` | Stores a lasting fact about the user | No |
+| `recall` | Searches what has been remembered | No |
 
-**Bucle agéntico** ([src/agent.ts](src/agent.ts)). Hasta `MAX_AGENT_ITERATIONS`
-vueltas: el modelo pide herramientas, se ejecutan, el resultado vuelve como mensaje
-`tool` y decide otra vez. Los errores se devuelven al modelo como
-`{ok:false, error}` para que se corrija solo, en vez de romper la conversación.
+**Agentic loop** ([src/agent.ts](src/agent.ts)). Up to `MAX_AGENT_ITERATIONS` rounds:
+the model asks for tools, they run, the result comes back as a `tool` message and it
+decides again. Errors are returned to the model as `{ok:false, error}` so it corrects
+itself instead of breaking the conversation.
 
-**Confirmación humana.** `delete_task` no se ejecuta: la acción queda en KV con TTL
-de 15 minutos y el usuario recibe botones. Confirmar la consume — pulsar dos veces no
-la ejecuta dos veces. El texto del botón incluye el título real de la tarea, porque
-nadie revisa un uuid.
+**Human confirmation.** `delete_task` does not run: the action is parked in KV with a
+15-minute TTL and the user gets buttons. Confirming consumes it — pressing twice does
+not run it twice. The button text includes the task's real title, because nobody
+reviews a uuid.
 
-**Cliente de base de datos propio** ([src/db/client.ts](src/db/client.ts)). PostgREST
-por `fetch`, sin `@supabase/supabase-js`, por el mismo motivo que en la capa de LLM.
-Entra con `service_role`, que se salta RLS.
+**Our own database client** ([src/db/client.ts](src/db/client.ts)). PostgREST over
+`fetch`, without `@supabase/supabase-js`, for the same reason as in the LLM layer. It
+connects as `service_role`, which bypasses RLS.
 
-**Auditoría.** Cada llamada a herramienta se registra en `tool_call_logs` con
-argumentos, resultado, duración y error. Es lo que permite entender después por qué
-el agente hizo lo que hizo.
+**Audit trail.** Every tool call is recorded in `tool_call_logs` with arguments, result,
+duration and error. That is what makes it possible to understand later why the agent did
+what it did.
 
-## Qué hace la Fase 3
+## What phase 3 does
 
-Notas de voz. Le mandas un audio y hace lo que le pidas.
+Voice notes. You send audio and it does whatever you asked.
 
-Telegram envía OGG/Opus → se descarga con `getFile` → se transcribe → el texto
-entra por el mismo camino que un mensaje escrito.
+Telegram sends OGG/Opus → it is downloaded with `getFile` → transcribed → the text
+enters through the same path as a written message.
 
-**Dos transcriptores** ([src/stt/](src/stt/)), intercambiables como los de LLM:
+**Two transcribers** ([src/stt/](src/stt/)), interchangeable like the LLM ones:
 
-| `STT_PROVIDER` | Modelo | Notas |
+| `STT_PROVIDER` | Model | Notes |
 |---|---|---|
-| `openai` (por defecto) | `whisper-1` | Acepta OGG sin convertir. Mejor en español. Céntimos por hora |
-| `workers-ai` | `@cf/openai/whisper-large-v3-turbo` | Gratis, dentro de Cloudflare |
+| `openai` (default) | `whisper-1` | Accepts OGG without conversion. Better in Spanish. Cents per hour |
+| `workers-ai` | `@cf/openai/whisper-large-v3-turbo` | Free, inside Cloudflare |
 
-`STT_LANGUAGE = "es"` fija el idioma en vez de autodetectarlo, lo que mejora
-bastante la precisión en audio de móvil.
+`STT_LANGUAGE = "es"` pins the language instead of autodetecting it, which improves
+accuracy on phone audio quite a bit.
 
-Una transcripción vacía **nunca** llega al modelo: se responde pidiendo repetir. Si
-no, el agente improvisaría sobre una cadena vacía.
+An empty transcript **never** reaches the model: the reply asks the user to repeat.
+Otherwise the agent would improvise on top of an empty string.
 
-## Qué hace la Fase 4
+## What phase 4 does
 
-El historial deja KV y pasa a la tabla `messages`
-([src/db/messages.ts](src/db/messages.ts)). No es un cambio cosmético: el plan free
-da 1.000 escrituras de KV al día y el historial gastaba una por mensaje, compitiendo
-con el dedupe de `update_id`. Ahora KV solo guarda lo efímero — dedupe,
-confirmaciones pendientes y la caché de identidades.
+The history leaves KV and moves to the `messages` table
+([src/db/messages.ts](src/db/messages.ts)). It is not a cosmetic change: the free plan
+gives 1,000 KV writes a day and the history spent one per message, competing with the
+`update_id` dedupe. KV now only holds the ephemeral — dedupe, pending confirmations and
+the identity cache.
 
-Se persiste el turno **completo**: el mensaje del usuario, el `assistant` con sus
-`tool_calls` y cada resultado `tool`. Y de una sola vez al final del turno, en un
-INSERT con varias filas: guardar a medias dejaría un `assistant` con `tool_calls` sin
-sus resultados, que es contexto que la API rechaza con un 400.
+The **whole** turn is persisted: the user's message, the `assistant` with its
+`tool_calls` and every `tool` result. And in one shot at the end of the turn, in a
+multi-row INSERT: saving halfway would leave an `assistant` with `tool_calls` and no
+results, which is context the API rejects with a 400.
 
-Cada fila lleva `source` (`text` o `voice`) y, en los audios, la transcripción cruda.
-Cuando el agente entiende algo raro, lo primero que se mira es si venía de un audio.
+Every row carries `source` (`text` or `voice`) and, for audio, the raw transcript. When
+the agent understands something odd, the first thing to check is whether it came from
+audio.
 
-`/reset` borra las filas de la conversación de verdad. La auditoría de lo que el
-agente *hizo* sigue en `tool_call_logs`, y lo que recuerda del usuario a largo plazo
-(`memories`) no se toca.
+`/reset` really deletes the conversation's rows. The audit trail of what the agent *did*
+stays in `tool_call_logs`, and what it remembers about the user long term (`memories`)
+is untouched.
 
-## Qué hace la Fase 5
+## What phase 5 does
 
-Jarvis deja de esperar a que le escribas: ahora escribe él.
+Jarvis stops waiting for you to write: now it writes to you.
 
-**Briefing diario** ([src/cron/briefing.ts](src/cron/briefing.ts)). A las 8 de la
-mañana *en tu hora local* llega un mensaje con lo que tienes: vencidas, lo de hoy con
-su hora, y lo urgente sin fecha. Se manda una vez al día, dentro de una ventana de 3
-horas: si el disparo de las 8 se pierde, lo recupera el de las 9 o el de las 10.
+**Daily briefing** ([src/cron/briefing.ts](src/cron/briefing.ts)). At 8 in the morning
+*in your local time* a message arrives with what you have: overdue items, today's with
+their time, and the urgent ones with no date. It is sent once a day, inside a 3-hour
+window: if the 8 o'clock tick is missed, the 9 or the 10 one recovers it.
 
 ```toml
-BRIEFING_HOUR = "8"   # hora local, 0-23
+BRIEFING_HOUR = "8"   # local hour, 0-23
 ```
 
-El texto se compone en código, sin pasar por el modelo: es una lista de tareas con
-fechas, y así no cuesta tokens ni puede inventarse una tarea que no existe.
+The text is composed in code, without going through the model: it is a list of tasks
+with dates, so this way it costs no tokens and cannot invent a task that does not exist.
 
-**Recordatorios** ([src/cron/reminders.ts](src/cron/reminders.ts)). El cron corre cada
-cinco minutos y distingue dos clases de aviso:
+**Reminders** ([src/cron/reminders.ts](src/cron/reminders.ts)). The cron runs every five
+minutes and tells two classes of alert apart:
 
-| Pides | Campo | Te llega |
+| You ask for | Field | It arrives |
 |---|---|---|
-| "recuérdamelo a las 12:10" | `remind_at` | A las 12:10 (dentro de esos 5 minutos) |
-| una tarea con fecha límite | `due_at` | Una hora antes de vencer |
+| "recuérdamelo a las 12:10" | `remind_at` | At 12:10 (within those 5 minutes) |
+| a task with a deadline | `due_at` | One hour before it is due |
 
-Se avisa una sola vez por tarea (`reminded_at`), y lo que ya estaba vencido también
-entra, con un tope de 10 por ejecución para que no llegue una avalancha el primer día.
+Each task is announced once (`reminded_at`), and anything already overdue comes in too,
+capped at 10 per run so day one is not an avalanche.
 
-El mensaje está escrito para que suene a persona, no a alarma:
+The message is written to sound like a person, not like an alarm:
 
 > Acuérdate de llamar a David a las 18:00.
 >
 > Se te ha pasado pagar la luz, era ayer a las 09:00.
 
-Lo compone el Worker, sin pasar por el modelo: cero tokens y no puede inventarse una
-tarea. La hora solo se dice si aporta algo, los días van con nombre (ayer, mañana)
-y la frase de entrada varía entre tareas.
+The Worker composes it, without the model: zero tokens and it cannot invent a task. The
+time is only stated when it adds something, days are named (ayer, mañana) and the
+opening phrase varies between tasks.
 
-Que el aviso sea un campo de la tarea y no otra tarea importa: sin `remind_at`, un
-"llamo a David a las 17:30, recuérdamelo a las 12:10" acababa en dos filas, la tarea y
-un "recordar llamar a David". Una sola cosa que hacer, una sola fila.
+That the alert is a field of the task and not another task matters: without `remind_at`,
+an "I'm calling David at 17:30, remind me at 12:10" ended up as two rows, the task and a
+"remember to call David". One thing to do, one row.
 
-**La hora local, calculada de verdad** ([src/lib/localtime.ts](src/lib/localtime.ts)).
-El cron de Cloudflare dispara en UTC y España cambia de horario dos veces al año: un
-cron a las 06:00 UTC serían las 7 en invierno y las 8 en verano. Así que la hora
-local, el inicio y el fin del día salen de `Intl`, incluidos los dos días del año que
-duran 23 y 25 horas.
+**Local time, properly computed** ([src/lib/localtime.ts](src/lib/localtime.ts)).
+Cloudflare's cron fires in UTC and Spain changes its clocks twice a year: a cron at
+06:00 UTC would be 7 in winter and 8 in summer. So the local hour, the start and the end
+of the day all come from `Intl`, including the two days a year that last 23 and 25 hours.
 
-Los avisos se guardan en el historial como mensajes del asistente. Sin eso, contestar
-"hecho" a un recordatorio no tendría referente y el modelo preguntaría de qué le hablas.
+Alerts are stored in the history as assistant messages. Without that, answering "done"
+to a reminder would have no referent and the model would ask what you are talking about.
 
-No hacen falta secrets nuevos. El trigger de [wrangler.toml](wrangler.toml) ya va
-activado, y la columna `remind_at` se añade reejecutando
-[supabase/schema.sql](supabase/schema.sql), que es idempotente.
+No new secrets are needed. The trigger in [wrangler.toml](wrangler.toml) is already on,
+and the `remind_at` column arrives by re-running
+[supabase/schema.sql](supabase/schema.sql), which is idempotent.
 
-## Qué hacen las Fases 6 y 7: el calendario
+## What phases 6 and 7 do: the calendar
 
-Apuntar citas en Google Calendar desde el chat. *"Apúntame el dentista el jueves a las
-diez"* crea el evento; *"comprar pan"* sigue siendo una tarea. La frontera es si ocupa
-un hueco del día a una hora concreta o es algo que hay que hacer cuando se pueda, y si
-el modelo duda, pregunta.
+Putting appointments on Google Calendar from the chat. *"Apúntame el dentista el jueves
+a las diez"* creates the event; *"comprar pan"* is still a task. The boundary is whether
+it takes up a slot of the day at a specific time or is something to do whenever
+possible, and if the model is unsure, it asks.
 
-La Fase 6 solo sabía crear. La **Fase 7** añadió consultarlas, moverlas y borrarlas:
+Phase 6 could only create. **Phase 7** added looking them up, moving them and deleting
+them:
 
 ```
 ¿qué tengo el jueves?
@@ -420,94 +454,157 @@ apunta que me voy a Lisboa del 23 al 26
 el cumple de Marta es el 3 de septiembre, todos los años
 ```
 
-Las citas de varios días se guardan como un solo evento, no como uno por día. Y según de
-qué sean —viaje, trabajo, estudios, personal, salud, social— salen de un color distinto en la app
-del calendario: el modelo deduce el tipo y el color lo pone el código, para que los viajes
-sean siempre del mismo color y no de uno cada semana.
+Multi-day appointments are stored as a single event, not one per day. And depending on
+what they are —viaje, trabajo, estudios, personal, salud, social— they come out in a
+different colour in the calendar app: the model infers the kind and the code picks the
+colour, so trips are always the same colour rather than a new one every week.
 
-Las citas que se repiten (anual, mensual, semanal, diario, laborables) pueden tocarse de
-dos maneras, y **antes de cambiar o borrar una te pregunta cuál**: solo ese día, o todas
-las veces. El texto del botón de confirmación lo dice, porque entre saltarse un cumpleaños
-y borrarlo para siempre no hay vuelta atrás.
+Recurring appointments (yearly, monthly, weekly, daily, weekdays) can be touched two
+ways, and **before changing or deleting one it asks which**: that day only, or every
+occurrence. The confirmation button's text says so, because between skipping a birthday
+and deleting it forever there is no way back.
 
-Para cambiar o borrar necesita el id, así que primero consulta el calendario y luego
-actúa. Borrar pide confirmación con botones, como borrar una tarea, y la pregunta lleva
-el título de la cita para que sepas qué estás confirmando.
+To change or delete anything it needs the id, so it looks the calendar up first and acts
+afterwards. Deleting asks for button confirmation, like deleting a task, and the question
+carries the appointment's title so you know what you are confirming.
 
-Los avisos de una cita los da tu propia app de calendario, no el cron de Jarvis.
+An appointment's reminders come from your own calendar app, not from Jarvis's cron.
 
-### Preparar Google (una vez)
+### Preparing Google (once)
 
-1. [console.cloud.google.com](https://console.cloud.google.com) con la cuenta del
-   calendario → proyecto nuevo → **APIs y servicios → Biblioteca** → habilitar
-   **Google Calendar API**. No pide tarjeta: la cuota gratuita es de un millón de
-   peticiones al día y nosotros hacemos una por cita.
-2. **IAM y administración → Cuentas de servicio → Crear**. Sin ningún rol de IAM: los
-   permisos vienen del calendario compartido, no de aquí.
-3. La cuenta → **Claves → Agregar clave → JSON**. Guarda el fichero fuera del repo,
-   que es público, y bórralo en cuanto copies los dos campos que hacen falta.
-4. [calendar.google.com](https://calendar.google.com) → el calendario → **⋮ →
-   Configuración y uso compartido → Compartir con determinadas personas** → añade el
-   `client_email` con permiso **"Hacer cambios en los eventos"**. En la misma pantalla,
-   **Integrar calendario → ID del calendario**: ese es `GOOGLE_CALENDAR_ID`.
-5. Los tres secrets del paso 4 de la puesta en marcha, y **Deploy**.
+1. [console.cloud.google.com](https://console.cloud.google.com) with the calendar's
+   account → new project → **APIs & Services → Library** → enable the
+   **Google Calendar API**. No card required: the free quota is a million requests a day
+   and we make one per appointment.
+2. **IAM & Admin → Service Accounts → Create**. With no IAM role at all: the permissions
+   come from the shared calendar, not from here.
+3. The account → **Keys → Add key → JSON**. Store the file outside the repo, which is
+   public, and delete it as soon as you have copied the two fields you need.
+4. [calendar.google.com](https://calendar.google.com) → the calendar → **⋮ → Settings
+   and sharing → Share with specific people** → add the `client_email` with **"Make
+   changes to events"** permission. On the same screen, **Integrate calendar → Calendar
+   ID**: that is `GOOGLE_CALENDAR_ID`.
+5. The three secrets from step 4 of the setup, and **Deploy**.
 
-> **La política que bloquea el paso 3.** En las organizaciones nuevas Google aplica de
-> oficio `iam.disableServiceAccountKeyCreation` y el diálogo de error no dice que se
-> pueda quitar. Se desactiva solo en este proyecto, desde Cloud Shell:
+> **The policy that blocks step 3.** On new organisations Google applies
+> `iam.disableServiceAccountKeyCreation` by default and the error dialog does not
+> mention it can be turned off. Disable it for this project only, from Cloud Shell:
 >
 > ```bash
 > gcloud resource-manager org-policies disable-enforce \
 >   iam.disableServiceAccountKeyCreation --project=<PROJECT_ID>
 > ```
 >
-> La consola cachea el estado: recarga la pestaña antes de reintentar, o crea la clave
-> con `gcloud iam service-accounts keys create`, que no pasa por ahí.
+> The console caches the state: reload the tab before retrying, or create the key with
+> `gcloud iam service-accounts keys create`, which does not go through it.
 
-### Tres cosas que no puede hacer y no son bugs
+### Three things it cannot do, and they are not bugs
 
-- **Invitar a otras personas a un evento.** Una service account sin *domain-wide
-  delegation* —que necesita Google Workspace, no una cuenta Gmail— no puede añadir
-  invitados, y la API lo rechaza.
-- **Cambiar la hora de una serie entera.** Puede mover una repetición suelta, y puede
-  cambiarle a la serie el título, el sitio o la categoría, pero reprogramarla entera no:
-  reanclar una serie desde fuera es donde se rompe en silencio, y una regla de días fijos
-  movida a un sábado hace desaparecer una semana de citas sin dar ningún error.
-- **Ver el título de tus citas privadas.** El permiso que le das las muestra como hueco
-  ocupado y sin nombre. Las puede mover y borrar, pero no reconocerlas por el título.
-  Se arregla subiendo el permiso a *Make changes and see all event details*, a cambio de
-  darle acceso de lectura a todo.
+- **Invite other people to an event.** A service account without *domain-wide
+  delegation* —which needs Google Workspace, not a Gmail account— cannot add guests, and
+  the API rejects it.
+- **Change the time of a whole series.** It can move a single occurrence, and it can
+  change a series' title, location or category, but not reschedule the whole thing:
+  re-anchoring a series from outside is where it breaks silently, and a fixed-days rule
+  moved onto a Saturday makes a week of appointments disappear without any error.
+- **See the title of your private appointments.** The permission you grant shows them as
+  an occupied slot with no name. It can move and delete them, but not recognise them by
+  title. Raising the permission to *Make changes and see all event details* fixes it, at
+  the cost of giving it read access to everything.
 
-### Si algo falla la primera vez
+### If something fails the first time
 
-Con `npx wrangler tail` delante, los dos errores probables se distinguen solos:
+With `npx wrangler tail` open, the two likely errors tell themselves apart:
 
-| En el log | Qué pasa |
+| In the log | What is happening |
 |---|---|
-| `google_token_failed` con `invalid_grant` | el `private_key` está mal pegado |
-| `calendar_request_failed` con `404` en un `POST` o `GET` de lista | el `GOOGLE_CALENDAR_ID` está mal, o el calendario no está compartido con la service account (la API responde 404, no 403: para ella ese calendario no existe) |
-| `calendar_request_failed` con `404` en un `PATCH` o `DELETE` | el evento ya no existe; el calendario está bien |
-| `tool_calls: []` y el bot dice que no está configurado | el modelo contesta desde el historial; ver abajo |
+| `google_token_failed` with `invalid_grant` | the `private_key` was pasted wrong |
+| `calendar_request_failed` with `404` on a `POST` or a list `GET` | `GOOGLE_CALENDAR_ID` is wrong, or the calendar is not shared with the service account (the API answers 404, not 403: as far as it is concerned that calendar does not exist) |
+| `calendar_request_failed` with `404` on a `PATCH` or `DELETE` | the event is gone; the calendar is fine |
+| `tool_calls: []` and the bot says it is not configured | the model is answering from the history; see below |
 
-**`GOOGLE_CALENDAR_ID` no sale de Google Cloud ni del JSON de la service account.** Es
-el `Calendar ID` de *Settings and sharing → Integrate calendar*, que en el calendario
-principal es tu dirección de Gmail. Poner ahí el email `...iam.gserviceaccount.com` da
-exactamente el mismo 404: es quien escribe, no dónde se escribe.
+**`GOOGLE_CALENDAR_ID` does not come from Google Cloud nor from the service account
+JSON.** It is the `Calendar ID` under *Settings and sharing → Integrate calendar*, which
+on the main calendar is your Gmail address. Putting the `...iam.gserviceaccount.com`
+email there gives exactly the same 404: that is who writes, not where.
 
-**Después de arreglar un secret, `/reset` antes de volver a probar.** El error de la
-herramienta se queda guardado en el historial y el modelo contesta desde ahí sin
-reintentar, así que la prueba mide la conversación vieja y no el arreglo. Se reconoce en
-el log: `llm_call` con `tool_calls: []`.
+**After fixing a secret, `/reset` before testing again.** The tool's error stays in the
+history and the model answers from there without retrying, so the test measures the old
+conversation rather than the fix. You can spot it in the log: `llm_call` with
+`tool_calls: []`.
 
-## Varias cosas en un mensaje
+## What phases 8 and 9 do: the agenda that can add up
 
-Ya funcionaba desde la Fase 2 — el bucle ejecuta todas las `tool_calls` de una misma
-respuesta — y ahora el prompt lo pide explícitamente. Un audio como *"recuérdame
-llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una vez.
+Phase 8 gave it hour arithmetic, and phase 9 spent it.
 
-## Siguiente
+**It warns when an appointment overlaps.** The appointment is still created — two things
+at the same hour is something people do on purpose — but the reply says what it runs
+into:
 
-Con el calendario completo, el siguiente candidato es que **el briefing cuente las
-reuniones del día**, que es la lectura masiva que sigue fuera. Detrás, sin orden: notas y
-gastos como dominios nuevos, búsqueda web, respuesta en audio, entender imágenes y un
-panel web. La lista completa, al final de [ARCHITECTURE.md](ARCHITECTURE.md).
+> Hecho, comida con Marta el jueves 21 de agosto a las 14:00.
+> Ojo, que a esa hora ya tienes la revisión trimestral (14:00 a 15:30).
+
+**And it finds free gaps**, which is the question that used to force opening the
+calendar yourself:
+
+```
+¿cuándo tengo dos horas seguidas esta semana?
+¿qué tardes tengo libres?
+¿me cabe el fisio el martes?
+```
+
+The gaps are looked for inside your normal day, because "you are free from 03:00 to
+07:00" is a correct and useless answer:
+
+```toml
+DAY_START_HOUR = "9"    # local hours
+DAY_END_HOUR   = "21"   # 24 means midnight
+```
+
+If you narrow it yourself —"in the afternoon", "after ten"— that wins for that question.
+All-day entries do not block the day: a birthday does not stop you meeting at eleven.
+Private appointments do take up their slot, even though their title cannot be read.
+
+**And with that, "what should I do now?"**:
+
+> Tienes 40 minutos hasta la reunión con David a las 18:00.
+> De lo pendiente, esto es lo que encaja ahora:
+> - llamar al seguro (vence hoy)
+> - contestar el correo de Ana
+
+One question, and the answer crosses the clock, the calendar and the task list. What
+gets suggested is the briefing's criterion —overdue, due today, high priority with no
+date— capped at three: dumping the whole list is what makes you stop asking. And it will
+not claim things "fit" as though it had measured them, because a task carries no
+duration.
+
+If the calendar cannot be read, the task half still arrives and the reply says the
+calendar could not be read. Losing the tasks over a 500 from Google would trade a useful
+answer for an error.
+
+**All the arithmetic lives in code** ([src/lib/slots.ts](src/lib/slots.ts)), and the
+prompt forbids the model from working gaps out for itself. It is the same rule as with
+dates, and here it matters more: a wrong date gets caught by reading the reply, while an
+invented gap gets caught when you show up to a meeting that was already taken.
+
+One thing it does **not** do: `update_event` does not warn about overlaps. It already
+spends a read and a write, and a third call does not fit the 27 s budget, so "move it to
+Friday at 14:00" can land on something taken without a word. It is written down in
+[ARCHITECTURE.md §14](ARCHITECTURE.md) rather than pretended away.
+
+No new secrets and no schema changes. The two new vars have defaults, so an existing
+deploy keeps working without touching anything.
+
+## Several things in one message
+
+This already worked from phase 2 — the loop runs every `tool_call` of one response — and
+now the prompt asks for it explicitly. An audio like *"recuérdame llamar al banco,
+comprar pan y revisar el podcast"* creates all three tasks at once.
+
+## Next
+
+The next candidate is **understanding images**: the photo of the school letter or the
+concert poster, and out come the tasks and appointments. Behind it, in order of risk:
+audio replies, the briefing covering the day's meetings, and a weekly review that says
+what you have been postponing. The full list is at the end of
+[ARCHITECTURE.md](ARCHITECTURE.md).

@@ -1,3 +1,4 @@
+import type { Config } from '../config';
 import type { Db } from '../db/client';
 import type { Deadline } from '../lib/deadline';
 import type { Env } from '../types';
@@ -8,22 +9,29 @@ export interface ToolContext {
   timezone: string;
   db: Db;
   /**
-   * Secrets y bindings. Entró con create_event, la primera herramienta que habla
-   * con un servicio de fuera por su cuenta: hasta entonces todo lo externo lo
-   * resolvía el agente y a los handlers les bastaba `db`.
+   * Secrets and bindings. Arrived with create_event, the first tool to talk to an
+   * outside service on its own: until then the agent resolved everything external and
+   * `db` was all the handlers needed.
    */
   env: Env;
   /**
-   * Presupuesto de tiempo del mensaje. Una herramienta que llama por red pide aquí
-   * su tope en vez de fijar uno propio, que es lo que ya nos costó una fase (§11).
+   * The env already parsed and validated. Arrived with find_free_slots: the day's
+   * time window is the user's decision, not the model's, and it lives in the config
+   * like the briefing hour does. Re-parsing the env inside each handler would mean
+   * two different readings of the same var.
+   */
+  config: Config;
+  /**
+   * The message's time budget. A tool that goes over the network asks here for its
+   * cap instead of setting its own, which is what already cost us a phase (§11).
    */
   deadline: Deadline;
   /**
-   * El mensaje que ha escrito el usuario en este turno.
+   * The message the user wrote on this turn.
    *
-   * Los handlers lo leen para resolver los plazos relativos ellos mismos, porque
-   * el modelo se equivoca de día y no hay prompt que lo arregle. Vacío cuando la
-   * acción viene de un botón de confirmación, donde no hay texto nuevo.
+   * Handlers read it to resolve relative deadlines themselves, because the model gets
+   * the day wrong and no prompt fixes that. Empty when the action comes from a
+   * confirmation button, where there is no new text.
    */
   userMessage: string;
 }
@@ -32,34 +40,34 @@ export type ToolResult = { ok: true; data: unknown } | { ok: false; error: strin
 
 export interface ToolDefinition {
   name: string;
-  /** El modelo elige la herramienta leyendo esto. Ser explícito importa más que ser breve. */
+  /** The model picks the tool by reading this. Being explicit beats being brief. */
   description: string;
-  /** JSON Schema de los argumentos. */
+  /** JSON Schema of the arguments. */
   parameters: Record<string, unknown>;
   /**
-   * Si es true, el agente NO ejecuta: pide confirmación al usuario con botones.
-   * Reservado para lo irreversible.
+   * When true the agent does NOT execute: it asks the user for confirmation with
+   * buttons. Reserved for the irreversible.
    */
   requiresConfirmation: boolean;
   /**
-   * Frase que se muestra al pedir confirmación. Es async y recibe el contexto
-   * para poder consultar la base de datos: preguntar "¿borro 'Comprar pan'?" es
-   * mucho más seguro que "¿borro la tarea 7f3a-...?", donde nadie revisa nada.
+   * The sentence shown when asking for confirmation. It is async and receives the
+   * context so it can hit the database: asking "delete 'Comprar pan'?" is far safer
+   * than "delete task 7f3a-...?", which nobody actually reviews.
    */
   confirmationPrompt?: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 /* ------------------------------------------------------------------ *
- * Validación de argumentos.
+ * Argument validation.
  *
- * Los argumentos vienen de un modelo de lenguaje, así que hay que tratarlos como
- * entrada no confiable: pueden faltar, venir con el tipo cambiado o traer un
- * string donde se esperaba un número. Se valida a mano en vez de con Zod para no
- * añadir dependencia por siete herramientas.
+ * The arguments come from a language model, so they have to be treated as untrusted
+ * input: they can be missing, arrive with the wrong type, or carry a string where a
+ * number was expected. Validated by hand rather than with Zod, to avoid adding a
+ * dependency for a handful of tools.
  *
- * Los errores se lanzan como ToolValidationError y el agente los devuelve al
- * modelo como resultado, para que se corrija solo en la siguiente iteración.
+ * Errors are thrown as ToolValidationError and the agent hands them back to the model
+ * as the result, so it corrects itself on the next iteration.
  * ------------------------------------------------------------------ */
 
 export class ToolValidationError extends Error {}
@@ -95,7 +103,7 @@ export function optionalString(
 
 export function optionalBoolean(args: Record<string, unknown>, field: string): boolean {
   const value = args[field];
-  // Los modelos mandan booleanos como texto con la misma facilidad que como bool.
+  // Models send booleans as text just as readily as they send them as bools.
   return value === true || value === 'true';
 }
 
@@ -108,8 +116,8 @@ export function optionalInt(
   const value = args[field];
   if (value === undefined || value === null) return null;
 
-  // Los modelos mandan números como string con frecuencia; aceptarlo es más útil
-  // que rechazarlo y gastar una iteración en que se corrija.
+  // Models often send numbers as strings; accepting that is more useful than
+  // rejecting it and spending an iteration on the correction.
   const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : value;
   if (typeof parsed !== 'number' || !Number.isFinite(parsed)) {
     throw new ToolValidationError(`El campo "${field}" debe ser un número.`);
@@ -120,7 +128,7 @@ export function optionalInt(
   return parsed;
 }
 
-/** Acepta ISO 8601 y devuelve ISO normalizado, o null si no venía. */
+/** Accepts ISO 8601 and returns normalised ISO, or null when absent. */
 export function optionalIsoDate(args: Record<string, unknown>, field: string): string | null {
   const value = args[field];
   if (value === undefined || value === null || value === '') return null;

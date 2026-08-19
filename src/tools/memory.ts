@@ -3,8 +3,8 @@ import type { ToolDefinition, ToolResult } from './types';
 import { requireString } from './types';
 
 /**
- * Memoria de largo plazo. Es lo que separa un chatbot de un asistente: el
- * historial de conversación caduca, esto no.
+ * Long-term memory. This is what separates a chatbot from an assistant: the
+ * conversation history expires, this does not.
  */
 
 export const remember: ToolDefinition = {
@@ -73,8 +73,8 @@ export const recall: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const query = requireString(args, 'query', 100);
 
-    // ilike con comodines: búsqueda por subcadena, sin distinguir mayúsculas.
-    // Suficiente mientras las memorias sean pocas; con volumen tocará pgvector.
+    // ilike with wildcards: substring search, case insensitive. Good enough while
+    // there are few memories; at volume this will call for pgvector.
     const escaped = query.replace(/[%,()]/g, ' ').trim();
     const memories = await ctx.db.select<MemoryRow>('memories', {
       filters: {
@@ -94,7 +94,7 @@ export const recall: ToolDefinition = {
   },
 };
 
-/** Se inyectan en el contexto de cada conversación, sin gastar una tool call. */
+/** Injected into every conversation's context, without spending a tool call. */
 export async function loadMemories(
   db: import('../db/client').Db,
   userId: string,

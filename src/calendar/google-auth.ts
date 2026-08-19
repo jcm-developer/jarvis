@@ -2,29 +2,28 @@ import type { Env } from '../types';
 import { CalendarError } from './provider';
 
 /**
- * Access token de Google a partir de una service account.
+ * A Google access token from a service account.
  *
- * Se firma un JWT RS256 con WebCrypto y se canjea por un token de una hora. Es el
- * precio de haber descartado el OAuth de usuario, y se paga a gusto: una app de
- * Google Cloud en estado *Testing* emite refresh tokens que caducan a los siete
- * días, así que el bot se habría quedado muerto cada semana. Con la service
- * account no caduca nada.
+ * An RS256 JWT is signed with WebCrypto and exchanged for a one-hour token. That is
+ * the price of having ruled out user OAuth, and it is gladly paid: a Google Cloud app
+ * in *Testing* state issues refresh tokens that expire after seven days, so the bot
+ * would have gone dead every week. With the service account nothing expires.
  *
- * El token se cachea en KV: una escritura cada 55 minutos son ~26 al día, nada
- * frente al límite de 1.000 del plan free, y ahorra un viaje de red a Google en
- * cada cita que se crea.
+ * The token is cached in KV: one write every 55 minutes is ~26 a day, nothing against
+ * the free plan's 1,000 limit, and it saves a network round trip to Google on every
+ * appointment created.
  */
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
-/** El mínimo que necesitamos: crear y editar eventos, no administrar calendarios. */
+/** The minimum we need: creating and editing events, not administering calendars. */
 const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
 const CACHE_KEY = 'google:access_token';
 
 /**
- * 55 min y no 60: un token recién sacado de la caché tiene que sobrevivir a la
- * petición que va a hacer con él.
+ * 55 min and not 60: a token just pulled from the cache has to outlive the request it
+ * is about to make with it.
  */
 const CACHE_TTL_SECONDS = 3_300;
 
@@ -70,9 +69,9 @@ async function exchange(assertion: string, timeoutMs: number): Promise<string> {
   const text = await response.text();
 
   if (!response.ok) {
-    // El cuerpo de Google trae el motivo real ('invalid_grant' cuando la clave
-    // está mal pegada, que es el fallo más probable la primera vez). Va al log
-    // porque es lo único que permite distinguirlo sin adivinar.
+    // Google's body carries the real reason ('invalid_grant' when the key was pasted
+    // badly, which is the likeliest first-time failure). It goes to the log because it
+    // is the only thing that tells them apart without guessing.
     console.error(
       JSON.stringify({
         event: 'google_token_failed',
@@ -123,12 +122,12 @@ async function signAssertion(email: string, privateKey: string): Promise<string>
 }
 
 /**
- * Saca el DER de la clave del PEM que viene en el JSON de la service account.
+ * Pulls the key's DER out of the PEM that comes in the service account JSON.
  *
- * Tolera las tres formas en que esa clave acaba en un secret de Cloudflare: con
- * saltos de línea reales, con `\n` literales tal como están en el JSON, y con las
- * comillas de alrededor pegadas por error. Las tres pasan por aquí porque el
- * copiar-pegar de una cadena de 1.700 caracteres se hace una vez y a mano.
+ * It tolerates the three shapes that key ends up in inside a Cloudflare secret: with
+ * real newlines, with literal `\n` exactly as they sit in the JSON, and with the
+ * surrounding quotes pasted in by mistake. All three go through here because copying a
+ * 1,700-character string is done once, by hand.
  */
 function pkcs8FromPem(pem: string): ArrayBuffer {
   const base64 = pem
@@ -163,7 +162,7 @@ function encode(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
-/** Base64 en su variante URL-safe y sin relleno, que es la que exige el JWT. */
+/** Base64 in its URL-safe, unpadded variant, which is what the JWT requires. */
 function b64url(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);

@@ -11,13 +11,13 @@ export interface ToolCallLog {
 }
 
 /**
- * Registro de auditoría de las llamadas a herramientas.
+ * Audit trail of tool calls.
  *
- * Sin esto, entender por qué el agente borró lo que no era o creó una tarea con
- * fecha absurda es adivinar. Con esto se ve exactamente qué argumentos generó el
- * modelo y qué devolvió la base de datos.
+ * Without this, understanding why the agent deleted the wrong thing or created a task
+ * with an absurd date is guesswork. With it you see exactly which arguments the model
+ * produced and what the database returned.
  *
- * Nunca lanza: un fallo escribiendo el log no debe tumbar la acción del usuario.
+ * It never throws: failing to write the log must not bring down the user's action.
  */
 export async function logToolCall(db: Db, entry: ToolCallLog): Promise<void> {
   try {

@@ -46,8 +46,8 @@ export const createTask: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const title = cleanTitle(requireString(args, 'title', 200));
 
-    // El relativo manda sobre el ISO: lo ha calculado el Worker con la hora real.
-    // Y por encima de los dos, lo que dijo el usuario en su mensaje.
+    // The relative offset wins over the ISO date: the Worker computed it against the
+    // real clock. And above both of them, whatever the user said in their message.
     const { dueAt, remindAt } = honourUserDeadlines(
       {
         dueAt: resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'),
@@ -59,9 +59,9 @@ export const createTask: ToolDefinition = {
     if (!optionalBoolean(args, 'force')) {
       const duplicate = await findSimilarPending(title, ctx);
       if (duplicate) {
-        // Error en vez de fila nueva. El modelo ignora la regla del prompt que le
-        // dice que actualice en vez de duplicar, así que aquí no se le pide: no se
-        // le deja, y el error le explica qué hacer con el id en la mano.
+        // An error instead of a new row. The model ignores the prompt rule telling it
+        // to update rather than duplicate, so here it is not asked to comply: it is
+        // not allowed to, and the error explains what to do with the id in hand.
         return {
           ok: false,
           error:
@@ -87,11 +87,11 @@ export const createTask: ToolDefinition = {
 };
 
 /**
- * Busca una tarea pendiente que hable de lo mismo.
+ * Looks for a pending task about the same thing.
  *
- * Compara palabras significativas, no cadenas: "Recordar llamar a David" y "Llamar
- * a David a las seis" no se parecen como texto y son la misma cosa. Basta con que
- * las palabras del título más corto estén todas en el otro.
+ * It compares significant words, not strings: "Recordar llamar a David" and "Llamar a
+ * David a las seis" look nothing alike as text and are the same thing. It is enough
+ * for every word of the shorter title to appear in the other one.
  */
 async function findSimilarPending(title: string, ctx: ToolContext): Promise<TaskRow | null> {
   const words = significantWords(title);
@@ -109,9 +109,9 @@ async function findSimilarPending(title: string, ctx: ToolContext): Promise<Task
     if (other.length === 0) continue;
     const [shorter, longer] = words.length <= other.length ? [words, other] : [other, words];
 
-    // Con una sola palabra en común no basta: "comprar pan" y "comprar leche"
-    // comparten "comprar" y son dos recados distintos. Ahí se exige que sean el
-    // mismo título; a partir de dos palabras, que las del corto estén en el largo.
+    // One word in common is not enough: "comprar pan" and "comprar leche" share
+    // "comprar" and are two different errands. There the titles must match outright;
+    // from two words up, the short one's words must all be in the long one.
     const same =
       shorter.length === 1
         ? longer.length === 1 && longer[0] === shorter[0]
@@ -122,7 +122,7 @@ async function findSimilarPending(title: string, ctx: ToolContext): Promise<Task
   return null;
 }
 
-/** Palabras de cuatro letras o más, sin acentos: las que distinguen una tarea. */
+/** Words of four letters or more, unaccented: the ones that tell tasks apart. */
 function significantWords(title: string): string[] {
   return title
     .toLowerCase()
@@ -230,9 +230,9 @@ export const updateTask: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
 
-    // Se mira la presencia del campo, no su valor: los validadores devuelven null
-    // tanto para "no lo mandó" como para "lo mandó vacío", y aquí significan cosas
-    // distintas —no tocar, frente a borrar el dato—.
+    // Field presence is what gets checked, not its value: the validators return null
+    // both for "not sent" and for "sent empty", and here those mean different things —
+    // leave it alone versus wipe the value.
     const patch: Record<string, unknown> = {};
 
     if (args['title'] !== undefined) patch['title'] = requireString(args, 'title', 200);
@@ -241,9 +241,9 @@ export const updateTask: ToolDefinition = {
       patch['priority'] = optionalInt(args, 'priority', 1, 3) ?? 2;
     }
 
-    // Cambiar cualquiera de las dos fechas reabre el aviso. Sin esto, una tarea de
-    // la que ya se avisó se aplazaría al día siguiente y el recordatorio no volvería
-    // a salir nunca, porque el cron solo mira las que tienen reminded_at a null.
+    // Changing either date reopens the reminder. Without this, postponing a task that
+    // was already announced would leave it without a reminder forever, because the
+    // cron only looks at the ones whose reminded_at is null.
     const touchesDue = args['due_in_minutes'] !== undefined || args['due_at'] !== undefined;
     const touchesRemind = args['remind_in_minutes'] !== undefined || args['remind_at'] !== undefined;
 
@@ -260,8 +260,8 @@ export const updateTask: ToolDefinition = {
         ctx,
       );
 
-      // Solo se escribe lo que el modelo ha tocado: aquí no se inventan fechas que
-      // el usuario no ha pedido cambiar.
+      // Only what the model touched gets written: no dates are invented here that the
+      // user never asked to change.
       if (touchesDue) patch['due_at'] = corrected.dueAt;
       if (touchesRemind) patch['remind_at'] = corrected.remindAt;
       patch['reminded_at'] = null;
@@ -355,8 +355,8 @@ export const deleteTask: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
 
-    // El filtro por user_id no es decorativo: impide borrar tareas ajenas si
-    // algún día hay más de un usuario autorizado.
+    // The user_id filter is not decorative: it prevents deleting someone else's tasks
+    // if there is ever more than one authorised user.
     const deleted = await ctx.db.delete<TaskRow>('tasks', {
       id: `eq.${taskId}`,
       user_id: `eq.${ctx.userId}`,
@@ -376,7 +376,7 @@ function notFound(taskId: string): ToolResult {
   };
 }
 
-/** Forma compacta y legible: lo que ve el modelo en la siguiente iteración. */
+/** Compact and readable: what the model sees on the next iteration. */
 function summarize(task: TaskRow, timezone: string) {
   return {
     id: task.id,
@@ -384,8 +384,8 @@ function summarize(task: TaskRow, timezone: string) {
     notes: task.notes,
     due: task.due_at ? formatDate(task.due_at, timezone) : null,
     due_iso: task.due_at,
-    // Solo cuando hay un aviso propio: en una lista de veinte tareas, un campo más
-    // por fila son tokens en cada mensaje siguiente.
+    // Only when there is a reminder of its own: across twenty tasks, one extra field
+    // per row is tokens spent on every following message.
     ...(task.remind_at ? { remind: formatDate(task.remind_at, timezone) } : {}),
     priority: PRIORITY_LABELS[task.priority] ?? 'normal',
     status: task.status,

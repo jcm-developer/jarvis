@@ -3,11 +3,12 @@ import type { Db } from './client';
 import type { ConversationRow, UserRow } from './types';
 
 /**
- * Resuelve el usuario y la conversación de Supabase para un chat de Telegram,
- * creándolos si no existen.
+ * Resolves the Supabase user and conversation for a Telegram chat, creating them when
+ * they do not exist.
  *
- * Los uuid se cachean en KV: son inmutables y consultarlos en cada mensaje
- * añadiría dos saltos a Supabase a una latencia que ya arrastra la del modelo.
+ * The uuids are cached in KV: they are immutable, and looking them up on every message
+ * would add two round trips to Supabase on top of a latency that already carries the
+ * model's.
  */
 
 const CACHE_TTL_SECONDS = 2_592_000; // 30 días
@@ -75,8 +76,8 @@ function isCachedIdentity(value: unknown): value is Identity {
 }
 
 /**
- * A quién escribe el cron. No hay chat de origen del que sacarlo, así que sale
- * del cruce de `users` y `conversations`.
+ * Who the cron writes to. There is no originating chat to take it from, so it comes
+ * from joining `users` and `conversations`.
  */
 export interface CronTarget {
   userId: string;
@@ -87,14 +88,14 @@ export interface CronTarget {
 }
 
 /**
- * Usuarios con conversación abierta a los que el cron puede escribir.
+ * Users with an open conversation the cron is allowed to write to.
  *
- * Dos consultas y el cruce en memoria en vez de un select con recurso embebido:
- * mantiene el cliente de base de datos tonto, y con un usuario son dos filas.
+ * Two queries and the join in memory instead of a select with an embedded resource: it
+ * keeps the database client dumb, and with one user it is two rows.
  *
- * El filtro por whitelist es la parte importante: si un id sale de
- * `ALLOWED_TELEGRAM_IDS`, el cron deja de escribirle aunque su fila siga en la
- * base de datos. Al revés que el webhook, aquí nadie más comprueba el permiso.
+ * The whitelist filter is the important part: if an id leaves
+ * `ALLOWED_TELEGRAM_IDS`, the cron stops writing to them even though their row is still
+ * in the database. Unlike the webhook, nobody else checks the permission here.
  */
 export async function listCronTargets(
   db: Db,

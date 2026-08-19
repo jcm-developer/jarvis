@@ -3,20 +3,29 @@ import { isSttProviderName, type SttProviderName } from './stt';
 import type { Env } from './types';
 
 export interface Config {
-  /** IDs de Telegram autorizados. Cualquier otro se ignora en silencio. */
+  /** Authorised Telegram ids. Any other one is ignored silently. */
   allowedTelegramIds: Set<number>;
   defaultTimezone: string;
   llmProvider: ProviderName;
   llmModel: string;
-  /** Nº de turnos de conversación que se arrastran como contexto. */
+  /** How many conversation rows are dragged along as context. */
   historyWindow: number;
-  /** Tope de vueltas del bucle agéntico. Evita que un modelo confundido queme la cuota. */
+  /** Cap on agentic loop rounds. Stops a confused model from burning the quota. */
   maxAgentIterations: number;
   sttProvider: SttProviderName;
   sttModel: string;
   sttLanguage: string;
-  /** Hora local (0-23) a la que sale el briefing diario del cron. */
+  /** Local hour (0-23) at which the cron's daily briefing goes out. */
   briefingHour: number;
+  /**
+   * The day's window, in local hours, within which free slots are searched for.
+   *
+   * Without a declared window, "you are free from 03:00 to 07:00" is a technically
+   * correct and useless answer: the calendar is empty at night because people sleep, not
+   * because there is room for anything.
+   */
+  dayStartHour: number;
+  dayEndHour: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -34,11 +43,11 @@ const DEFAULT_STT_MODELS: Record<SttProviderName, string> = {
 export class ConfigError extends Error {}
 
 /**
- * Valida el entorno al arrancar la petición.
+ * Validates the environment as the request starts.
  *
- * Falla ruidosamente y pronto: un secret ausente detectado aquí es un error
- * legible en los logs, mientras que detectado a mitad del flujo se manifiesta
- * como un 401 opaco de una API de terceros.
+ * It fails loudly and early: a missing secret caught here is a readable error in the
+ * logs, whereas caught midway through the flow it shows up as an opaque 401 from a
+ * third-party API.
  */
 export function loadConfig(env: Env): Config {
   const missing = (
@@ -53,16 +62,16 @@ export function loadConfig(env: Env): Config {
 
   const allowedTelegramIds = parseIdList(env.ALLOWED_TELEGRAM_IDS);
   if (allowedTelegramIds.size === 0) {
-    // Sin whitelist el bot es un servicio abierto: cualquiera consume cuota y,
-    // a partir de la Fase 2, escribe en la base de datos.
+    // With no whitelist the bot is an open service: anyone burns quota and, from Phase 2
+    // onwards, writes to the database.
     throw new ConfigError(
       'ALLOWED_TELEGRAM_IDS no contiene ningún id válido. Debe ser una lista de números ' +
         'separados por coma (te lo da @userinfobot); el bot rechaza todo mientras esté vacío.',
     );
   }
 
-  // Un LLM_PROVIDER desconocido cae a nvidia en vez de tumbar el bot: es una var
-  // de wrangler.toml, y un typo ahí no debe dejar al asistente incomunicado.
+  // An unknown LLM_PROVIDER falls back to nvidia instead of bringing the bot down: it is
+  // a wrangler.toml var, and a typo there must not leave the assistant unreachable.
   const rawProvider = env.LLM_PROVIDER?.trim().toLowerCase() ?? '';
   const llmProvider: ProviderName = isProviderName(rawProvider) ? rawProvider : 'nvidia';
   if (rawProvider && !isProviderName(rawProvider)) {
@@ -71,6 +80,18 @@ export function loadConfig(env: Env): Config {
 
   const rawStt = env.STT_PROVIDER?.trim().toLowerCase() ?? '';
   const sttProvider: SttProviderName = isSttProviderName(rawStt) ? rawStt : 'openai';
+
+  // An inverted window would leave find_free_slots never returning a gap, and that is a
+  // typo in wrangler.toml, not a reason to bring the bot down.
+  const dayStartHour = parseHour(env.DAY_START_HOUR, 9);
+  const dayEndHour = parseHour(env.DAY_END_HOUR, 21, 24);
+  const sensibleDay = dayStartHour < dayEndHour;
+  if (!sensibleDay) {
+    console.warn(
+      `DAY_START_HOUR (${dayStartHour}) no es anterior a DAY_END_HOUR (${dayEndHour}); ` +
+        'se usa la franja por defecto 9-21',
+    );
+  }
 
   return {
     allowedTelegramIds,
@@ -83,14 +104,21 @@ export function loadConfig(env: Env): Config {
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
     maxAgentIterations: parsePositiveInt(env.MAX_AGENT_ITERATIONS, 5),
     briefingHour: parseHour(env.BRIEFING_HOUR, 8),
+    dayStartHour: sensibleDay ? dayStartHour : 9,
+    dayEndHour: sensibleDay ? dayEndHour : 21,
     logLevel: parseLogLevel(env.LOG_LEVEL),
   };
 }
 
-/** Aparte de parsePositiveInt porque las 0:00 es una hora válida y un cero no. */
-function parseHour(raw: string | undefined, fallback: number): number {
+/**
+ * Separate from parsePositiveInt because 0:00 is a valid hour and a zero is not.
+ *
+ * `max` goes up to 24 for the end of a window: "until 24" is the next midnight, and with
+ * the cap at 23 there would be no way to say "until the end of the day".
+ */
+function parseHour(raw: string | undefined, fallback: number, max = 23): number {
   const parsed = Number.parseInt(raw ?? '', 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 23 ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : fallback;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

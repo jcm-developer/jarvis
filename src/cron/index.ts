@@ -8,17 +8,17 @@ import { sendBriefingIfDue } from './briefing';
 import { sendDueReminders } from './reminders';
 
 /**
- * Lo que corre en cada disparo del cron (cada hora, en UTC).
+ * What runs on every cron tick (every five minutes, in UTC).
  *
- * Aquí el asistente deja de ser reactivo: nadie ha escrito nada y sin embargo hay
- * que decidir si toca hablar. Las dos decisiones —briefing y recordatorios— se
- * toman con datos de Supabase, no con el modelo.
+ * This is where the assistant stops being reactive: nobody wrote anything and yet it has
+ * to decide whether to speak. Both decisions —briefing and reminders— are made from
+ * Supabase data, not with the model.
  *
- * La hora del disparo no dice nada por sí sola: el cron va en UTC y lo que importa
- * es la hora local de cada usuario, que la calcula `lib/localtime.ts`.
+ * The tick's hour says nothing on its own: the cron runs in UTC and what matters is each
+ * user's local time, which `lib/localtime.ts` computes.
  */
 
-/** Sin sitio para una consulta y un envío, mejor no empezar con el siguiente usuario. */
+/** With no room for a query and a send, better not to start on the next user. */
 const MIN_ROOM_MS = 6_000;
 
 export async function runScheduled(env: Env, config: Config, deadline: Deadline): Promise<void> {
@@ -39,12 +39,13 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       break;
     }
 
-    // Cada bloque va con su try: que falle el recordatorio de uno no debe dejar al
-    // resto sin briefing, ni al mismo usuario sin la otra mitad de su aviso.
+    // Each block carries its own try: one user's failing reminder must not leave the
+    // rest without a briefing, nor that same user without the other half of their alert.
     //
-    // Una tarea que vence en la misma hora del briefing sale en los dos mensajes.
-    // Se acepta: son cosas distintas —planificar el día y avisar de lo inminente— y
-    // suprimir el recordatorio dejaría sin aviso justo a lo más urgente del día.
+    // A task falling due within the briefing's own hour shows up in both messages. That
+    // is accepted: they are different things —planning the day and flagging what is
+    // imminent— and suppressing the reminder would silence precisely the most urgent
+    // thing of the day.
     try {
       reminded += await sendDueReminders({ db, telegram, target, now });
     } catch (error) {
@@ -68,8 +69,8 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
     }
   }
 
-  // Una línea por ejecución. El cron no tiene a nadie mirando: si no queda en los
-  // logs que corrió y no hizo nada, no hay forma de distinguirlo de que no corrió.
+  // One line per run. Nobody is watching the cron: unless the logs record that it ran
+  // and did nothing, there is no way to tell that apart from it never running.
   console.info(
     JSON.stringify({
       event: 'cron_run',

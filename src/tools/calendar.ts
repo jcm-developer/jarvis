@@ -4,10 +4,14 @@ import {
   formatDay,
   formatDayAndTime,
   formatLongDate,
+  formatTime,
   localNow,
+  shiftDate,
   startOfLocalDay,
   zonedInstant,
 } from '../lib/localtime';
+import type { Interval } from '../lib/slots';
+import { overlaps } from '../lib/slots';
 import { OFFSET_HINT, cleanTitle, honourUserInstant, resolveOffset } from './guardrails';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import {
@@ -18,36 +22,63 @@ import {
   requireString,
 } from './types';
 
-/** Tope de cada operación contra Google: pedir el token y la llamada a la API. */
-const MAX_CALENDAR_MS = 10_000;
+/**
+ * Cap for every operation against Google: fetching the token plus the API call.
+ *
+ * Exported because `tools/agenda.ts` talks to the same calendar and has to be held to
+ * the same yardstick. Two copies of this number drift apart over time.
+ */
+export const MAX_CALENDAR_MS = 10_000;
 
 /**
- * Por debajo de esto no se intenta. Decirle al usuario que lo repita es mejor que
- * lanzar una escritura que Cloudflare va a cancelar a mitad, dejándonos sin saber
- * si el evento se creó o no.
+ * Below this it is not even attempted. Telling the user to say it again beats firing
+ * off a write that Cloudflare will cancel halfway, leaving us unable to tell whether
+ * the event was created.
  */
-const MIN_CALENDAR_MS = 3_000;
+export const MIN_CALENDAR_MS = 3_000;
 
-/** Lo que dura una cita cuando el usuario no dice hasta cuándo. */
+/**
+ * Cap for the overlap check.
+ *
+ * Shorter than the rest because it is an extra, not what the user asked for: if it
+ * does not fit, the appointment is already created and all that is lost is the warning.
+ */
+const CONFLICT_MAX_MS = 5_000;
+
+/** Appointments read to check an overlap. There are no more at the same hour. */
+const CONFLICT_LIMIT = 10;
+
+/**
+ * Minimum room needed to afford the check: what the check itself may take plus what
+ * the agent needs **afterwards** to word the reply (the 4 s of MIN_ROOM_FOR_CALL_MS in
+ * agent.ts, with a little air).
+ *
+ * Without this sum, 4 s left was enough to go ahead: the lookup fitted, and the reply
+ * that had to report it no longer did. The warning was paid for with silence, which is
+ * the failure this project has been avoiding since Phase 1.
+ */
+const CONFLICT_MIN_ROOM_MS = CONFLICT_MAX_MS + 5_000;
+
+/** How long an appointment lasts when the user does not say until when. */
 const DEFAULT_DURATION_MINUTES = 60;
 
-/** Ventana de `list_events` cuando no se pide un día concreto. */
+/** `list_events` window when no specific day is requested. */
 const DEFAULT_SEARCH_DAYS = 7;
 
-/** Tope de un evento de varios días. Más que eso huele a error del modelo. */
+/** Cap on a multi-day event. More than that smells like a model error. */
 const MAX_SPAN_DAYS = 90;
 
 /**
- * Categoría → color de Google Calendar.
+ * Category to Google Calendar colour.
  *
- * El modelo elige el TIPO de cita; el color lo elige el código. Al revés —dejarle
- * mandar un `colorId`— tendríamos los viajes de un color distinto cada semana: no
- * hay forma de que un modelo sea consistente con un número entre 1 y 11 a lo largo
- * de meses de conversaciones, y el color solo sirve si siempre es el mismo.
+ * The model picks the KIND of appointment; the code picks the colour. The other way
+ * round —letting it send a `colorId`— would give us trips in a different colour every
+ * week: there is no way a model stays consistent with a number between 1 and 11 across
+ * months of conversations, and a colour is only useful when it is always the same.
  *
- * Los ids son los fijos de la API: 3 uva, 7 pavo real, 6 mandarina, 10 albahaca,
- * 11 tomate, 5 banana. Sin categoría, el evento se queda con el color por defecto
- * del calendario, que es lo que el usuario ya tiene configurado.
+ * The ids are the API's fixed ones: 3 grape, 7 peacock, 6 tangerine, 10 basil,
+ * 11 tomato, 5 banana. With no category the event keeps the calendar's default colour,
+ * which is what the user has already configured.
  */
 const CATEGORY_COLORS: Record<string, string> = {
   viaje: '3',
@@ -65,18 +96,18 @@ const CATEGORY_HINT =
   `${CATEGORIES.join(', ')}. Mándalo cuando esté claro (un viaje, una reunión de ` +
   'trabajo, un examen o una clase, el médico); si no encaja en ninguno, no lo mandes.';
 
-/** El color de vuelta a su categoría, para poder decir de qué es una cita al listarla. */
+/** Colour back to its category, so a listed appointment can say what it is about. */
 const COLOR_CATEGORIES: Record<string, string> = Object.fromEntries(
   Object.entries(CATEGORY_COLORS).map(([category, color]) => [color, category]),
 );
 
 /**
- * Frecuencia → regla de repetición.
+ * Frequency to recurrence rule.
  *
- * Mismo reparto que con los colores, y aquí más necesario: una RRULE es una cadena
- * con su propia gramática, y un modelo que la escribe a mano produce reglas que la
- * API acepta y que repiten el cumpleaños el día equivocado durante los próximos
- * veinte años. Elige la frecuencia de una lista; la cadena la escribe el código.
+ * Same split as with the colours, and even more necessary here: an RRULE is a string
+ * with its own grammar, and a model writing one by hand produces rules the API accepts
+ * and which repeat the birthday on the wrong day for the next twenty years. It picks
+ * the frequency from a list; the code writes the string.
  */
 const RECURRENCE_RULES: Record<string, string> = {
   anual: 'RRULE:FREQ=YEARLY',
@@ -88,7 +119,7 @@ const RECURRENCE_RULES: Record<string, string> = {
 
 const FREQUENCIES = Object.keys(RECURRENCE_RULES);
 
-/** Sobre qué actúan update_event y delete_event cuando la cita se repite. */
+/** What update_event and delete_event act on when the appointment repeats. */
 const SCOPES = ['esta', 'serie'];
 
 const SCOPE_HINT =
@@ -97,10 +128,10 @@ const SCOPE_HINT =
   'antes: no es lo mismo saltarse un cumpleaños que borrarlo para siempre.';
 
 /**
- * Traduce la categoría a color, o null si no la reconoce.
+ * Translates the category into a colour, or null when it is not recognised.
  *
- * Un valor raro no es un error que merezca cortar la cita: el evento se crea sin
- * color, que es exactamente lo que pasaba antes de que esto existiera.
+ * An odd value is not an error worth aborting the appointment over: the event is
+ * created without a colour, which is exactly what happened before this existed.
  */
 function colorFor(args: Record<string, unknown>): string | null {
   const category = optionalString(args, 'category', 20);
@@ -108,7 +139,7 @@ function colorFor(args: Record<string, unknown>): string | null {
   return CATEGORY_COLORS[category.toLowerCase()] ?? null;
 }
 
-/** La regla de repetición, o null si la cita pasa una sola vez. */
+/** The recurrence rule, or null when the appointment happens only once. */
 function recurrenceFor(args: Record<string, unknown>): string[] | null {
   const frequency = optionalString(args, 'repeats', 20);
   if (frequency === null) return null;
@@ -117,11 +148,11 @@ function recurrenceFor(args: Record<string, unknown>): string[] | null {
 }
 
 /**
- * El id sobre el que hay que actuar: el de esta repetición o el de la serie.
+ * The id to act on: this occurrence's or the whole series'.
  *
- * Un `delete_event` con el id de una repetición borra solo ese día. Para "borra el
- * cumpleaños de mi hermana" eso deja los otros veinte años puestos, y el usuario no
- * se enteraría hasta el año que viene.
+ * A `delete_event` with an occurrence's id deletes that day only. For "delete my
+ * sister's birthday" that leaves the other twenty years in place, and the user would
+ * not find out until next year.
  */
 function targetOf(
   event: CalendarEventSummary,
@@ -134,12 +165,77 @@ function targetOf(
   return { id: event.id, wholeSeries: false };
 }
 
-const NO_TIME = {
+export const NO_TIME = {
   ok: false as const,
   error:
     'No queda tiempo en este mensaje para hablar con el calendario. Dile al usuario que ' +
     'NO se ha hecho nada y que te lo repita.',
 };
+
+/**
+ * Appointments turned into busy intervals.
+ *
+ * All-day events do NOT take up time: a birthday or an "I am travelling" fills the day
+ * in the calendar without preventing a meeting at eleven. If they blocked, any week
+ * with a name day in it would come back without a single free slot and the tool would
+ * be useless.
+ *
+ * Private appointments do take up time even though they arrive with no title: the
+ * shared permission we use returns them as an occupied slot, which is exactly the
+ * piece of data needed here.
+ */
+export function busyIntervals(events: CalendarEventSummary[]): Interval[] {
+  return events
+    .filter((event) => !event.allDay && event.startAt !== null && event.endAt !== null)
+    .map((event) => ({ start: Date.parse(event.startAt!), end: Date.parse(event.endAt!) }))
+    .filter((interval) => Number.isFinite(interval.start) && Number.isFinite(interval.end));
+}
+
+/**
+ * The appointments clashing with the slot a new appointment has just taken.
+ *
+ * It never throws: a failure here cannot turn into a `create_event` error, because the
+ * appointment is already written and telling the model something failed would have it
+ * report that to the user as if nothing had been created.
+ */
+async function overlappingEvents(
+  client: CalendarClient,
+  slot: Interval,
+  createdId: string,
+  ctx: ToolContext,
+): Promise<CalendarEventSummary[]> {
+  if (!ctx.deadline.hasRoomFor(CONFLICT_MIN_ROOM_MS)) return [];
+
+  try {
+    const events = await client.listEvents(
+      {
+        from: new Date(slot.start).toISOString(),
+        to: new Date(slot.end).toISOString(),
+        query: null,
+        limit: CONFLICT_LIMIT,
+      },
+      ctx.deadline.budgetFor(CONFLICT_MAX_MS),
+    );
+
+    return events.filter((event) => {
+      // The one just created shows up in its own search, and when it repeats it shows
+      // up with the occurrence's id, which is not the one the POST returned: without
+      // also checking the series id, a weekly class would warn about clashing with
+      // itself.
+      if (event.id === createdId || event.seriesId === createdId) return false;
+      if (event.allDay || event.startAt === null || event.endAt === null) return false;
+      return overlaps(slot, { start: Date.parse(event.startAt), end: Date.parse(event.endAt) });
+    });
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: 'calendar_conflict_check_failed',
+        reason: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return [];
+  }
+}
 
 export const createEvent: ToolDefinition = {
   name: 'create_event',
@@ -207,14 +303,14 @@ export const createEvent: ToolDefinition = {
     const allDay = optionalBoolean(args, 'all_day');
     const chosen = resolveOffset(args, 'start_in_minutes') ?? optionalIsoDate(args, 'start_at');
 
-    // Mismas correcciones que en las tareas, y por el mismo motivo: el modelo
-    // acierta la hora y falla el día. Aquí duele más que en una tarea, porque un
-    // evento mal fechado ocupa un hueco de la agenda que el usuario cree libre.
+    // Same corrections as for tasks, and for the same reason: the model gets the time
+    // right and the day wrong. It hurts more here than on a task, because a misdated
+    // event takes up a slot the user believes is free.
     //
-    // Pero NO en un evento de día completo. Ahí no hay hora, y el corrector parte
-    // justamente de que la hora es buena y el día no: aplicado a un "todo el día"
-    // acabaría trayéndose la cita a hoy porque no encontró un día en el mensaje.
-    // Con fechas sueltas el modelo acierta; es la aritmética lo que se le da mal.
+    // But NOT on an all-day event. There is no time there, and the corrector's whole
+    // premise is that the time is good and the day is not: applied to an "all day" it
+    // would end up dragging the appointment to today because it found no day in the
+    // message. With bare dates the model gets it right; arithmetic is its weak spot.
     const startAt = allDay ? chosen : honourUserInstant(chosen, ctx, 'start_at');
 
     if (startAt === null) {
@@ -228,8 +324,8 @@ export const createEvent: ToolDefinition = {
 
     const start = new Date(startAt);
 
-    // Un día completo se manda como fechas, no como instantes, y el fin es
-    // exclusivo: para un solo día, el día siguiente.
+    // An all-day entry travels as dates, not instants, and the end is exclusive: for a
+    // single day, that is the next day.
     const startDate = allDay ? localNow(start, ctx.timezone).date : null;
     let endDate = allDay ? shiftDate(startDate!, 1) : null;
 
@@ -257,9 +353,9 @@ export const createEvent: ToolDefinition = {
             error: `Eso son más de ${MAX_SPAN_DAYS} días. Confirma las fechas con el usuario.`,
           };
         }
-        // +1 porque en Google el último día es exclusivo: un viaje del 23 al 26 se
-        // guarda como 23 → 27. Sin ese día de más, el calendario lo pinta acabando
-        // el 25 y el usuario se cree que vuelve un día antes.
+        // +1 because in Google the last day is exclusive: a trip from the 23rd to the
+        // 26th is stored as 23 to 27. Without that extra day the calendar paints it
+        // ending on the 25th and the user believes they come back a day early.
         endDate = shiftDate(startDate!, span + 1);
       }
     }
@@ -281,14 +377,14 @@ export const createEvent: ToolDefinition = {
       }
     }
 
-    // El presupuesto sale del reloj del mensaje, no de un tope propio: es la regla
-    // que impide que un paso nuevo se coma el tiempo de responder.
+    // The budget comes from the message's clock, not from a cap of its own: that is
+    // the rule stopping a new step from eating the time needed to answer.
     const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
     if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
-    // Los errores de configuración y los de Google salen como CalendarError y los
-    // recoge el agente: vuelven al modelo como {ok:false, error}, nunca al usuario
-    // como excepción.
+    // Configuration errors and Google's own come out as CalendarError and the agent
+    // catches them: they go back to the model as {ok:false, error}, never to the user
+    // as an exception.
     const client = createCalendarClient(ctx.env);
     const event = await client.createEvent(
       {
@@ -316,15 +412,33 @@ export const createEvent: ToolDefinition = {
       }),
     );
 
-    // `when` en castellano para que el modelo repita la fecha en su respuesta y el
-    // usuario pueda corregirla en el acto. Sin esto vuelve a recitar el ISO.
+    // The overlap is checked AFTER the write, on purpose. The appointment is what the
+    // user asked for: it cannot end up unwritten because a courtesy lookup ate the
+    // message's budget. If there is no time left or Google fails, it is created anyway
+    // and nothing is said — the other way round, this would be a regression.
+    //
+    // And it warns, it does not block: two things at the same hour is something people
+    // do on purpose. Returning {ok:false} would send the model hunting for another
+    // hour nobody asked for.
+    const overlapping =
+      allDay || endAt === null
+        ? []
+        : await overlappingEvents(
+            client,
+            { start: start.getTime(), end: Date.parse(endAt) },
+            event.id,
+            ctx,
+          );
+
+    // `when` in Spanish so the model repeats the date in its reply and the user can
+    // correct it on the spot. Without this it goes back to reciting the ISO string.
     return {
       ok: true,
       data: {
         id: event.id,
         title,
-        // Se reutiliza el mismo formateo que list_events: si un viaje se guarda
-        // como "del 23 al 26", el usuario tiene que leerlo igual en las dos.
+        // The same formatting as list_events is reused: if a trip is stored as "del 23
+        // al 26", the user has to read it the same way in both.
         when: allDay
           ? whenOf(
               {
@@ -346,6 +460,18 @@ export const createEvent: ToolDefinition = {
         start_iso: allDay ? startDate : startAt,
         all_day: allDay,
         ...(endAt ? { end_iso: endAt } : {}),
+        ...(overlapping.length > 0
+          ? {
+              overlaps_with: overlapping.map((other) => ({
+                title: other.title || '(otra cita, privada)',
+                when: hoursOf(other, ctx.timezone),
+              })),
+              note:
+                'La cita SÍ se ha creado. Pero a esa hora ya tenía algo, así que dile con ' +
+                'qué se solapa en la misma frase. No la muevas ni la borres: si quiere ' +
+                'cambiarla, te lo dirá.',
+            }
+          : {}),
         ...(event.url ? { url: event.url } : {}),
       },
     };
@@ -391,8 +517,8 @@ export const listEvents: ToolDefinition = {
     let to: Date;
 
     if (day === null) {
-      // Sin día, desde ahora: preguntar "¿qué tengo?" no es preguntar por lo que ya
-      // ha pasado esta mañana.
+      // With no day, from now on: asking "what do I have?" is not asking about what
+      // already happened this morning.
       from = new Date();
       to = new Date(from.getTime() + DEFAULT_SEARCH_DAYS * 24 * 60 * 60 * 1000);
     } else {
@@ -467,8 +593,8 @@ export const updateEvent: ToolDefinition = {
 
     if (args['category'] !== undefined) {
       const color = colorFor(args);
-      // Una categoría que no reconocemos no cambia el color en vez de ponerlo a
-      // vacío: dejar el evento gris no es lo que pedía nadie.
+      // An unrecognised category leaves the colour alone instead of clearing it:
+      // turning the event grey is not what anybody asked for.
       if (color !== null) patch.colorId = color;
     }
 
@@ -485,15 +611,15 @@ export const updateEvent: ToolDefinition = {
       };
     }
 
-    // Hace falta leer el evento para tocar la serie: el id que tiene el modelo es el
-    // de una repetición, y el de la serie solo viene dentro del evento.
+    // The event has to be read to touch the series: the id the model holds is an
+    // occurrence's, and the series id only comes inside the event.
     if (touchesStart || touchesEnd || wantsSeries) {
-      // Hay que leer el evento ANTES de decidir la hora nueva, por dos razones.
-      // Una: mover el inicio sin tocar el final dejaría una cita de duración
-      // absurda, y la que tenía solo la sabe Google —"muévela al viernes" es la
-      // misma cita otro día, no una cita de otra longitud—. Y dos: si el evento es
-      // de día completo no hay que aplicarle el corrector de día, porque no tiene
-      // hora sobre la que corregir.
+      // The event has to be read BEFORE deciding the new time, for two reasons. One:
+      // moving the start without touching the end would leave an appointment of absurd
+      // length, and only Google knows the length it had — "move it to Friday" is the
+      // same appointment on another day, not an appointment of a different length. And
+      // two: if the event is all-day, the day corrector must not be applied, because
+      // there is no time to correct against.
       let budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
       if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
@@ -503,10 +629,10 @@ export const updateEvent: ToolDefinition = {
 
       const target = targetOf(current, args);
 
-      // Cambiar la HORA de una serie entera no lo hacemos. Reanclar la serie desde
-      // aquí es donde se rompe en silencio: una regla con días fijos (los
-      // laborables) movida a un sábado deja de cuadrar con su propio patrón, y el
-      // usuario no lo ve hasta que falta una semana entera de citas.
+      // Changing the TIME of a whole series is something we do not do. Re-anchoring
+      // the series from here is where it breaks silently: a rule with fixed days
+      // (weekdays) moved onto a Saturday stops matching its own pattern, and the user
+      // does not see it until a whole week of appointments is missing.
       if (target.wholeSeries && (touchesStart || touchesEnd)) {
         return {
           ok: false,
@@ -571,9 +697,9 @@ export const deleteEvent: ToolDefinition = {
     const eventId = typeof args['event_id'] === 'string' ? args['event_id'] : '';
     const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
 
-    // Se pregunta por el título, no por el id: "¿borro la cita 7f3a-...?" no lo
-    // revisa nadie. Si no se puede leer, se pregunta en genérico antes que fallar:
-    // lo que no puede pasar es borrar sin preguntar.
+    // The question names the title, not the id: nobody actually reviews "delete
+    // appointment 7f3a-...?". If it cannot be read, the generic question is asked
+    // rather than failing: what must never happen is deleting without asking.
     if (budget >= MIN_CALENDAR_MS && eventId) {
       try {
         const event = await createCalendarClient(ctx.env).getEvent(eventId, budget);
@@ -581,9 +707,9 @@ export const deleteEvent: ToolDefinition = {
           const shown = event.title || 'esa cita';
           const target = targetOf(event, args);
 
-          // El alcance va en la pregunta, no en la nota de después: entre borrar un
-          // cumpleaños de este año y borrarlo para siempre no hay vuelta atrás, y es
-          // justo lo que el botón está confirmando.
+          // The scope goes in the question, not in a note afterwards: between
+          // deleting this year's birthday and deleting it forever there is no way
+          // back, and that is precisely what the button is confirming.
           if (target.wholeSeries) {
             return `¿Borro "${shown}" del calendario con TODAS sus repeticiones, para siempre?`;
           }
@@ -593,7 +719,7 @@ export const deleteEvent: ToolDefinition = {
           return `¿Borro del calendario "${shown}" (${whenOf(event, ctx.timezone)})?`;
         }
       } catch {
-        // Da igual por qué: se cae al texto genérico.
+        // Whatever the reason: fall back to the generic wording.
       }
     }
     return '¿Borro esa cita del calendario?';
@@ -609,8 +735,8 @@ export const deleteEvent: ToolDefinition = {
     let targetId = eventId;
     let wholeSeries = false;
 
-    // Solo se lee cuando hay que resolver la serie: el id de la serie vive dentro
-    // del evento y el modelo no lo tiene.
+    // Only read when the series has to be resolved: the series id lives inside the
+    // event and the model does not have it.
     if (wantsSeries) {
       const event = await client.getEvent(eventId, budget);
       if (event === null) return notFound(eventId);
@@ -636,10 +762,10 @@ export const deleteEvent: ToolDefinition = {
 };
 
 /**
- * Calcula el nuevo inicio y fin conservando lo que el usuario no ha pedido cambiar.
+ * Works out the new start and end while preserving what the user did not ask to change.
  *
- * Tres casos: mueve el inicio y no dice duración (se conserva la que tenía), cambia
- * la duración sin mover el inicio, y evento de día completo (se mueve el día).
+ * Three cases: the start moves with no duration given (the old one is preserved), the
+ * duration changes without moving the start, and all-day events (the day moves).
  */
 function applyNewTimes(
   current: CalendarEventSummary,
@@ -660,8 +786,9 @@ function applyNewTimes(
       };
     }
 
-    // Conserva los días que ocupaba. Sin esto, mover un viaje del 23 al 26 lo
-    // dejaría en un solo día: el usuario pide cambiar cuándo empieza, no cuánto dura.
+    // Preserves the days it spanned. Without this, moving a trip from the 23rd to the
+    // 26th would collapse it into one day: the user asked to change when it starts, not
+    // how long it lasts.
     const nights =
       current.startDate !== null && current.endDate !== null
         ? (daysBetween(current.startDate, current.endDate) ?? 1)
@@ -686,7 +813,7 @@ function applyNewTimes(
   } else if (duration !== null) {
     endIso = new Date(start.getTime() + duration * 60_000).toISOString();
   } else {
-    // Ni fin ni duración: conserva la que tenía. Es lo que quiere decir "muévela".
+    // Neither end nor duration: keep the one it had. That is what "move it" means.
     const kept =
       current.startAt !== null && current.endAt !== null
         ? new Date(current.endAt).getTime() - new Date(current.startAt).getTime()
@@ -732,9 +859,9 @@ function report(
       ...(patch.title ? { title: patch.title } : {}),
       ...(startIso ? { when: formatDayAndTime(new Date(startIso), ctx.timezone) } : {}),
       ...(startDate ? { when: `${startDate}, todo el día` } : {}),
-      // Con singleEvents=true el id es el de esta repetición, así que por defecto el
-      // cambio no toca el resto de la serie. El usuario tiene que saber cuál de las
-      // dos cosas ha pasado, o creerá que ha movido su reunión de todos los lunes.
+      // With singleEvents=true the id belongs to this occurrence, so by default the
+      // change does not touch the rest of the series. The user has to know which of
+      // the two happened, or they will believe they moved their every-Monday meeting.
       ...(wholeSeries
         ? { note: 'El cambio se ha aplicado a TODAS las repeticiones. Dilo en tu respuesta.' }
         : before?.recurring
@@ -752,18 +879,25 @@ function report(
 function describe(event: CalendarEventSummary, timezone: string): Record<string, unknown> {
   return {
     id: event.id,
-    // Un evento privado en un calendario compartido con detalles ocultos llega sin
-    // título. Decirlo evita que el modelo se invente de qué es el hueco.
+    // A private event on a shared calendar with hidden details arrives with no title.
+    // Saying so keeps the model from inventing what the slot is about.
     title: event.title || '(sin título: la cita es privada)',
     when: whenOf(event, timezone),
     ...(event.allDay ? { all_day: true } : {}),
     ...(event.recurring ? { recurring: true } : {}),
-    // Solo si el color es uno de los nuestros: los que el usuario haya puesto a mano
-    // desde la app no significan nada aquí y traducirlos sería inventarse un dato.
+    // Only when the colour is one of ours: the ones the user set by hand from the app
+    // mean nothing here, and translating them would be inventing data.
     ...(event.colorId && COLOR_CATEGORIES[event.colorId]
       ? { category: COLOR_CATEGORIES[event.colorId] }
       : {}),
   };
+}
+
+/** '14:00 a 15:30' — names what an appointment clashes with, without repeating the day. */
+function hoursOf(event: CalendarEventSummary, timezone: string): string {
+  if (event.startAt === null || event.endAt === null) return whenOf(event, timezone);
+  const from = formatTime(new Date(event.startAt), timezone);
+  return `${from} a ${formatTime(new Date(event.endAt), timezone)}`;
 }
 
 function whenOf(event: CalendarEventSummary, timezone: string): string {
@@ -771,8 +905,9 @@ function whenOf(event: CalendarEventSummary, timezone: string): string {
     const first = dayName(event.startDate, timezone);
     const nights = event.endDate !== null ? (daysBetween(event.startDate, event.endDate) ?? 1) : 1;
 
-    // Google guarda el último día en exclusivo, así que el que ve el usuario es el
-    // anterior. Decir "del 23 al 27" cuando vuelve el 26 es peor que no decir nada.
+    // Google stores the last day as exclusive, so the one the user sees is the day
+    // before. Saying "23rd to 27th" when they get back on the 26th is worse than
+    // saying nothing.
     if (nights > 1) {
       const last = shiftDate(event.startDate, nights - 1);
       return `del ${dayName(event.startDate, timezone, false)} al ${dayName(last, timezone, false)}`;
@@ -783,9 +918,9 @@ function whenOf(event: CalendarEventSummary, timezone: string): string {
 }
 
 /**
- * Un día en castellano. Con el día de la semana cuando va solo —"domingo, 23 de
- * agosto"— y sin él en un rango, donde "del domingo, 23 de agosto al miércoles, 26
- * de agosto" se lee como un formulario.
+ * A day in Spanish. With the weekday when it stands alone —"domingo, 23 de agosto"—
+ * and without it inside a range, where "del domingo, 23 de agosto al miércoles, 26 de
+ * agosto" reads like a form.
  */
 function dayName(date: string, timezone: string, withWeekday = true): string {
   const noon = zonedInstant(date, 12, 0, timezone);
@@ -793,19 +928,7 @@ function dayName(date: string, timezone: string, withWeekday = true): string {
   return withWeekday ? formatLongDate(noon, timezone) : formatDay(noon, timezone);
 }
 
-/**
- * Aritmética de fechas sueltas, sin zona horaria.
- *
- * Un 'YYYY-MM-DD' no es un instante, así que aquí no hay que pasar por `Intl`: se
- * suman días en UTC y se vuelve a formatear. Meter la zona en medio es lo que hace
- * que un viaje amanezca un día antes.
- */
-function shiftDate(date: string, days: number): string {
-  const base = Date.parse(`${date}T00:00:00Z`);
-  return new Date(base + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
-
-/** Días entre dos 'YYYY-MM-DD', o null si alguna no es una fecha. */
+/** Days between two 'YYYY-MM-DD' values, or null when either is not a date. */
 function daysBetween(from: string, to: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null;
   const start = Date.parse(`${from}T00:00:00Z`);
@@ -815,11 +938,11 @@ function daysBetween(from: string, to: string): number | null {
 }
 
 /**
- * El rango de días locales que pide `list_events`.
+ * The range of local days `list_events` asks for.
  *
- * El final se calcula sumando y volviendo a pedir la medianoche local, no sumando
- * 24 h por día: los dos días del año que duran 23 y 25 horas se descuadrarían y la
- * ventana se comería una hora del día siguiente o dejaría fuera la última.
+ * The end is computed by adding and then asking for local midnight again, not by
+ * adding 24 h per day: the two days a year that last 23 and 25 hours would drift, and
+ * the window would either swallow an hour of the next day or drop the last one.
  */
 function localDayRange(day: string, days: number, timezone: string): { from: Date; to: Date } | null {
   const from = zonedInstant(day, 0, 0, timezone);

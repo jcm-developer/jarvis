@@ -6,6 +6,6 @@ dist/
 *.log
 .DS_Store
 
-# Claves de service account de Google: el repo es publico
+# Google service account keys: this repo is public
 *-key.json
 *service-account*.json

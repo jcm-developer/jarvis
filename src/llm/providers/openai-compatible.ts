@@ -10,12 +10,12 @@ import type {
 import { LLMError } from '../provider';
 
 /**
- * Adaptador para cualquier API que hable el formato de OpenAI.
+ * Adapter for any API that speaks OpenAI's format.
  *
- * NVIDIA NIM, Groq, Together y varios más exponen exactamente este contrato, así
- * que un solo adaptador los cubre todos: solo cambian `baseUrl`, la clave y el
- * modelo. Se usa `fetch` directo en vez del SDK de OpenAI para no arrastrar una
- * dependencia pesada al bundle del Worker.
+ * NVIDIA NIM, Groq, Together and several others expose exactly this contract, so a
+ * single adapter covers them all: only `baseUrl`, the key and the model change. Plain
+ * `fetch` is used instead of OpenAI's SDK to keep a heavy dependency out of the Worker
+ * bundle.
  */
 
 interface WireToolCall {
@@ -68,8 +68,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.apiKey = options.apiKey;
     this.temperature = options.temperature ?? 0.6;
     this.maxTokens = options.maxTokens ?? 800;
-    // Tope por llamada. El límite real lo impone el presupuesto global del
-    // mensaje (ver lib/deadline.ts), que puede recortarlo aún más.
+    // Per-call cap. The real limit comes from the message's global budget (see
+    // lib/deadline.ts), which may cut it down further.
     this.timeoutMs = options.timeoutMs ?? 20_000;
   }
 
@@ -119,12 +119,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
           signal: AbortSignal.timeout(Math.max(1_000, timeoutMs)),
         });
       } catch (error) {
-        // AbortSignal.timeout produce un TimeoutError; el resto son fallos de red.
+        // AbortSignal.timeout produces a TimeoutError; the rest are network failures.
         const isTimeout = error instanceof Error && error.name === 'TimeoutError';
         const detail = error instanceof Error ? error.message : String(error);
 
-        // Un timeout NO se reintenta: duplicaría el peor caso justo cuando ya
-        // vamos tarde, y quien espera al otro lado es una persona mirando el chat.
+        // A timeout is NOT retried: it would double the worst case exactly when we are
+        // already late, and the one waiting on the other side is a person watching the
+        // chat.
         if (isTimeout) {
           throw new LLMError('timeout', `${this.name}: ${detail}`);
         }
@@ -142,7 +143,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const detail = await safeErrorDetail(response);
 
       if (response.status === 401 || response.status === 403) {
-        // Reintentar no arregla una clave inválida.
+        // Retrying does not fix an invalid key.
         throw new LLMError('auth', `${this.name}: ${detail}`, response.status);
       }
 
@@ -218,9 +219,9 @@ function toFinishReason(raw: string | undefined): FinishReason {
 }
 
 /**
- * Los modelos de razonamiento (Nemotron, DeepSeek-R1) emiten su cadena de
- * pensamiento entre <think></think> dentro del propio contenido. Al usuario no le
- * interesa, y sin esto aparecería íntegra en Telegram.
+ * Reasoning models (Nemotron, DeepSeek-R1) emit their chain of thought between
+ * <think></think> inside the content itself. The user does not care about it, and
+ * without this it would show up in full on Telegram.
  */
 function stripReasoning(content: string | null): string | null {
   if (!content) return content;

@@ -1,6 +1,6 @@
 /**
- * Bindings, secrets y vars disponibles en el Worker.
- * Los secrets se inyectan con `wrangler secret put`; las vars vienen de wrangler.toml.
+ * Bindings, secrets and vars available to the Worker.
+ * Secrets are injected with `wrangler secret put`; vars come from wrangler.toml.
  */
 export interface Env {
   // --- Bindings ---
@@ -10,24 +10,24 @@ export interface Env {
   // --- Secrets (wrangler secret put / dashboard) ---
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
-  /** Secret y no var: el repo es público y wrangler.toml se lee desde GitHub. */
+  /** A secret and not a var: the repo is public and wrangler.toml is read from GitHub. */
   ALLOWED_TELEGRAM_IDS: string;
-  /** Opcionales: solo hace falta la del proveedor activo (LLM_PROVIDER). */
+  /** Optional: only the active provider's key is needed (LLM_PROVIDER). */
   OPENAI_API_KEY?: string;
   GROQ_API_KEY?: string;
   NVIDIA_API_KEY?: string;
   SUPABASE_URL?: string;
-  /** Se salta RLS: es la credencial con más poder del proyecto. */
+  /** It bypasses RLS: the most powerful credential in the project. */
   SUPABASE_SERVICE_ROLE_KEY?: string;
   /**
-   * Service account de Google, para escribir en el calendario. Opcionales: sin
-   * ellos, create_event devuelve un error explicando qué falta y el resto del
-   * asistente sigue funcionando igual.
+   * Google service account, for writing to the calendar. Optional: without them
+   * create_event returns an error explaining what is missing and the rest of the
+   * assistant keeps working exactly the same.
    */
   GOOGLE_SA_EMAIL?: string;
-  /** El campo `private_key` del JSON de la service account, PEM incluido. */
+  /** The `private_key` field from the service account JSON, PEM included. */
   GOOGLE_SA_PRIVATE_KEY?: string;
-  /** Id del calendario compartido. Nunca 'primary': ver src/calendar/index.ts. */
+  /** Id of the shared calendar. Never 'primary': see src/calendar/index.ts. */
   GOOGLE_CALENDAR_ID?: string;
 
   // --- Vars (wrangler.toml) ---
@@ -40,12 +40,15 @@ export interface Env {
   STT_MODEL?: string;
   STT_LANGUAGE?: string;
   BRIEFING_HOUR?: string;
+  /** The day's window (local hours) find_free_slots searches for gaps in. */
+  DAY_START_HOUR?: string;
+  DAY_END_HOUR?: string;
   LOG_LEVEL?: string;
 }
 
 /* ------------------------------------------------------------------ *
- * Tipos de la Telegram Bot API.
- * Solo los campos que consumimos: el objeto real trae muchos más.
+ * Telegram Bot API types.
+ * Only the fields we consume: the real objects carry many more.
  * ------------------------------------------------------------------ */
 
 export interface TelegramUser {

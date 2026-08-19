@@ -1,11 +1,11 @@
 import type { Env } from '../types';
 
 /**
- * Acciones destructivas a la espera de confirmación.
+ * Destructive actions waiting for confirmation.
  *
- * Viven en KV con TTL: si el usuario no contesta, la acción caduca sola. Una
- * confirmación de hace media hora ya no significa lo mismo, porque el contexto
- * de la conversación ha cambiado.
+ * They live in KV with a TTL: if the user never answers, the action expires on its
+ * own. A confirmation from half an hour ago no longer means the same thing, because
+ * the conversation's context has moved on.
  */
 
 const TTL_SECONDS = 900; // 15 min
@@ -16,9 +16,9 @@ export interface PendingCall {
 }
 
 export interface PendingAction {
-  /** Varias a la vez: "bórralas todas" se confirma de una sola vez, no una por una. */
+  /** Several at once: "delete them all" is confirmed in one go, not one by one. */
   calls: PendingCall[];
-  /** Lo que se le enseñó al usuario al preguntar. */
+  /** What the user was shown when asked. */
   prompt: string;
 }
 
@@ -35,10 +35,10 @@ export async function savePending(
 }
 
 /**
- * Recupera y consume la acción en un solo paso.
+ * Fetches and consumes the action in a single step.
  *
- * El borrado es deliberado: sin él, pulsar el botón dos veces ejecutaría la
- * acción dos veces. Telegram deja pulsar un botón inline cuantas veces quieras.
+ * The deletion is deliberate: without it, tapping the button twice would run the
+ * action twice. Telegram lets you tap an inline button as many times as you like.
  */
 export async function takePending(
   env: Env,
@@ -75,7 +75,7 @@ function key(chatId: number, token: string): string {
   return `pending:${chatId}:${token}`;
 }
 
-/** 8 bytes en hex. callback_data de Telegram admite 64 bytes; vamos sobrados. */
+/** 8 bytes in hex. Telegram's callback_data allows 64, so there is room to spare. */
 function randomToken(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);

@@ -1,12 +1,12 @@
 /**
- * Cliente mínimo de PostgREST (la API REST de Supabase).
+ * A minimal PostgREST client (Supabase's REST API).
  *
- * Se implementa a mano en vez de usar `@supabase/supabase-js` por el mismo motivo
- * que en la capa de LLM: el Worker solo necesita cuatro operaciones sobre seis
- * tablas, y el SDK arrastra peso y dependencias de Node al bundle.
+ * Written by hand instead of using `@supabase/supabase-js` for the same reason as in
+ * the LLM layer: the Worker only needs four operations across six tables, and the SDK
+ * drags weight and Node dependencies into the bundle.
  *
- * Entra siempre con `service_role`, que se salta RLS. Es la única credencial que
- * puede tocar estas tablas, y vive exclusivamente como secret en Cloudflare.
+ * It always connects as `service_role`, which bypasses RLS. That is the only credential
+ * allowed to touch these tables, and it lives exclusively as a secret in Cloudflare.
  */
 
 export class DbError extends Error {
@@ -19,18 +19,18 @@ export class DbError extends Error {
   }
 }
 
-/** Filtros en sintaxis PostgREST: { status: 'eq.pending' }. */
+/** Filters in PostgREST syntax: { status: 'eq.pending' }. */
 export type Filters = Record<string, string>;
 
 export interface SelectOptions {
   filters?: Filters;
-  /** Ej. 'due_at.asc.nullslast' */
+  /** E.g. 'due_at.asc.nullslast' */
   order?: string;
   limit?: number;
   columns?: string;
 }
 
-/** Bajo a propósito: varias consultas seguidas deben caber en el presupuesto global. */
+/** Deliberately low: several queries in a row must fit the global budget. */
 const TIMEOUT_MS = 6_000;
 
 export class Db {
@@ -67,10 +67,10 @@ export class Db {
   }
 
   /**
-   * Inserta varias filas en una sola petición.
+   * Inserts several rows in a single request.
    *
-   * `return=minimal`: no se piden de vuelta. Un turno de conversación son cinco o
-   * seis filas que ya tenemos en memoria; traerlas otra vez solo añade latencia.
+   * `return=minimal`: they are not asked back. One conversation turn is five or six
+   * rows we already hold in memory; fetching them again only adds latency.
    */
   async insertMany(table: string, rows: Record<string, unknown>[]): Promise<void> {
     if (rows.length === 0) return;
@@ -81,7 +81,7 @@ export class Db {
     });
   }
 
-  /** Upsert por la columna con restricción única indicada en `onConflict`. */
+  /** Upsert on the uniquely constrained column named in `onConflict`. */
   async upsert<T>(table: string, row: Record<string, unknown>, onConflict: string): Promise<T> {
     const rows = await this.request<T[]>(`${table}?on_conflict=${onConflict}`, {
       method: 'POST',
@@ -103,10 +103,10 @@ export class Db {
   }
 
   /**
-   * Borra y devuelve las filas borradas.
+   * Deletes and returns the deleted rows.
    *
-   * `returning: 'minimal'` para borrados masivos: purgar un historial largo
-   * devolvería cientos de filas que nadie va a leer.
+   * `returning: 'minimal'` for bulk deletes: purging a long history would return
+   * hundreds of rows nobody is going to read.
    */
   async delete<T>(
     table: string,
@@ -143,7 +143,7 @@ export class Db {
       throw new DbError(`Supabase ${response.status}: ${detail.slice(0, 300)}`, response.status);
     }
 
-    // DELETE y PATCH sin representación devuelven cuerpo vacío.
+    // DELETE and PATCH without representation return an empty body.
     const text = await response.text();
     if (!text) return [] as unknown as T;
 
