@@ -122,10 +122,14 @@ export function localYesterday(instant: Date, timezone: string): string {
   return localNow(new Date(beforeMidnight), timezone).date;
 }
 
+/** '23 de agosto' — un día suelto, sin hora ni día de la semana. Para los rangos. */
+export function formatDay(instant: Date, timezone: string): string {
+  return format(instant, timezone, { day: 'numeric', month: 'long' });
+}
+
 /** '17 de agosto a las 09:00' — para hablar de otro día sin sonar a formulario. */
 export function formatDayAndTime(instant: Date, timezone: string): string {
-  const day = format(instant, timezone, { day: 'numeric', month: 'long' });
-  return `${day} a las ${formatTime(instant, timezone)}`;
+  return `${formatDay(instant, timezone)} a las ${formatTime(instant, timezone)}`;
 }
 
 /** 'mar, 19 de agosto' — para encabezar el briefing. */

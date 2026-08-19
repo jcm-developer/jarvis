@@ -1,10 +1,10 @@
 import { createCalendarClient } from '../calendar';
 import type { CalendarClient, CalendarEventPatch, CalendarEventSummary } from '../calendar/provider';
 import {
+  formatDay,
   formatDayAndTime,
   formatLongDate,
   localNow,
-  localTomorrow,
   startOfLocalDay,
   zonedInstant,
 } from '../lib/localtime';
@@ -33,6 +33,54 @@ const DEFAULT_DURATION_MINUTES = 60;
 
 /** Ventana de `list_events` cuando no se pide un día concreto. */
 const DEFAULT_SEARCH_DAYS = 7;
+
+/** Tope de un evento de varios días. Más que eso huele a error del modelo. */
+const MAX_SPAN_DAYS = 90;
+
+/**
+ * Categoría → color de Google Calendar.
+ *
+ * El modelo elige el TIPO de cita; el color lo elige el código. Al revés —dejarle
+ * mandar un `colorId`— tendríamos los viajes de un color distinto cada semana: no
+ * hay forma de que un modelo sea consistente con un número entre 1 y 11 a lo largo
+ * de meses de conversaciones, y el color solo sirve si siempre es el mismo.
+ *
+ * Los ids son los fijos de la API: 3 uva, 7 pavo real, 6 mandarina, 10 albahaca,
+ * 11 tomate, 5 banana. Sin categoría, el evento se queda con el color por defecto
+ * del calendario, que es lo que el usuario ya tiene configurado.
+ */
+const CATEGORY_COLORS: Record<string, string> = {
+  viaje: '3',
+  trabajo: '7',
+  estudios: '6',
+  personal: '10',
+  salud: '11',
+  social: '5',
+};
+
+const CATEGORIES = Object.keys(CATEGORY_COLORS);
+
+const CATEGORY_HINT =
+  'Tipo de cita, para que se vea de un color propio en el calendario: ' +
+  `${CATEGORIES.join(', ')}. Mándalo cuando esté claro (un viaje, una reunión de ` +
+  'trabajo, un examen o una clase, el médico); si no encaja en ninguno, no lo mandes.';
+
+/** El color de vuelta a su categoría, para poder decir de qué es una cita al listarla. */
+const COLOR_CATEGORIES: Record<string, string> = Object.fromEntries(
+  Object.entries(CATEGORY_COLORS).map(([category, color]) => [color, category]),
+);
+
+/**
+ * Traduce la categoría a color, o null si no la reconoce.
+ *
+ * Un valor raro no es un error que merezca cortar la cita: el evento se crea sin
+ * color, que es exactamente lo que pasaba antes de que esto existiera.
+ */
+function colorFor(args: Record<string, unknown>): string | null {
+  const category = optionalString(args, 'category', 20);
+  if (category === null) return null;
+  return CATEGORY_COLORS[category.toLowerCase()] ?? null;
+}
 
 const NO_TIME = {
   ok: false as const,
@@ -80,8 +128,15 @@ export const createEvent: ToolDefinition = {
           'True cuando la cita ocupa el día entero y no tiene hora ("el viaje es el ' +
           'viernes", un cumpleaños). Aun así manda start_at con el día correcto.',
       },
+      end_date: {
+        type: 'string',
+        description:
+          'Solo con all_day, y solo si dura varios días: el ÚLTIMO día incluido, en ' +
+          'formato YYYY-MM-DD. Para "del 23 al 26" manda el 26; yo me encargo del resto.',
+      },
       location: { type: 'string', description: 'Dónde es, si lo dice.' },
       description: { type: 'string', description: 'Detalles adicionales, si los hay.' },
+      category: { type: 'string', enum: CATEGORIES, description: CATEGORY_HINT },
     },
     required: ['title'],
   },
@@ -116,7 +171,38 @@ export const createEvent: ToolDefinition = {
     // Un día completo se manda como fechas, no como instantes, y el fin es
     // exclusivo: para un solo día, el día siguiente.
     const startDate = allDay ? localNow(start, ctx.timezone).date : null;
-    const endDate = allDay ? localTomorrow(start, ctx.timezone) : null;
+    let endDate = allDay ? shiftDate(startDate!, 1) : null;
+
+    if (allDay) {
+      const lastDay = optionalString(args, 'end_date', 10);
+      if (lastDay !== null) {
+        const span = daysBetween(startDate!, lastDay);
+        if (span === null) {
+          return {
+            ok: false,
+            error: `"${lastDay}" no es una fecha válida. Usa el formato YYYY-MM-DD.`,
+          };
+        }
+        if (span < 0) {
+          return {
+            ok: false,
+            error:
+              'end_date es anterior al día de inicio. El primer día va en start_at y el ' +
+              'último en end_date.',
+          };
+        }
+        if (span > MAX_SPAN_DAYS) {
+          return {
+            ok: false,
+            error: `Eso son más de ${MAX_SPAN_DAYS} días. Confirma las fechas con el usuario.`,
+          };
+        }
+        // +1 porque en Google el último día es exclusivo: un viaje del 23 al 26 se
+        // guarda como 23 → 27. Sin ese día de más, el calendario lo pinta acabando
+        // el 25 y el usuario se cree que vuelve un día antes.
+        endDate = shiftDate(startDate!, span + 1);
+      }
+    }
 
     let endAt: string | null = null;
     if (!allDay) {
@@ -153,6 +239,7 @@ export const createEvent: ToolDefinition = {
         endAt,
         startDate,
         endDate,
+        colorId: colorFor(args),
         timezone: ctx.timezone,
       },
       budget,
@@ -175,8 +262,24 @@ export const createEvent: ToolDefinition = {
       data: {
         id: event.id,
         title,
+        // Se reutiliza el mismo formateo que list_events: si un viaje se guarda
+        // como "del 23 al 26", el usuario tiene que leerlo igual en las dos.
         when: allDay
-          ? `${formatLongDate(start, ctx.timezone)}, todo el día`
+          ? whenOf(
+              {
+                id: event.id,
+                title,
+                startAt: null,
+                endAt: null,
+                startDate,
+                endDate,
+                allDay: true,
+                recurring: false,
+                colorId: null,
+                url: null,
+              },
+              ctx.timezone,
+            )
           : formatDayAndTime(start, ctx.timezone),
         start_iso: allDay ? startDate : startAt,
         all_day: allDay,
@@ -286,6 +389,7 @@ export const updateEvent: ToolDefinition = {
       end_at: { type: 'string', description: 'Nueva hora de fin en ISO 8601.' },
       location: { type: 'string', description: 'Nuevo sitio. Cadena vacía para quitarlo.' },
       description: { type: 'string', description: 'Nuevas notas. Cadena vacía para quitarlas.' },
+      category: { type: 'string', enum: CATEGORIES, description: CATEGORY_HINT },
     },
     required: ['event_id'],
   },
@@ -297,6 +401,13 @@ export const updateEvent: ToolDefinition = {
     if (args['title'] !== undefined) patch.title = cleanTitle(requireString(args, 'title', 200));
     if (args['location'] !== undefined) patch.location = optionalString(args, 'location', 300);
     if (args['description'] !== undefined) patch.description = optionalString(args, 'description');
+
+    if (args['category'] !== undefined) {
+      const color = colorFor(args);
+      // Una categoría que no reconocemos no cambia el color en vez de ponerlo a
+      // vacío: dejar el evento gris no es lo que pedía nadie.
+      if (color !== null) patch.colorId = color;
+    }
 
     const touchesStart = args['start_at'] !== undefined || args['start_in_minutes'] !== undefined;
     const touchesEnd = args['end_at'] !== undefined || args['duration_minutes'] !== undefined;
@@ -431,13 +542,18 @@ function applyNewTimes(
           'start_at con el día nuevo si lo que quiere es moverla.',
       };
     }
-    const moved = new Date(newStart);
+
+    // Conserva los días que ocupaba. Sin esto, mover un viaje del 23 al 26 lo
+    // dejaría en un solo día: el usuario pide cambiar cuándo empieza, no cuánto dura.
+    const nights =
+      current.startDate !== null && current.endDate !== null
+        ? (daysBetween(current.startDate, current.endDate) ?? 1)
+        : 1;
+
+    const startDate = localNow(new Date(newStart), ctx.timezone).date;
     return {
       ok: true,
-      patch: {
-        startDate: localNow(moved, ctx.timezone).date,
-        endDate: localTomorrow(moved, ctx.timezone),
-      },
+      patch: { startDate, endDate: shiftDate(startDate, Math.max(1, nights)) },
     };
   }
 
@@ -521,15 +637,60 @@ function describe(event: CalendarEventSummary, timezone: string): Record<string,
     when: whenOf(event, timezone),
     ...(event.allDay ? { all_day: true } : {}),
     ...(event.recurring ? { recurring: true } : {}),
+    // Solo si el color es uno de los nuestros: los que el usuario haya puesto a mano
+    // desde la app no significan nada aquí y traducirlos sería inventarse un dato.
+    ...(event.colorId && COLOR_CATEGORIES[event.colorId]
+      ? { category: COLOR_CATEGORIES[event.colorId] }
+      : {}),
   };
 }
 
 function whenOf(event: CalendarEventSummary, timezone: string): string {
   if (event.allDay && event.startDate !== null) {
-    const noon = zonedInstant(event.startDate, 12, 0, timezone);
-    return noon ? `${formatLongDate(noon, timezone)}, todo el día` : event.startDate;
+    const first = dayName(event.startDate, timezone);
+    const nights = event.endDate !== null ? (daysBetween(event.startDate, event.endDate) ?? 1) : 1;
+
+    // Google guarda el último día en exclusivo, así que el que ve el usuario es el
+    // anterior. Decir "del 23 al 27" cuando vuelve el 26 es peor que no decir nada.
+    if (nights > 1) {
+      const last = shiftDate(event.startDate, nights - 1);
+      return `del ${dayName(event.startDate, timezone, false)} al ${dayName(last, timezone, false)}`;
+    }
+    return `${first}, todo el día`;
   }
   return event.startAt ? formatDayAndTime(new Date(event.startAt), timezone) : 'sin hora';
+}
+
+/**
+ * Un día en castellano. Con el día de la semana cuando va solo —"domingo, 23 de
+ * agosto"— y sin él en un rango, donde "del domingo, 23 de agosto al miércoles, 26
+ * de agosto" se lee como un formulario.
+ */
+function dayName(date: string, timezone: string, withWeekday = true): string {
+  const noon = zonedInstant(date, 12, 0, timezone);
+  if (noon === null) return date;
+  return withWeekday ? formatLongDate(noon, timezone) : formatDay(noon, timezone);
+}
+
+/**
+ * Aritmética de fechas sueltas, sin zona horaria.
+ *
+ * Un 'YYYY-MM-DD' no es un instante, así que aquí no hay que pasar por `Intl`: se
+ * suman días en UTC y se vuelve a formatear. Meter la zona en medio es lo que hace
+ * que un viaje amanezca un día antes.
+ */
+function shiftDate(date: string, days: number): string {
+  const base = Date.parse(`${date}T00:00:00Z`);
+  return new Date(base + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/** Días entre dos 'YYYY-MM-DD', o null si alguna no es una fecha. */
+function daysBetween(from: string, to: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null;
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return Math.round((end - start) / (24 * 60 * 60 * 1000));
 }
 
 /**

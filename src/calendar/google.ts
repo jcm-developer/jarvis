@@ -231,6 +231,7 @@ function toGoogleEvent(input: CalendarEventInput): Record<string, unknown> {
     summary: input.title,
     ...(input.description ? { description: input.description } : {}),
     ...(input.location ? { location: input.location } : {}),
+    ...(input.colorId ? { colorId: input.colorId } : {}),
     ...when,
     // Los avisos del evento los da Google con la configuración del propio
     // calendario. Nuestro cron no toca esto: solo sabe de la tabla `tasks`.
@@ -252,6 +253,7 @@ function toGooglePatch(patch: CalendarEventPatch): Record<string, unknown> {
   if (patch.title !== undefined) body['summary'] = patch.title;
   if (patch.description !== undefined) body['description'] = patch.description ?? '';
   if (patch.location !== undefined) body['location'] = patch.location ?? '';
+  if (patch.colorId !== undefined) body['colorId'] = patch.colorId;
 
   if (patch.startDate !== undefined) body['start'] = { date: patch.startDate };
   else if (patch.startAt !== undefined) {
@@ -295,7 +297,9 @@ function toSummary(value: unknown): CalendarEventSummary | null {
     startAt: !allDay && typeof start['dateTime'] === 'string' ? start['dateTime'] : null,
     endAt: !allDay && typeof end['dateTime'] === 'string' ? end['dateTime'] : null,
     startDate: allDay && typeof start['date'] === 'string' ? start['date'] : null,
+    endDate: allDay && typeof end['date'] === 'string' ? end['date'] : null,
     allDay,
+    colorId: typeof raw['colorId'] === 'string' ? raw['colorId'] : null,
     recurring: typeof raw['recurringEventId'] === 'string',
     url: typeof raw['htmlLink'] === 'string' ? raw['htmlLink'] : null,
   };

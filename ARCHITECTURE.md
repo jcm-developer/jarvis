@@ -876,6 +876,43 @@ y lo que hay en el calendario no lo puso él:
 construye leyendo el título del evento: "¿borro la cita 7f3a-...?" no lo revisa nadie. Si
 no se puede leer, se pregunta en genérico — lo que no puede pasar es borrar sin preguntar.
 
+### Varios días, y el día de más que no se le dice al usuario
+
+Un "me voy del 23 al 26" es un evento de día completo de cuatro días, y en Google el
+último día es **exclusivo**: se guarda como 23 → 27. Un off-by-one aquí no da ningún
+error, solo un viaje que en el calendario acaba el 25.
+
+Así que el modelo manda `end_date` con el último día **incluido**, que es lo que dice el
+usuario, y el `+1` lo pone el handler. En la respuesta se vuelve a restar: al usuario se
+le dice "del 23 de agosto al 26 de agosto", nunca el 27. Es el mismo reparto de trabajo
+que con los plazos relativos — el modelo aporta lo que oyó, la aritmética la hace el
+código.
+
+Mover un evento así conserva los días que ocupaba. Sin eso, "pásalo a septiembre" dejaría
+el viaje en un solo día, porque el patch reconstruye las dos fechas y solo una viene del
+usuario.
+
+Las fechas sueltas se suman en UTC, no con `Intl`: un 'YYYY-MM-DD' no es un instante, y
+meter la zona horaria en medio es exactamente lo que hace que un viaje amanezca un día
+antes.
+
+### Categorías: el modelo elige el tipo, el código elige el color
+
+Un viaje se ve de un color distinto en la app del calendario. La tool acepta una
+`category` de una lista cerrada —viaje, trabajo, estudios, personal, salud, social— y el
+handler la traduce a uno de los once `colorId` de Google.
+
+**El reparto es deliberado y es el mismo de siempre en este proyecto:** dejarle al modelo
+mandar el `colorId` daría los viajes de un color distinto cada semana. No hay forma de que
+sea consistente con un número entre 1 y 11 a lo largo de meses de conversaciones, y un
+color solo sirve si siempre es el mismo. Elige el tipo, que es lo que sabe deducir del
+mensaje; la tabla la mantiene el código.
+
+Una categoría desconocida no rompe la cita: se crea sin color, que es lo que pasaba antes
+de que esto existiera. Y al listar, un `colorId` solo se traduce de vuelta si está en
+nuestra tabla — los colores que el usuario haya puesto a mano desde la app no significan
+nada aquí, y darles un nombre sería inventarse un dato.
+
 ### El día completo no pasa por el corrector de fechas
 
 `correctDay` parte de que el modelo acierta la **hora** y falla el día. En un evento de

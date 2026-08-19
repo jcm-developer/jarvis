@@ -416,7 +416,13 @@ La Fase 6 solo sabía crear. La **Fase 7** añadió consultarlas, moverlas y bor
 ¿qué tengo el jueves?
 muévela al viernes
 la del dentista bórrala, que al final no puedo ir
+apunta que me voy a Lisboa del 23 al 26
 ```
+
+Las citas de varios días se guardan como un solo evento, no como uno por día. Y según de
+qué sean —viaje, trabajo, estudios, personal, salud, social— salen de un color distinto en la app
+del calendario: el modelo deduce el tipo y el color lo pone el código, para que los viajes
+sean siempre del mismo color y no de uno cada semana.
 
 Para cambiar o borrar necesita el id, así que primero consulta el calendario y luego
 actúa. Borrar pide confirmación con botones, como borrar una tarea, y la pregunta lleva

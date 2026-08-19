@@ -26,6 +26,11 @@ export interface CalendarEventInput {
   endDate: string | null;
   /** Zona del usuario. Google la guarda con el evento y decide cómo mostrarlo. */
   timezone: string;
+  /**
+   * Color del evento en la app del proveedor. Lo elige el código a partir de la
+   * categoría, no el modelo: ver CATEGORY_COLORS en tools/calendar.ts.
+   */
+  colorId: string | null;
 }
 
 /** Solo los campos que se envían se tocan; el resto del evento se queda como está. */
@@ -37,6 +42,7 @@ export interface CalendarEventPatch {
   endAt?: string;
   startDate?: string;
   endDate?: string;
+  colorId?: string;
   timezone: string;
 }
 
@@ -56,7 +62,14 @@ export interface CalendarEventSummary extends CalendarEvent {
   endAt: string | null;
   /** 'YYYY-MM-DD' si ocupa el día entero. */
   startDate: string | null;
+  /**
+   * 'YYYY-MM-DD' **exclusivo**, como lo devuelve Google: un viaje del 23 al 26 llega
+   * con `endDate` = 27. Hace falta para conservar los días que dura al moverlo.
+   */
+  endDate: string | null;
   allDay: boolean;
+  /** El color con el que está guardado, si tiene uno propio. */
+  colorId: string | null;
   /**
    * El evento es una repetición de una serie. Importa porque modificar esta
    * instancia no toca las demás, y hay que decírselo al usuario.
