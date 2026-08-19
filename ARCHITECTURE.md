@@ -766,16 +766,48 @@ suprimir el recordatorio dejaría sin aviso justo lo más urgente del día.
 | **3** | Audio con Whisper | ✅ Hecha |
 | **4** | Historial en Supabase + memoria de largo plazo | ✅ Hecha |
 | **5** | Cron: briefing matutino y recordatorios de vencimiento | ✅ Hecha |
+| **6** | Eventos en Google Calendar (escritura) | ⏳ Pendiente |
 
 Cada fase se despliega y se usa por separado. Fase 2 es donde deja de ser un
 chatbot y pasa a ser un asistente; fase 5 es donde se vuelve proactivo.
 
-Con la Fase 5 cerrada, el roadmap inicial está completo. Lo que venga sale de la
-lista de abajo, y ya no por orden.
+Con la Fase 5 cerrada, el roadmap inicial está completo. La Fase 6 es el primer
+añadido de después; el resto sale de la lista del final, y ya no por orden.
+
+### Fase 6: eventos en el calendario
+
+Pendiente. Una tool `create_event` que escriba una cita en el calendario del
+usuario. Lo que ya está decidido, para no volver a discutirlo:
+
+- **Google Calendar con service account**, y el calendario personal compartido con
+  su email dándole permiso de edición. El flujo OAuth de usuario se descartó: una
+  app de Google Cloud en estado *Testing* emite refresh tokens que caducan a los
+  siete días, y publicarla con el scope de Calendar exige pasar verificación. Con
+  service account no caduca nada. El precio es firmar un JWT RS256 con WebCrypto
+  para pedir el access token, y cachearlo en KV una hora (~24 escrituras al día,
+  lejos del límite de 1.000).
+- **Google Tasks queda fuera** aunque encaje mejor con el nombre: no admite service
+  accounts, así que devuelve al refresh token que caduca.
+- **CalDAV de iCloud es el plan B**, no el primero. La autenticación es más simple
+  (app-specific password y Basic auth, sin tokens), pero obliga a descubrir la URL
+  del calendario con `PROPFIND` y a escribir iCalendar a mano: CRLF, plegado a 75
+  octetos, `DTSTART` con `TZID`, escapado del `SUMMARY`. Falla en silencio —el
+  evento aparece con la hora mal— y no se puede probar desde local.
+- **Solo escritura.** Leer el calendario para que el briefing cuente las reuniones
+  del día es otro proyecto: tokens de sincronización incremental, expansión de
+  eventos recurrentes y zonas horarias de las recurrencias.
+- **Tool separada de `create_task`.** No todo recado es una cita, y el briefing está
+  pensado como el día, no como el inventario.
+
+Trabajo previo que no es del calendario pero lo bloquea: `ToolContext` solo lleva
+`db` y datos del usuario, y esta es la primera tool que necesita secrets y
+presupuesto de tiempo. Hay que añadirle `env` y `deadline` y tocar los dos sitios
+donde se construye. Las fechas no hay que rehacerlas: `honourUserDeadlines` y los
+campos en minutos de `tasks.ts` valen tal cual, que es la parte cara.
 
 ### Ideas para después
 
-- Más dominios de tools: notas, gastos, calendario (CalDAV/Google), listas de compra.
+- Más dominios de tools: notas, gastos, listas de compra.
 - Búsqueda web como tool.
 - Respuesta en audio (TTS) para contestar a los audios en el mismo formato.
 - Imágenes → modelo con visión (facturas, pizarras).

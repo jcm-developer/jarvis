@@ -408,7 +408,8 @@ llamar al banco, comprar pan y revisar el podcast"* crea las tres tareas de una 
 
 ## Siguiente
 
-El roadmap de fases está terminado. Lo que hay en la recámara, sin orden:
-notas y gastos como dominios nuevos, calendario, búsqueda web, respuesta en audio,
-entender imágenes y un panel web. La lista completa, al final de
+La Fase 6 —crear eventos en Google Calendar desde el chat— está apuntada y sin
+empezar. Detrás, sin orden: notas y gastos como dominios nuevos, búsqueda web,
+respuesta en audio, entender imágenes y un panel web. La lista completa y las
+decisiones ya tomadas para la Fase 6, al final de
 [ARCHITECTURE.md](ARCHITECTURE.md).
