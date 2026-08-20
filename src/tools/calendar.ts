@@ -10,6 +10,7 @@ import {
   startOfLocalDay,
   zonedInstant,
 } from '../lib/localtime';
+import { REPEAT_FREQUENCIES, repeatPhrase } from '../lib/recurrence';
 import type { Interval } from '../lib/slots';
 import { overlaps } from '../lib/slots';
 import { OFFSET_HINT, cleanTitle, honourUserInstant, resolveOffset } from './guardrails';
@@ -117,22 +118,15 @@ const RECURRENCE_RULES: Record<string, string> = {
   laborables: 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR',
 };
 
-const FREQUENCIES = Object.keys(RECURRENCE_RULES);
+const FREQUENCIES = [...REPEAT_FREQUENCIES];
 
 /**
- * The same frequency, said out loud.
+ * The same frequency, said out loud, lives in [lib/recurrence.ts](../lib/recurrence.ts).
  *
- * A confirmation reading "y se repite anual" sounds like a form field. The keys are the
- * model's, the phrasing is ours, which is the same split as with the colours and the
- * RRULE itself.
+ * It moved there with phase 16: the tasks repeat too now, and two lists of frequencies
+ * would have drifted apart the first time one of them gained a word. What stays here is
+ * the RRULE, which is Google's and only Google's.
  */
-const REPEAT_PHRASES: Record<string, string> = {
-  anual: 'todos los años',
-  mensual: 'todos los meses',
-  semanal: 'todas las semanas',
-  diario: 'todos los días',
-  laborables: 'de lunes a viernes',
-};
 
 /** What update_event and delete_event act on when the appointment repeats. */
 const SCOPES = ['esta', 'serie'];
@@ -341,7 +335,7 @@ export const createEvent: ToolDefinition = {
     }
 
     const repeats = optionalString(args, 'repeats', 20)?.toLowerCase() ?? null;
-    const phrase = repeats === null ? undefined : REPEAT_PHRASES[repeats];
+    const phrase = repeats === null ? null : repeatPhrase(repeats);
     const every = phrase ? `, ${phrase}` : '';
     const place = optionalString(args, 'location', 300);
 

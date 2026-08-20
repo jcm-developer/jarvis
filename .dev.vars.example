@@ -25,3 +25,16 @@ OPENAI_API_KEY="sk-..."
 # It should only exist here (local, git-ignored) and as a secret in Cloudflare.
 SUPABASE_URL="https://xxxx.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY="eyJ..."
+
+# Phase 6 — Google Calendar, with a service account. Without these three the calendar
+# tools answer that it is not configured, the briefing goes out with the tasks only and
+# the pre-appointment alert stays quiet: nothing else breaks.
+#
+# The private key travels with its \n literal, exactly as it comes out of the JSON.
+GOOGLE_SA_EMAIL="jarvis@my-project.iam.gserviceaccount.com"
+GOOGLE_SA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
+
+# NOT from Google Cloud: it is the calendar you shared with the service account, and its
+# id is usually your own email. Never "primary" — that is the service account's own
+# calendar, which nobody looks at.
+GOOGLE_CALENDAR_ID="you@gmail.com"

@@ -1,4 +1,10 @@
-import { ConfigMissingError, executeConfirmed, forgetConversation, runAgent } from '../agent';
+import {
+  ConfigMissingError,
+  executeConfirmed,
+  forgetConversation,
+  runAgent,
+  snoozeReminder,
+} from '../agent';
 import type { Config } from '../config';
 import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
@@ -8,6 +14,7 @@ import { LLMError } from '../llm/provider';
 import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
+import { parseSnooze } from '../tools/snooze';
 import type {
   Env,
   TelegramCallbackQuery,
@@ -325,6 +332,22 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
   // Answer as soon as possible: otherwise Telegram leaves the button spinning for 30 s.
   await ctx.telegram.answerCallbackQuery(query.id).catch(() => {});
 
+  // Postponing comes first because it is the cheap path: no pending call in KV, no
+  // model, one patch. The confirmation flow below is the one that needs a token.
+  const snooze = parseSnooze(data);
+  if (snooze) {
+    try {
+      const outcome = await snoozeReminder(
+        { chatId: ctx.actor.chatId, from: query.from, ...snooze },
+        ctx,
+      );
+      await ctx.telegram.sendMessage(ctx.actor.chatId, outcome);
+    } catch (error) {
+      await ctx.telegram.sendMessage(ctx.actor.chatId, describeError(error));
+    }
+    return;
+  }
+
   const isConfirm = data.startsWith(CONFIRM_PREFIX);
   const isCancel = data.startsWith(CANCEL_PREFIX);
   if (!isConfirm && !isCancel) return;
@@ -412,7 +435,8 @@ async function handleCommand(
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
-        'También escribo yo: por la mañana con lo que tienes ese día, y cuando algo está a punto de vencer.',
+        'También escribo yo: por la mañana con lo que tienes ese día, cuando algo está a punto de vencer y un rato antes de cada cita.',
+        'Los avisos llevan botones para posponerlos sin escribir nada.',
         '',
         ...(seesImages(ctx.config)
           ? ['Con una foto saco lo que haya que apuntar, y te lo enseño antes de guardarlo.', '']
@@ -435,6 +459,11 @@ async function handleCommand(
         `zona horaria: ${ctx.config.defaultTimezone}`,
         `fotos: ${seesImages(ctx.config) ? 'sí' : 'no, el modelo no las lee'}`,
         `briefing: ${String(ctx.config.briefingHour).padStart(2, '0')}:00 hora local`,
+        `aviso de citas: ${
+          ctx.config.eventAlertMinutes > 0
+            ? `${ctx.config.eventAlertMinutes} min antes`
+            : 'desactivado'
+        }`,
       ].join('\n');
 
     default:

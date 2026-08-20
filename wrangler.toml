@@ -64,6 +64,11 @@ MAX_AGENT_ITERATIONS = "3"
 # 10): if the cron misses its tick, the next one recovers it.
 BRIEFING_HOUR = "8"
 
+# Minutes of notice for the heads-up before an appointment. 0 turns it off.
+# Google Calendar sends its own notification wherever it is installed; this one arrives
+# where the tasks and the chat are, which is where the answer gets written.
+EVENT_ALERT_MINUTES = "15"
+
 # The day window find_free_slots searches for gaps in, in LOCAL hours.
 # Without it, "you are free from 03:00 to 07:00" would be a correct and useless answer:
 # the calendar is empty at night because people sleep, not because there is room.

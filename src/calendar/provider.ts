@@ -8,10 +8,11 @@
  * tools.
  *
  * Phase 6 was write-only. Phase 7 added reading, modifying and deleting, because
- * without those a badly placed appointment could only be fixed from the phone. What
- * remains out is *bulk* reading for the briefing: that one does drag in incremental
- * sync tokens and recurrence expansion, and is another project. Searching for
- * "Thursday's dentist" over a date range drags in none of that.
+ * without those a badly placed appointment could only be fixed from the phone. Phase 12
+ * reads a whole day for the briefing and needed nothing new here: a day is a date range
+ * like any other and `singleEvents=true` already expands the series. What stays out is
+ * incremental sync —tokens, deletions, what changed since the last read—, which only
+ * pays off for something reading the calendar continuously, and nothing here does.
  */
 
 export interface CalendarEventInput {

@@ -18,6 +18,16 @@ export interface SystemPromptInput {
    * constant for a given deployment, so it does not break the prefix cache.
    */
   canSeeImages?: boolean;
+  /**
+   * Minutes of notice the cron gives before an appointment, or 0 when that job is off.
+   *
+   * It is here for the same reason as `canSeeImages`: the prompt must not deny something
+   * the system does. Until phase 14 the honest line was "the calendar's own app warns
+   * you, not me", and repeating it now would have the assistant turning down a message it
+   * is about to send. Constant for a given deployment, so it does not break the prefix
+   * cache either.
+   */
+  eventAlertMinutes?: number;
 }
 
 /**
@@ -35,6 +45,7 @@ export function buildSystemPrompt({
   now,
   memories = [],
   canSeeImages = false,
+  eventAlertMinutes = 0,
 }: SystemPromptInput): string {
   // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
@@ -86,6 +97,14 @@ export function buildSystemPrompt({
     '  "Avisar de X".',
     '- Un aviso que ya ha salido está gastado y no vuelve a sus pendientes. Si te pide',
     '  que se lo recuerdes otra vez, crea uno nuevo en vez de reabrir el viejo.',
+    '- Si algo se repite siempre ("saca la basura los martes", "el alquiler el día 1",',
+    '  "la pastilla todos los días a las nueve"), mándalo con repeat y una hora. NO',
+    '  apuntes una tarea por cada vez ni calcules tú la próxima fecha: yo la muevo a la',
+    '  siguiente cuando la dé por hecha.',
+    '- Lo que se repite no desaparece al completarlo: pasa a la siguiente vez, y te la',
+    '  devuelvo en next. Dile cuándo es, que es la forma de que sepa que sigue vivo.',
+    '- Borrar algo que se repite lo borra para todas las veces. Si lo que quiere es',
+    '  saltarse una, cámbiale la fecha con update_task.',
     '- Cuando pregunte qué tiene pendiente, eso son sus tareas: los avisos no se',
     '  cuentan, que ya llegan solos a su hora.',
     '- Una vez puesta la hora, yo aviso solo. No tienes que hacer nada más ni prometer',
@@ -104,8 +123,23 @@ export function buildSystemPrompt({
     '  o borrarla pregunta si habla de ese día concreto o de todas las veces, y mándalo',
     '  en scope. Por defecto se toca solo ese día. Borrar la serie no tiene vuelta atrás,',
     '  así que ahí no supongas nunca.',
-    '- De las citas del calendario no aviso yo: los recordatorios los da su propia app',
-    '  de calendario. No le prometas un aviso de una cita como si lo fuera a mandar yo.',
+    // Two versions of the same rule, and which one is true depends on the deployment.
+    // Both say what the system does and neither leaves room to promise a per-appointment
+    // notice: the notice is the same for every one of them, so "warn me an hour before
+    // this one" is a reminder of its own, not a setting on the appointment.
+    ...(eventAlertMinutes > 0
+      ? [
+          `- De las citas sí aviso yo: mando un mensaje ${eventAlertMinutes} minutos antes de`,
+          '  cada una, siempre esa antelación y sin que él tenga que pedirlo. Su app de',
+          '  calendario además le avisará por su cuenta.',
+          '- Esa antelación no se puede cambiar para una cita concreta. Si quiere que le',
+          '  avises a otra hora, es un aviso aparte: create_task con kind="reminder" y la',
+          '  hora en remind_at.',
+        ]
+      : [
+          '- De las citas del calendario no aviso yo: los recordatorios los da su propia app',
+          '  de calendario. No le prometas un aviso de una cita como si lo fuera a mandar yo.',
+        ]),
     '- Nunca calcules tú si dos citas se solapan, cuánto rato libre queda entre ellas ni',
     '  cuándo tiene un hueco: eso lo hago yo. Para los huecos usa find_free_slots y para',
     '  "¿qué hago ahora?" usa what_now, que ya te da la agenda y las tareas cruzadas.',

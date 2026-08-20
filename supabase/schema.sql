@@ -88,6 +88,10 @@ create table if not exists tasks (
                    check (status in ('pending','done','cancelled')),
   completed_at   timestamptz,
   reminded_at    timestamptz,   -- prevents duplicate reminders from the cron
+  -- Frequency for something that repeats, from a closed list the model picks from. The
+  -- row is not copied per occurrence: it rolls forward. See §12 of ARCHITECTURE.md.
+  recurrence     text check (recurrence in
+                   ('diario','laborables','semanal','mensual','anual')),
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
@@ -100,6 +104,7 @@ create index if not exists tasks_user_status_remind_idx
 -- not add columns to a table that is already there, so this is needed.
 alter table tasks add column if not exists remind_at timestamptz;
 alter table tasks add column if not exists kind text not null default 'task';
+alter table tasks add column if not exists recurrence text;
 
 -- The check has to go in separately, and guarded: there is no `add constraint if not
 -- exists`, and on a fresh table the inline check above is already named like this, so a
@@ -108,6 +113,10 @@ do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'tasks_kind_check') then
     alter table tasks add constraint tasks_kind_check check (kind in ('task','reminder'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'tasks_recurrence_check') then
+    alter table tasks add constraint tasks_recurrence_check check (recurrence in
+      ('diario','laborables','semanal','mensual','anual'));
   end if;
 end $$;
 

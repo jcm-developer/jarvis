@@ -165,9 +165,9 @@ curl.exe "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
 ```
 
 Every run leaves a `cron_run` line in the logs with how many users it looked at, and
-how many reminders and briefings went out. If the briefing already went out today it
-does not repeat: to test it again, delete its KV key
-(`briefing:<userId>:<date>`).
+how many reminders, appointment heads-ups and briefings went out. Neither the briefing
+nor an appointment already announced repeats: to test them again, delete the KV key
+(`briefing:<userId>:<date>` or `event_alert:<userId>:<eventId>:<startAt>`).
 
 ### Testing delicate logic without a test framework
 
@@ -310,7 +310,8 @@ with a 7-day TTL as a stopgap; phase 4 moved it to Supabase.
 **Readable errors.** Exhausted quota, an invalid key or a timeout reach Telegram as a
 clear sentence, not as silence and not as a stack dump.
 
-Commands: `/ping`, `/reset`, `/help`. Everything else goes to the model.
+Commands: `/ping`, `/reset`, `/help`. Everything else goes to the model. `/ping` also
+reports the briefing's hour and the notice given before appointments.
 Audio is acknowledged but not transcribed until phase 3.
 
 ## What phase 2 does
@@ -396,8 +397,9 @@ Jarvis stops waiting for you to write: now it writes to you.
 
 **Daily briefing** ([src/cron/briefing.ts](src/cron/briefing.ts)). At 8 in the morning
 *in your local time* a message arrives with what you have: overdue items, today's with
-their time, and the urgent ones with no date. It is sent once a day, inside a 3-hour
-window: if the 8 o'clock tick is missed, the 9 or the 10 one recovers it.
+their time, and the urgent ones with no date. Since phase 12 it opens with the day's
+appointments — see further down. It is sent once a day, inside a 3-hour window: if the 8
+o'clock tick is missed, the 9 or the 10 one recovers it.
 
 ```toml
 BRIEFING_HOUR = "8"   # local hour, 0-23
@@ -657,6 +659,147 @@ in the SQL editor. It adds `attachment_ref` to `messages` and lets `source` be `
 the script is idempotent, so re-running the whole thing is safe. No new secrets and no new
 vars.
 
+## What phase 12 does: the briefing tells the whole day
+
+The morning message used to know your tasks and not your calendar, so the part of the day
+that cannot be moved had to be looked up somewhere else. Now it opens with it:
+
+```
+Buenos días. Hoy es jueves, 20 de agosto.
+
+Agenda:
+- 09:30-10:15 Dentista
+- 13:00-14:00 algo (cita privada)
+
+Todo el día:
+- Cumpleaños de Ana
+
+Vencidas:
+- Pagar el seguro (18 ago, 10:30)
+
+Hoy:
+- 17:00 Llamar a la gestoría (alta)
+
+Sin fecha, prioridad alta:
+- Renovar el pasaporte
+```
+
+Appointments that hold a slot and all-day ones go in separate lists: a birthday is not a
+meeting, and the free-slot search already makes that same distinction. A private
+appointment is named as "algo (cita privada)" — the shared permission returns the
+occupied slot with no title, and no title is invented for it here either.
+
+**It is still written in code, with no model involved**, which is what keeps it boring and
+exact, and it still costs no tokens.
+
+**If Google fails, the briefing still goes out.** The calendar is read last and its
+failure costs only its own section: the tasks arrive with one line saying the
+appointments are missing. This is the one message you did not ask for, so one that shows
+up quietly incomplete is one nobody would come back to question.
+
+No new secrets, no new vars and nothing to run in Supabase. It uses the calendar that
+phases 6 and 7 already set up; without `GOOGLE_CALENDAR_ID` the briefing behaves exactly
+as it did before, tasks only.
+
+## What phase 14 does: it warns you before the appointment
+
+Fifteen minutes before each appointment, a message:
+
+```
+Dentro de 13 minutos: Dentista, a las 09:30.
+```
+
+And when two fall together:
+
+```
+Dentro de un rato tienes esto:
+
+- 13:00 Comida con David
+- 13:03 una cita privada
+```
+
+Google Calendar already notifies you, and this does not replace it: its notification
+arrives wherever the calendar app is, and this one arrives where the tasks, the chat and
+the answer are. *"Muévela una hora"* right after the alert works, because the alert is in
+the conversation.
+
+```toml
+EVENT_ALERT_MINUTES = "15"   # 0 turns it off
+```
+
+The notice is the same for every appointment and cannot be changed for one of them — that
+is a calendar-app setting. What you can do is ask for a separate alert: *"avísame a las
+ocho de la reunión"* is a reminder of its own, and that one does go out when you said.
+
+It announces each appointment **once**: the cron runs every five minutes, so the marker
+that remembers the alert went out is the whole feature. Moving the appointment announces
+it again at its new hour, because a moved appointment is a different thing to be warned
+about. Something already under way is not announced at all.
+
+## What phase 15 does: postponing without writing
+
+The alert arrives with three buttons:
+
+```
+Acuérdate de sacar la basura.
+
+[+10 min]  [+1 h]  [Mañana]
+```
+
+*"Pospónlo diez minutos"* was the most repeated reply to an alert and the most expensive
+one: a model call and a couple of seconds to move a date. The button does it with one
+patch and no model.
+
+**Mañana** means tomorrow at the hour the alert was set for, not the hour you pressed the
+button: the bins are a 21:00 thing even if you get to the phone at 23:40.
+
+You can press twice with no harm — the second press moves the same alert again, it does
+not create a second one. Buttons only show up when the message announces **one** thing:
+with three in the same alert there is no telling which one `+10 min` is about, so there
+the answer stays *"mueve la basura a mañana"*, said out loud.
+
+Nothing to configure, no new secrets and nothing to run in Supabase.
+
+## What phase 16 does: things that repeat
+
+*"Saca la basura los martes"*, *"el alquiler el día 1"*, *"la pastilla todos los días a
+las nueve"*. Before this, each of those had to be written down again after every time.
+
+Five frequencies, the same words the calendar appointments already used: `diario`,
+`laborables`, `semanal`, `mensual`, `anual`.
+
+**A repetition does not disappear when you do it.** Say it is done and it moves to the
+next time, and the reply tells you when:
+
+```
+Hecho. La siguiente, el 1 de septiembre a las 19:00.
+```
+
+An alert that repeats moves on its own, the moment it goes out: *"la pastilla todos los
+días a las nueve"* arrives tomorrow at nine without you touching anything.
+
+**Deleting it deletes every time**, not just this one — there is a single row behind all
+of them — so the confirmation says so out loud:
+
+```
+"Sacar la basura" se repite todos los días. ¿La borro del todo y dejo de avisarte?
+
+[✅ Confirmar]  [❌ Cancelar]
+```
+
+To skip one single time, move its date instead: *"esta semana la basura pásala al
+miércoles"*.
+
+The dates are computed in code, never by the model, and in local time rather than by
+adding hours: a 09:00 alert stays at 09:00 the day the clocks change, the 31st of a month
+with 30 days becomes the 30th instead of slipping into the following month, and
+`laborables` jumps over the weekend.
+
+**One manual step on an existing deploy:** re-run
+[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds `recurrence` to
+`tasks`; the script is idempotent, so re-running the whole thing is safe. No new secrets
+and no new vars.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
@@ -665,6 +808,6 @@ comprar pan y revisar el podcast"* creates all three tasks at once.
 
 ## Next
 
-**Audio replies**: answering a voice note with a voice note. Behind it, the briefing
-covering the day's meetings, and a weekly review that says what you have been
-postponing. The full list is at the end of [ARCHITECTURE.md](ARCHITECTURE.md).
+**Audio replies**: answering a voice note with a voice note. Behind it, a weekly review
+that says what you have been postponing. The full list is at the end of
+[ARCHITECTURE.md](ARCHITECTURE.md).

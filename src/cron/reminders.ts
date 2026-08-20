@@ -9,7 +9,9 @@ import {
   localTomorrow,
   localYesterday,
 } from '../lib/localtime';
-import type { TelegramClient } from '../telegram/client';
+import { nextOccurrence } from '../lib/recurrence';
+import type { InlineKeyboardButton, TelegramClient } from '../telegram/client';
+import { SNOOZE_OPTIONS, snoozeData } from '../tools/snooze';
 
 /**
  * Reminders for tasks falling due.
@@ -95,12 +97,12 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
   if (tasks.length === 0) return 0;
 
   const text = buildReminderText(tasks, target.timezone, now);
-  await telegram.sendMessage(target.chatId, text);
+  await telegram.sendMessage(target.chatId, text, { inlineKeyboard: snoozeKeyboard(tasks) });
 
   // Marked AFTER sending, on purpose: if the send fails, the task stays unmarked and the
   // alert is retried on the next tick. The other way round, a Telegram failure would turn
   // into a reminder that never arrives.
-  await markAnnounced(db, tasks, now);
+  await markAnnounced(db, tasks, now, target.timezone);
 
   // The alert goes into the history so the model knows what it is being told about when
   // the user answers "done" or "push it back".
@@ -121,12 +123,45 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
  * **A task only gets `reminded_at`.** The alert is not the point of it —paying the bill
  * is— so it stays open until the user says otherwise.
  */
-async function markAnnounced(db: Db, tasks: TaskRow[], now: Date): Promise<void> {
+async function markAnnounced(
+  db: Db,
+  tasks: TaskRow[],
+  now: Date,
+  timezone: string,
+): Promise<void> {
   const stamp = now.toISOString();
-  const spent = tasks.filter((task) => task.kind === 'reminder').map((task) => task.id);
+
+  // A recurring alert is neither spent nor left open: it moves on. "La pastilla todos los
+  // días a las nueve" is one row for ever, and closing it would leave the user creating
+  // it again tomorrow — the chore the frequency exists to remove.
+  const repeating = tasks.filter((task) => task.kind === 'reminder' && task.recurrence);
+  const spent = tasks
+    .filter((task) => task.kind === 'reminder' && !task.recurrence)
+    .map((task) => task.id);
   const open = tasks.filter((task) => task.kind !== 'reminder').map((task) => task.id);
 
   const writes: Promise<unknown>[] = [];
+  for (const task of repeating) {
+    const from = task.remind_at ?? task.due_at;
+    const next = from ? nextOccurrence(new Date(from), task.recurrence!, now, timezone) : null;
+    if (next === null) {
+      // A frequency that cannot be advanced would announce the same alert on every tick,
+      // so the row is closed like any other spent alert and the log says why.
+      console.error(`recurrencia inválida en ${task.id}: "${task.recurrence}"`);
+      spent.push(task.id);
+      continue;
+    }
+    writes.push(
+      db.update(
+        'tasks',
+        { id: `eq.${task.id}` },
+        // The new date and the null `reminded_at` in the SAME patch: the cron only looks
+        // at rows with a null one, so splitting these two writes would leave an alert
+        // that either never comes back or comes back on every tick.
+        { remind_at: next.toISOString(), reminded_at: null, status: 'pending' },
+      ),
+    );
+  }
   if (spent.length > 0) {
     writes.push(
       db.update(
@@ -147,6 +182,29 @@ async function markAnnounced(db: Db, tasks: TaskRow[], now: Date): Promise<void>
     // alert goes out again later, and that is the preferable failure mode.
     console.error('no se pudo marcar reminded_at:', error);
   }
+}
+
+/**
+ * The postpone buttons, and only when the message announces ONE task.
+ *
+ * With three in the same message there is no way to tell which one "+10 min" is about:
+ * the alternative is a row of buttons per task, which in a chat is a menu, and a menu is
+ * what stops being read. On a multiple alert the answer stays where it always was —"mueve
+ * la basura a mañana"— and the model has `update_task` for that.
+ *
+ * The id travels in the `callback_data`, which is what keeps this from costing a KV write
+ * per alert sent: see [tools/snooze.ts](../tools/snooze.ts).
+ */
+function snoozeKeyboard(tasks: TaskRow[]): InlineKeyboardButton[][] | undefined {
+  if (tasks.length !== 1) return undefined;
+
+  const task = tasks[0]!;
+  return [
+    SNOOZE_OPTIONS.map((option) => ({
+      text: option.label,
+      callback_data: snoozeData(task.id, option.code),
+    })),
+  ];
 }
 
 /** When this task is due to be announced: its own reminder, or its deadline. */

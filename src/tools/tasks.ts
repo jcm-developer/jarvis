@@ -1,5 +1,11 @@
 import type { TaskRow } from '../db/types';
 import { formatDayAndTime } from '../lib/localtime';
+import {
+  REPEAT_FREQUENCIES,
+  isRepeatFrequency,
+  nextOccurrence,
+  repeatPhrase,
+} from '../lib/recurrence';
 import { OFFSET_HINT, cleanTitle, honourUserDeadlines, resolveOffset } from './guardrails';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { optionalBoolean, optionalInt, optionalIsoDate, optionalString, requireString } from './types';
@@ -46,6 +52,16 @@ export const createTask: ToolDefinition = {
         type: 'integer',
         description: 'Prioridad: 1 alta, 2 normal, 3 baja. Por defecto 2.',
       },
+      repeat: {
+        type: 'string',
+        enum: [...REPEAT_FREQUENCIES],
+        description:
+          'Solo si lo que hay que hacer se repite siempre ("saca la basura los martes", ' +
+          '"el alquiler el día 1", "la pastilla todos los días a las nueve"). Manda la ' +
+          'frecuencia y una hora, y yo me encargo de la siguiente vez: NO crees una tarea ' +
+          'por cada repetición ni calcules tú la próxima fecha. Sin frecuencia, la tarea ' +
+          'es de una sola vez.',
+      },
       force: {
         type: 'boolean',
         description:
@@ -68,10 +84,17 @@ export const createTask: ToolDefinition = {
     const dueAt = resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at');
     const when = whenPhrase(remindAt ?? dueAt, ctx.timezone);
 
+    const phrase = repeatPhrase(optionalString(args, 'repeat', 20)?.toLowerCase() ?? '');
+    const every = phrase ? `, ${phrase}` : '';
+
     if (isReminder) {
-      return when ? `¿Te aviso de "${title}" el ${when}?` : `¿Te pongo un aviso de "${title}"?`;
+      return when
+        ? `¿Te aviso de "${title}" el ${when}${every}?`
+        : `¿Te pongo un aviso de "${title}"${every}?`;
     }
-    return when ? `¿Apunto "${title}" para el ${when}?` : `¿Apunto "${title}"?`;
+    return when
+      ? `¿Apunto "${title}" para el ${when}${every}?`
+      : `¿Apunto "${title}"${every}?`;
   },
   handler: async (args, ctx): Promise<ToolResult> => {
     const title = cleanTitle(requireString(args, 'title', 200));
@@ -114,6 +137,28 @@ export const createTask: ToolDefinition = {
       }
     }
 
+    const repeat = optionalString(args, 'repeat', 20)?.toLowerCase() ?? null;
+    if (repeat !== null && !isRepeatFrequency(repeat)) {
+      return {
+        ok: false,
+        error:
+          `repeat "${repeat}" no válido. Usa una de estas: ${REPEAT_FREQUENCIES.join(', ')}. ` +
+          'Si la repetición que pide no está en la lista, dile que puedes apuntarla una ' +
+          'sola vez y que la otra tendría que ponerla él en su calendario.',
+      };
+    }
+    // Something that repeats and has no date has nothing to advance: it would be a
+    // frequency stored on a row that never fires and never rolls over.
+    if (repeat !== null && dueAt === null && remindAt === null) {
+      return {
+        ok: false,
+        error:
+          'Para que algo se repita necesito una fecha u hora de partida. Si el usuario ha ' +
+          'dicho cuándo es la primera vez, repite la llamada con due_at o remind_at; si no ' +
+          'lo ha dicho, pregúntaselo.',
+      };
+    }
+
     // Duplicate control is for tasks only. Two alerts with the same title are two
     // different alerts —the pill at 09:00 and the pill at 21:00— so blocking the second
     // one would lose it; and an alert that has already gone out is closed, so it cannot
@@ -143,6 +188,7 @@ export const createTask: ToolDefinition = {
       due_at: dueAt,
       remind_at: remindAt,
       priority: optionalInt(args, 'priority', 1, 3) ?? 2,
+      recurrence: repeat,
     });
 
     return { ok: true, data: summarize(task, ctx.timezone) };
@@ -295,6 +341,13 @@ export const updateTask: ToolDefinition = {
       },
       remind_in_minutes: { type: 'integer', description: `Nueva hora del aviso. ${OFFSET_HINT}` },
       priority: { type: 'integer', description: 'Nueva prioridad: 1 alta, 2 normal, 3 baja.' },
+      repeat: {
+        type: 'string',
+        enum: [...REPEAT_FREQUENCIES, ''],
+        description:
+          'Nueva frecuencia, si el usuario cambia cada cuánto se repite. Cadena vacía para ' +
+          'que deje de repetirse y se quede en una sola vez.',
+      },
       status: {
         type: 'string',
         enum: ['pending', 'done', 'cancelled'],
@@ -362,6 +415,22 @@ export const updateTask: ToolDefinition = {
       patch['reminded_at'] = null;
     }
 
+    if (args['repeat'] !== undefined) {
+      // The empty string is how a frequency is removed, the same convention the notes and
+      // the dates already use here: not sent means "leave it alone", sent empty means
+      // "wipe it".
+      const repeat = optionalString(args, 'repeat', 20)?.toLowerCase() ?? null;
+      if (repeat !== null && !isRepeatFrequency(repeat)) {
+        return {
+          ok: false,
+          error:
+            `repeat "${repeat}" no válido. Usa una de estas: ${REPEAT_FREQUENCIES.join(', ')}, ` +
+            'o cadena vacía para quitar la repetición.',
+        };
+      }
+      patch['recurrence'] = repeat;
+    }
+
     if (args['status'] !== undefined) {
       const status = requireString(args, 'status', 20);
       if (!['pending', 'done', 'cancelled'].includes(status)) {
@@ -412,6 +481,17 @@ export const completeTask: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
 
+    // Something that repeats is not closed when it is done: it moves to its next date.
+    // Otherwise "sacar la basura los martes" would have to be created again every week,
+    // which is the chore the frequency exists to remove.
+    const [existing] = await ctx.db.select<TaskRow>('tasks', {
+      filters: { id: `eq.${taskId}`, user_id: `eq.${ctx.userId}` },
+      limit: 1,
+    });
+    if (existing?.recurrence) {
+      return rollForward(existing, ctx);
+    }
+
     const updated = await ctx.db.update<TaskRow>(
       'tasks',
       { id: `eq.${taskId}`, user_id: `eq.${ctx.userId}` },
@@ -446,9 +526,14 @@ export const deleteTask: ToolDefinition = {
       limit: 1,
     });
     const task = rows[0];
-    return task
-      ? `¿Borro definitivamente la tarea "${task.title}"?`
-      : '¿Borro definitivamente esa tarea?';
+    if (!task) return '¿Borro definitivamente esa tarea?';
+
+    // One row holds every future occurrence, so deleting it is not "this week's bins":
+    // it is all of them. Saying so is what makes it a confirmation and not a trap.
+    const phrase = task.recurrence ? repeatPhrase(task.recurrence) : null;
+    return phrase
+      ? `"${task.title}" se repite ${phrase}. ¿La borro del todo y dejo de avisarte?`
+      : `¿Borro definitivamente la tarea "${task.title}"?`;
   },
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
@@ -466,6 +551,67 @@ export const deleteTask: ToolDefinition = {
     return { ok: true, data: { deleted: true, title: task.title } };
   },
 };
+
+/**
+ * Moves a recurring task to its next occurrence instead of closing it.
+ *
+ * **One row rolled forward, not a row per occurrence.** A row per occurrence needs an
+ * insert plus a close, and those are two writes that can half-happen: the insert landing
+ * with the close failing is a duplicate, the other way round is a repetition that
+ * disappears silently. Rolling forward is a single patch, which is the same argument the
+ * postpone button is built on (§12).
+ *
+ * What is given up is the history of "I did it in August", and it is not lost: every
+ * `complete_task` is in `tool_call_logs` with its arguments. Phase 13 was already going
+ * to read postponements from there, so it is not a new dependency.
+ */
+async function rollForward(task: TaskRow, ctx: ToolContext): Promise<ToolResult> {
+  const now = new Date();
+  const frequency = task.recurrence!;
+
+  // Both dates advance, each from its own value: a task due on the 1st that warns on the
+  // 28th has to keep those three days between them.
+  const patch: Record<string, unknown> = { reminded_at: null };
+  let announced: Date | null = null;
+
+  for (const field of ['due_at', 'remind_at'] as const) {
+    const current = task[field];
+    if (current === null) continue;
+    const next = nextOccurrence(new Date(current), frequency, now, ctx.timezone);
+    if (next === null) {
+      return {
+        ok: false,
+        error:
+          `No he podido calcular la siguiente vez de "${task.title}" (se repite ` +
+          `${frequency}). No la he tocado: dile que hay que revisar esa repetición.`,
+      };
+    }
+    patch[field] = next.toISOString();
+    // What gets said out loud is the alert's date when it has one of its own, and the
+    // deadline otherwise: that is the one the user is going to hear about next.
+    if (field === 'remind_at' || announced === null) announced = next;
+  }
+
+  const updated = await ctx.db.update<TaskRow>(
+    'tasks',
+    { id: `eq.${task.id}`, user_id: `eq.${ctx.userId}` },
+    patch,
+  );
+
+  const rolled = updated[0];
+  if (!rolled) return notFound(task.id);
+
+  return {
+    ok: true,
+    data: {
+      ...summarize(rolled, ctx.timezone),
+      done_this_time: true,
+      // Named on its own so the model says it: "hecho, la siguiente el 27 de agosto" is
+      // what tells the user the repetition is still alive.
+      next: announced ? formatDayAndTime(announced, ctx.timezone) : null,
+    },
+  };
+}
 
 /**
  * The date, worded the way the reminders are (§12): "21 de agosto a las 10:00", never
@@ -518,6 +664,9 @@ function summarize(task: TaskRow, timezone: string) {
     // per row is tokens spent on every following message.
     ...(task.remind_at ? { remind: formatDate(task.remind_at, timezone) } : {}),
     priority: PRIORITY_LABELS[task.priority] ?? 'normal',
+    // Only when it repeats, and said the way a person would. The model has to be able to
+    // tell the user that completing this one will not make it go away.
+    ...(task.recurrence ? { repeats: repeatPhrase(task.recurrence) ?? task.recurrence } : {}),
     status: task.status,
   };
 }

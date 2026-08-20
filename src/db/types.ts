@@ -26,6 +26,8 @@ export interface TaskRow {
   status: 'pending' | 'done' | 'cancelled';
   completed_at: string | null;
   reminded_at: string | null;
+  /** Frequency when it repeats. One row, rolled forward; never a row per occurrence. */
+  recurrence: string | null;
   created_at: string;
 }
 

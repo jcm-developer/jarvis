@@ -18,6 +18,14 @@ export interface Config {
   /** Local hour (0-23) at which the cron's daily briefing goes out. */
   briefingHour: number;
   /**
+   * Minutes of notice for the heads-up before an appointment. 0 turns the job off.
+   *
+   * It is capped rather than free: with more notice than the cron's own period the alert
+   * would go out for something that is still hours away, which is what makes people mute
+   * a bot.
+   */
+  eventAlertMinutes: number;
+  /**
    * The day's window, in local hours, within which free slots are searched for.
    *
    * Without a declared window, "you are free from 03:00 to 07:00" is a technically
@@ -104,6 +112,7 @@ export function loadConfig(env: Env): Config {
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
     maxAgentIterations: parsePositiveInt(env.MAX_AGENT_ITERATIONS, 5),
     briefingHour: parseHour(env.BRIEFING_HOUR, 8),
+    eventAlertMinutes: parseMinutes(env.EVENT_ALERT_MINUTES, 15),
     dayStartHour: sensibleDay ? dayStartHour : 9,
     dayEndHour: sensibleDay ? dayEndHour : 21,
     logLevel: parseLogLevel(env.LOG_LEVEL),
@@ -117,6 +126,17 @@ export function loadConfig(env: Env): Config {
  * the cap at 23 there would be no way to say "until the end of the day".
  */
 function parseHour(raw: string | undefined, fallback: number, max = 23): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : fallback;
+}
+
+/**
+ * Minutes in a closed range, where 0 is a valid value and means "off".
+ *
+ * Separate from parsePositiveInt for exactly that reason: there a zero is a typo, here
+ * it is how the pre-appointment alert gets disabled without touching the code.
+ */
+function parseMinutes(raw: string | undefined, fallback: number, max = 120): number {
   const parsed = Number.parseInt(raw ?? '', 10);
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : fallback;
 }

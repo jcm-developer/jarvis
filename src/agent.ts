@@ -14,6 +14,7 @@ import { loadMemories } from './tools/memory';
 import type { PendingAction } from './tools/pending';
 import { savePending } from './tools/pending';
 import { getTool, toolSchemas } from './tools/registry';
+import { applySnooze } from './tools/snooze';
 import type { ToolContext, ToolResult } from './tools/types';
 import { ToolValidationError } from './tools/types';
 import type { Env, TelegramUser } from './types';
@@ -112,6 +113,9 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // limits must not promise what this model cannot do, and with a text-only one the
         // prompt has to keep saying it cannot see photos.
         canSeeImages: provider.supportsImages,
+        // Same idea, read from the config: with the job off the prompt has to go back to
+        // saying that the calendar's own app is the one that warns him.
+        eventAlertMinutes: config.eventAlertMinutes,
       }),
     },
     ...toLLMMessages(history),
@@ -280,6 +284,37 @@ export async function forgetConversation(
 }
 
 /** Runs the actions the user has already confirmed. */
+/**
+ * Postpones an alert from the button on the alert itself.
+ *
+ * It sits next to `executeConfirmed` because it is the same shape of thing: a button
+ * press, no model involved, and the identity resolved from the actor —cached in KV, so it
+ * is not a query per press. What it must NOT do is go through the agent: paying for a
+ * model call to move a date by ten minutes is exactly what the button is for.
+ */
+export async function snoozeReminder(
+  input: { chatId: number; from: TelegramUser | undefined; taskId: string; code: string },
+  deps: AgentDeps,
+): Promise<string> {
+  const db = createDb(deps.env);
+  const identity = await resolveIdentity(
+    deps.env,
+    db,
+    input.from,
+    input.chatId,
+    deps.config.defaultTimezone,
+  );
+
+  return applySnooze({
+    db,
+    userId: identity.userId,
+    taskId: input.taskId,
+    code: input.code,
+    now: new Date(),
+    timezone: identity.timezone,
+  });
+}
+
 export async function executeConfirmed(
   action: PendingAction,
   input: { chatId: number; from: TelegramUser | undefined },

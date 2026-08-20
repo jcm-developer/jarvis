@@ -214,6 +214,9 @@ create table tasks (
                     check (status in ('pending','done','cancelled')),
   completed_at    timestamptz,
   reminded_at     timestamptz,             -- prevents duplicate reminders
+  recurrence      text                     -- frequency when it repeats: one row, rolled
+                    check (recurrence in   -- forward. Never a row per occurrence
+                      ('diario','laborables','semanal','mensual','anual')),
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -405,10 +408,10 @@ export type ToolResult =
 
 | Tool | Description | Confirmation |
 |---|---|---|
-| `create_task` | Creates a task or an alert (`kind`), with an optional deadline and alert time, in ISO or in minutes from now. Rejects duplicate tasks. | No |
+| `create_task` | Creates a task or an alert (`kind`), with an optional deadline and alert time, in ISO or in minutes from now, and an optional frequency (`repeat`) when it happens for ever. Rejects duplicate tasks. | No |
 | `list_tasks` | Lists with filters: status, date range, kind. Tasks unless `kind='reminder'` is asked for. | No |
-| `update_task` | Changes the deadline, alert time, title, notes, priority or status of an existing task. Reopens the alert when a date changes. | No |
-| `complete_task` | Marks it as done. | No |
+| `update_task` | Changes the deadline, alert time, title, notes, priority, frequency or status of an existing task. Reopens the alert when a date changes. | No |
+| `complete_task` | Marks it as done, or moves it to its next occurrence when it repeats. | No |
 | `delete_task` | Deletes permanently. | **Yes** |
 | `create_event` | Creates a calendar appointment, timed or all-day. Warns when it overlaps something. | No |
 | `list_events` | Appointments over a range of days, with text search. Returns the ids. | No |
@@ -731,8 +734,10 @@ the code stays. It is designed that way on purpose.
 
 ## 12. Being proactive: the cron
 
-One Cron Trigger every five minutes (`*/5 * * * *`) and two independent jobs per user,
-each with its own `try`: one alert failing must not leave the user without the other.
+One Cron Trigger every five minutes (`*/5 * * * *`) and three independent jobs per
+user, each with its own `try`: one alert failing must not leave the user without the
+others. In order: the task reminders, the heads-up before an appointment (phase 14) and
+the briefing.
 
 **It started running hourly and that did not work.** A "remind me at 12:10" asked for
 in a 12:07 message could not go out before 13:00, almost an hour late: an alert's
@@ -766,11 +771,37 @@ summer.
   there would be no briefing that day; without a limit a "good morning" would land at
   midnight.
 - **The text is composed in code, without going through the model.** It is a list of
-  tasks with dates: the LLM adds nothing and does add cost, latency and the chance of
-  inventing a task. The briefing has to be boring and exact.
-- Contents: what is overdue, what is due today with its time, and high-priority items
-  with no date. Pending things with neither a date nor a priority stay out: this is
-  the day, not the inventory.
+  appointments and tasks with dates: the LLM adds nothing and does add cost, latency and
+  the chance of inventing a task. The briefing has to be boring and exact.
+- Contents: the day's appointments, what is overdue, what is due today with its time,
+  and high-priority items with no date. Pending things with neither a date nor a
+  priority stay out: this is the day, not the inventory.
+
+#### The appointments (phase 12)
+
+The briefing was the last place still telling half the day: the tasks were there and
+the calendar was not, so the fixed part of the morning —the part that cannot be moved—
+had to be looked up somewhere else.
+
+- **The whole local day, not from `now`.** The window runs up to three hours late, and
+  cutting at the current instant would hide the 09:00 meeting from a briefing that went
+  out at 10. The day's plan is not the same thing as what is left of it — that question
+  is `what_now`'s, in §14.
+- **Timed and all-day go in separate lists**, the same distinction the free gaps make:
+  one holds a slot and the other does not, and mixing them would drop "Ana's birthday"
+  between two meetings as though it were one of them.
+- **A private appointment is named as what it is**, "algo (cita privada)", because the
+  shared permission returns the slot with no title (§13). There is no model here to
+  invent one, and there must not be a line inventing it either.
+- **Google is read last, and its failure costs only its own section.** `todaysEvents`
+  returns null on any error —including a missing `GOOGLE_CALENDAR_ID`— and the briefing
+  goes out with the tasks plus a line saying the appointments are missing. Nobody asked
+  for this message: if it arrives incomplete and quiet, nobody comes back to ask why.
+- **The cap is 6 s**, below the 10 s the tools give themselves. This runs unattended and
+  shares the cron's budget with every other user's reminders, and the read is an extra:
+  if it does not fit, the tasks still go out.
+- One extra Google call a day, not one per tick: the read hangs off the branch that has
+  already checked the KV marker.
 
 ### Reminders
 
@@ -848,12 +879,73 @@ What follows from the split:
 - **An alert that has gone out is spent**: the prompt has the model create a new one
   rather than reopen it. Reopening would mean writing a date onto a closed row, and the
   cron only looks at pending ones, so the alert would never arrive — a silent failure.
+  The postpone button does reopen it, and that is not a contradiction: see below.
 - **The briefing and `what_now` read `kind='task'`.** An alert arrives by itself; naming
   it in the morning tells the user something he is about to be told again.
 
 `kind` defaults to `'task'`, and the tool description says so as well. Getting it wrong
 in that direction leaves a row too many in a list the user reads; getting it wrong the
 other way makes something disappear on its own. Of the two, only the first is visible.
+
+### Something that repeats (phase 16)
+
+The bins on Tuesdays, the rent on the 1st, the pill at nine. Until this phase every one of
+them had to be written down again after each time, which is the one chore an assistant
+exists to remove — and the calendar could not take them over either, for the reason
+already given above: an errand on the calendar occupies a slot it does not occupy.
+
+**One column, and one row rolled forward.** `recurrence` holds a frequency from a closed
+list —`diario`, `laborables`, `semanal`, `mensual`, `anual`— and the row moves to its next
+date instead of being copied per occurrence. Two reasons, and the second is the one that
+decided it:
+
+- A row per occurrence is an insert **plus** a close, two writes that can half-happen. The
+  insert landing while the close fails is a duplicate alert; the other way round is a
+  repetition that disappears without a word. Rolling forward is a single patch — the same
+  argument the postpone button is built on.
+- And it does not grow. A daily alert would be 365 rows a year, competing in every query
+  with what is actually pending.
+
+What is given up is the record of "I took it in August", and it is not lost: every
+`complete_task` sits in `tool_call_logs` with its arguments. Phase 13 was already going to
+read postponements from there.
+
+**The two paths that move a repetition, and they must not be confused:**
+
+| | Who moves it | What it writes |
+|---|---|---|
+| A recurring **task** (`kind='task'`) | `complete_task`, when the user says it is done | the next `due_at` and `remind_at`, `reminded_at` back to null |
+| A recurring **alert** (`kind='reminder'`) | the cron, the moment it announces it | the next `remind_at`, `reminded_at` null, still `pending` |
+
+An alert is not waiting to be done, so nobody would ever complete it: if the cron closed
+it like any other spent alert, tomorrow's pill would need creating again. And in both
+cases the new date and the null `reminded_at` travel in the **same** patch, because the
+cron only reads rows whose `reminded_at` is null: split in two, the alert either never
+comes back or comes back on every tick.
+
+**The arithmetic is the code's, and it is not milliseconds.**
+[src/lib/recurrence.ts](src/lib/recurrence.ts) advances the LOCAL date and puts the local
+hour back afterwards. A daily 09:00 alert plus 24 h is an 08:00 alert the day the clocks
+change, and it stays wrong from then on. The rest is the same family of trap: the 31st of a
+month with 30 days is clamped, not overflowed —"el día 31" landing on 1 March is a bill
+paid in the wrong month, and it would drift another day every time— 29 February yearly
+becomes the 28th, and `laborables` jumps the weekend instead of firing on Saturday.
+
+- **It advances from the stored date, not from `now`, and repeats until it is past
+  `now`.** An alert left behind three days comes back on its own hour, not three days late
+  and not at whatever time the user got round to reading it.
+- **A frequency that cannot be advanced closes the row** and logs why. The alternative is
+  the same alert on every tick, for ever, which is the one failure mode worse than losing
+  it.
+- **Deleting a repetition deletes all of them**, because there is one row. The
+  confirmation says so —"se repite todos los días, ¿la borro del todo?"— which is the
+  difference between a confirmation and a trap. Skipping a single time is `update_task`
+  with a new date.
+- **One vocabulary for both domains.** These are the same five words the appointments
+  already used, and the phrases moved to `lib/recurrence.ts` so the two lists cannot drift
+  apart. The model must not have to remember that "mensual" is the word for an appointment
+  and something else for a task; what stays in `tools/calendar.ts` is the RRULE, which is
+  Google's alone.
 
 ### What the alerts sound like
 
@@ -894,6 +986,82 @@ model would ask what it is being told about.
 A task falling due within the briefing's own hour appears in both messages. That is
 accepted: they are different things —planning the day and flagging what is imminent—
 and suppressing the reminder would silence precisely the most urgent thing of the day.
+
+### Postponing from the alert itself (phase 15)
+
+The most repeated answer to a proactive message was "pospónlo diez minutos", and it was
+the most expensive one: a model call and a couple of seconds to move a date by ten
+minutes, with the chance of the day going wrong that §7 is all about. Now the alert
+arrives with three buttons —`+10 min`, `+1 h`, `Mañana`— and none of that happens.
+
+- **No KV write, unlike the confirmation flow.** There the payload is a whole tool call
+  and it has to be stored (§7); here it is one id and one option, and both fit in
+  `callback_data`: `zz:<uuid>:<code>` is 42 of the 64 bytes Telegram allows. Alerts go
+  out several times a day and the plan gives 1,000 writes: a flow that spent one per
+  alert would have been a flow with a budget.
+- **It reopens the row instead of adding another one**, which is the opposite of what the
+  prompt tells the model to do with a spent alert. Both are right for their own path: the
+  model is told not to reopen because reopening means setting a date on a closed row and
+  the cron only reads pending ones —a model that writes `remind_at` and forgets
+  `status` produces an alert that never arrives— and the button can guarantee exactly
+  that, because the three fields travel in one patch.
+- **And that is what makes a double tap harmless.** Pressing twice writes the same fields
+  on the same row. Had it inserted a row per press, a double tap would be two alerts, and
+  §12 already says there is no duplicate control between alerts on purpose.
+- **"Mañana" keeps the alert's own hour**, not the hour of the press: the bins are a 21:00
+  thing, and pressing the button at 23:40 because the phone was in another room must not
+  turn them into a 23:40 thing for ever. It is not "+1,440 minutes" either — a day is not
+  1,440 minutes on the two clock-change days a year, and `zonedInstant` already knows it.
+- **Buttons only when the message announces one task.** With three in the same message
+  there is no telling which one `+10 min` refers to, and a row of buttons per task is a
+  menu. On a multiple alert the answer stays where it was: said out loud, with
+  `update_task`.
+- **A task already closed is not resurrected** by a button pressed on an old message; a
+  spent alert is, because that is the whole point. The two cases are told apart by `kind`,
+  not by `status`: both are `done` in the database.
+
+### Before an appointment (phase 14)
+
+Google Calendar already sends its own notification, and that is exactly why this exists:
+it arrives wherever the calendar app is installed, while everything else the assistant
+knows —the tasks, what was agreed in the chat, the reply to "move it an hour"— lives in
+Telegram. An appointment that only warns you somewhere else is the one thing left that
+makes you keep two apps open.
+
+- **The read is the notice, not the day.** `EVENT_ALERT_MINUTES` (15 by default) sets
+  both the notice and the width of the window read from Google: `now` to
+  `now + lead`. Reading four hours of calendar every five minutes to announce what
+  happens in the next fifteen would be 288 pointless reads a day.
+- **The marker is in KV and carries the start instant**, not just the id:
+  `event_alert:<userId>:<eventId>:<startAt>`. Moving an appointment keeps its id —that
+  is what `update_event` is for— so a key without the hour would announce the 09:00 slot
+  and then say nothing about the 17:00 it was moved to. With the instant in it, a moved
+  appointment is something else to warn about, which is what it is.
+- **One KV write per appointment announced, none per tick.** That is what keeps this
+  inside the 1,000 daily writes: the marker is only written when a message actually goes
+  out, and there are a handful of appointments a day, not 288 ticks' worth.
+- **It goes between the reminders and the briefing.** It is the only one of the three
+  that is time-critical to the minute —an appointment announced late is not announced— so
+  it does not queue behind the briefing's own calendar read.
+- **What has already started is not announced.** Google returns whatever overlaps the
+  window, so a meeting under way comes back too and is dropped: at that point the user is
+  either in it or has decided not to be, and a warning is a reproach.
+- **The window's edge belongs to the next tick.** `timeMax` is exclusive, so something
+  starting at exactly `now + 15` arrives on the following tick, ten minutes ahead. With
+  a 15-minute notice the alert lands between 15 and 10 minutes before, and that is the
+  real precision — the same trade the cron's period already imposes on the reminders.
+- **Zero disables it**, and that is not a cosmetic setting: it is what makes the
+  difference between the two versions of the prompt rule below.
+
+**The prompt had to change with it, and that is the part worth remembering.** Until this
+phase the honest line was "the appointments' reminders come from your own calendar app,
+not from me", and it was in the prompt precisely so the model would not promise an alert
+nobody was going to send. Shipping the job without touching that line would have left the
+assistant turning down, in writing, a message it was about to send fifteen minutes later.
+So the rule now has two versions —`eventAlertMinutes > 0` or not— and both state what
+the system does. Neither leaves room to promise a per-appointment notice: the notice is
+the same for all of them, so "warn me an hour before this one" is a `reminder` of its
+own, not a setting on the appointment.
 
 ---
 
@@ -1076,9 +1244,11 @@ serie" is not mistaken for a date.
 - **Guests cannot be invited.** A service account without *domain-wide delegation*
   —which requires Google Workspace, not a Gmail account— cannot add attendees and the
   API rejects it. "Put the appointment in" yes; "invite David" no.
-- **An event's reminders come from Google Calendar**, using that calendar's own
-  settings. Our cron only knows about the `tasks` table, so the prompt forbids the
-  model from promising an event alert as though it were going to send it.
+- **An event's own reminders come from Google Calendar**, using that calendar's
+  settings, and they cannot be set per appointment from here. What our cron does send is
+  a heads-up a fixed number of minutes before every appointment (§12, phase 14); the
+  prompt states that notice and forbids promising a different one for one particular
+  appointment, which remains something only the calendar app can do.
 - **Private events arrive with no title.** The shared permission we use is the one that
   shows them as an occupied slot and nothing more. One can be moved and deleted —the
   id does travel— but not identified by name, so `list_events` returns it flagged as
@@ -1366,8 +1536,11 @@ what it was sent for.
 | **9** | "What should I do now?": tasks + agenda + clock in one answer | ✅ Done |
 | **10** | Images with vision: the universal capture | ✅ Done |
 | **11** | Audio replies (TTS) | ⬜ Pending |
-| **12** | The briefing covering the day's meetings | ⬜ Pending |
+| **12** | The briefing covering the day's meetings | ✅ Done |
 | **13** | The Sunday review | ⬜ Pending |
+| **14** | A heads-up before each appointment | ✅ Done |
+| **15** | Postponing an alert from the alert itself | ✅ Done |
+| **16** | Tasks and alerts that repeat | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -1385,6 +1558,24 @@ four because it was the only one that opened up the LLM layer, and it went in af
 agenda was complete so that a contract change was not mixed in with new functionality.
 It is told in §15.
 
+Phase 12 jumped ahead of 11 for the opposite reason: it changes nothing about the
+contract with anybody —no new tool, no new provider, one call to a calendar that was
+already being read— and it is the one that is read every single morning. It is told in
+§12, alongside the rest of the cron, because what it is really about is the briefing and
+not the calendar.
+
+Phase 14 was not on this list and went in right after 12, because 12 is what made it
+obvious: once the briefing names the day's appointments at eight in the morning, the
+question of who warns you at ten to ten stops being theoretical. It is a third cron job
+and no new tool, and it is told in §12 too. Its interesting part is not the job: it is
+that shipping it meant rewriting a prompt rule that had been true until that day.
+
+Phases 15 and 16 close the same gap from two sides: what happens **after** an alert
+arrives. 15 is the answer that was already being written by hand every time —postpone
+it— and 16 is the one that was being written down again every week. Neither adds a
+provider or a tool; 16 is the only one of the three that touches the schema, with one
+column. Both are in §12.
+
 ### Phase 11 — Audio replies (TTS)
 
 Answering a voice note with a voice note. It is the detail that stops it feeling like a
@@ -1399,19 +1590,6 @@ interface in `src/tts/`, like the STT.
   that only arrives as audio is an alert that cannot be read in a meeting.
 - It goes at the end of the turn with whatever budget is left. If it does not fit, the
   text is sent and nothing is said: an audio is no reason to lose the reply.
-
-### Phase 12 — The briefing covering the day's meetings
-
-Already noted, and still the bulk reading that stays out. The non-negotiable
-requirement: the text is composed in code, without the model, because the briefing has
-to be boring and exact. What needs deciding is what to do with series
-—`singleEvents=true` already expands them—, with appointments that have no time, which
-go separately from the ones holding a slot, and with private ones, which get named as
-"something at 10:00" instead of having a title invented for them.
-
-And one new operational risk: the briefing starts depending on Google. If that call
-fails, the task briefing still has to go out — the per-job `try` already in the cron is
-exactly for this, and `what_now` in §14 is the precedent for how it degrades.
 
 ### Phase 13 — The Sunday review
 

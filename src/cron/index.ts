@@ -5,14 +5,16 @@ import type { Deadline } from '../lib/deadline';
 import { TelegramClient } from '../telegram/client';
 import type { Env } from '../types';
 import { sendBriefingIfDue } from './briefing';
+import { sendEventAlerts } from './event-alerts';
 import { sendDueReminders } from './reminders';
 
 /**
  * What runs on every cron tick (every five minutes, in UTC).
  *
  * This is where the assistant stops being reactive: nobody wrote anything and yet it has
- * to decide whether to speak. Both decisions —briefing and reminders— are made from
- * Supabase data, not with the model.
+ * to decide whether to speak. None of the three decisions —reminders, the heads-up before
+ * an appointment and the briefing— goes through the model: two are read from Supabase and
+ * the third from the calendar.
  *
  * The tick's hour says nothing on its own: the cron runs in UTC and what matters is each
  * user's local time, which `lib/localtime.ts` computes.
@@ -30,6 +32,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
   const targets = await listCronTargets(db, config.allowedTelegramIds, config.defaultTimezone);
 
   let reminded = 0;
+  let announced = 0;
   let briefings = 0;
   let failures = 0;
 
@@ -53,6 +56,24 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       console.error(`cron: fallo en recordatorios de ${target.telegramId}:`, error);
     }
 
+    // Between the reminders and the briefing on purpose: this is the only job of the
+    // three that is time-critical to the minute —an appointment announced late is not an
+    // appointment announced— so it does not queue behind the briefing's calendar read.
+    try {
+      announced += await sendEventAlerts({
+        env,
+        db,
+        telegram,
+        target,
+        now,
+        leadMinutes: config.eventAlertMinutes,
+        deadline,
+      });
+    } catch (error) {
+      failures++;
+      console.error(`cron: fallo en los avisos de citas de ${target.telegramId}:`, error);
+    }
+
     try {
       const sent = await sendBriefingIfDue({
         env,
@@ -61,6 +82,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
         target,
         now,
         briefingHour: config.briefingHour,
+        deadline,
       });
       if (sent) briefings++;
     } catch (error) {
@@ -76,6 +98,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       event: 'cron_run',
       targets: targets.length,
       reminded_tasks: reminded,
+      events_announced: announced,
       briefings_sent: briefings,
       failures,
       duration_ms: Date.now() - started,
