@@ -1541,6 +1541,11 @@ what it was sent for.
 | **14** | A heads-up before each appointment | ✅ Done |
 | **15** | Postponing an alert from the alert itself | ✅ Done |
 | **16** | Tasks and alerts that repeat | ✅ Done |
+| **17** | Deferred jobs: the link inbox | ⬜ Pending |
+| **18** | Weather and travel time inside the alerts | ⬜ Pending |
+| **19** | Markets: a watchlist, not a ticker | ⬜ Pending |
+| **20** | Web search, split in two | ⬜ Pending |
+| **21** | Expenses in a spreadsheet | ⬜ Pending |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -1576,6 +1581,19 @@ it— and 16 is the one that was being written down again every week. Neither ad
 provider or a tool; 16 is the only one of the three that touches the schema, with one
 column. Both are in §12.
 
+**Phases 17 to 21 were ordered by which surface they land on, not by what they are
+about.** There are two, and only one of them is busy. The reactive surface —a message,
+its 27 s and its three model rounds— is where every new external call competes with the
+LLM for the same budget. The proactive one —the cron, 288 ticks a day out of the free
+plan's 100,000— has nobody waiting on it and reads nothing outside the calendar today.
+
+That is what unblocked the two ideas that had been sitting at the bottom of this list. A
+forwarded link does not fit inside a turn and never will; the same link, stored as a row
+and resolved by the next tick, has no deadline left to blow. So 17 is not really a
+feature, it is where the others live: once there is a table for "things I owe you", the
+link summary, the slow search, the review of §13 and even the audio reply that did not
+fit in its turn all stop being blocked on latency.
+
 ### Phase 11 — Audio replies (TTS)
 
 Answering a voice note with a voice note. It is the detail that stops it feeling like a
@@ -1603,16 +1621,117 @@ adding a counter to `tasks`.
 
 In code like the briefing, and with a KV marker like its own: one write a week.
 
+### Phase 17 — Deferred jobs: the link inbox
+
+Forwarding a link and getting back what it says. The visible half is small; the half that
+matters is that the fetch does not happen in the turn. A `jobs` table —kind, payload,
+state, attempts, `run_after`— is written while answering "saved, I'll tell you later",
+and the next tick is what downloads, extracts and reports.
+
+- **The size cap gets decided once, in the job, and not again per feature.** That is the
+  question that kept this parked: a page's raw HTML is tens of thousands of tokens. What
+  reaches the model is extracted text, truncated by bytes, and told that it was
+  truncated —a model that does not know it is reading half a page will happily invent
+  the other half.
+- **Jobs go last in the tick, after the reminders, the alerts and the briefing.** They
+  are the only thing here that nobody is waiting for, and an appointment announced late
+  is not an appointment announced (§12). They ask the `Deadline` for their cap like
+  everything else and leave whatever does not fit for the next tick, five minutes later.
+- **Retries and a dead state, not just a boolean.** A silent failure here is worse than
+  in a turn: there is no user watching. The `cron_run` line grows a counter, which is
+  the only way to tell "ran and did nothing" from "never ran".
+- **No new KV writes.** State goes to Supabase; KV stays at its one write per message
+  for the `update_id` dedupe, which is the budget that actually binds.
+
+### Phase 18 — Weather and travel time inside the alerts
+
+This one adds no domain and no tool: it improves the message that already arrives every
+day. `EVENT_ALERT_MINUTES` is a fixed 15 today, and Calendar events carry `location`,
+so the heads-up can go from "you have an appointment in 15 minutes" to **"leave at
+9:35, it is 22 minutes with traffic"**.
+
+- **Weather belongs in the briefing and in `what_now`, not in a tool.** Nobody asks a
+  bot for the forecast twice; what is worth saying out loud is that it rains at six and
+  the appointment is across town. Open-Meteo needs no key and returns a small JSON.
+- **Both have to degrade to today's message.** No location, no coordinates, provider
+  down or slow: the alert goes out as it does now. An alert that arrives late because a
+  traffic API was thinking is strictly worse than a fixed 15 minutes.
+- One decision has to be made before writing it: where "from" is when there is no
+  previous event on the calendar. Home as a memory is the cheap answer.
+
+### Phase 19 — Markets: a watchlist, not a ticker
+
+A `get_quote` tool is cheap —one request, well inside the budget— and it is also worse
+than opening the broker's app. What an app does not do is speak first, so the product is
+the watchlist: symbols and thresholds in Supabase, evaluated by the tick, batched into a
+single request and gated to market hours with `lib/localtime.ts`. "Tell me if Nvidia
+drops below 140" is asked in one sentence and arrives on its own.
+
+- **The number is not the interesting part, the reason is.** When a threshold fires,
+  hang the symbol's headlines off it: Yahoo Finance and Google News both publish keyless
+  RSS, four fields out of the XML, no dependency added.
+- **A market line in the briefing only above a movement threshold.** A line that says
+  "+0.3%" every morning stops being read inside a week, and then so does the rest of the
+  briefing.
+- **Every price carries the moment it was read.** This is rule 4 of §7 —say the date you
+  stored— in a domain where it bites harder: markets close, and Friday's number
+  presented as "now" on a Sunday is the same lie as an invented day.
+- **The provider goes behind an interface in `src/markets/`, like the LLM and the STT,
+  and here that is not ceremony.** Yahoo has no supported free API: the quote endpoint
+  has wanted a cookie and a crumb for a long time and breaks without notice. Stooq's
+  plain CSV, or a keyed free tier such as Twelve Data or Finnhub, are the fallbacks; FX
+  from the ECB via Frankfurter, crypto from CoinGecko. Which one is primary has to be
+  checked the day this gets written, not decided here.
+
+### Phase 20 — Web search, split in two
+
+Search was parked as "useful, not spectacular", and that holds while it is one thing.
+Split, both halves land on the surface that can pay for them:
+
+- **`search_web` returns snippets, not pages.** A search API that extracts them for us
+  —Brave or Tavily, free key— is one request with tokens bounded by design. That fits in
+  a turn.
+- **`read_url` returns extracted text with a hard byte cap**, and it rides on 17's job
+  rather than the turn.
+- **`MAX_AGENT_ITERATIONS` is 3, and a search eats a whole round.** So the tool has to
+  come back with enough to answer with, not with links to go and open. Caching
+  query → result in Supabase for a day is worth it on its own: the same question twice
+  in an afternoon is the normal case, not the edge one.
+- It is still the first third party we do not control sitting inside a message's budget.
+  The split is what keeps that to one bounded call.
+
+### Phase 21 — Expenses in a spreadsheet
+
+"Forty on dinner" said into a voice note becomes a row in a Google Sheet. `calendar/
+google-auth.ts` already signs service-account JWTs, so the whole cost is one endpoint
+(`values.append`) against a sheet shared with the service account, and a monthly summary
+from the cron.
+
+Why a spreadsheet and not an `expenses` table: a table means also writing the
+categories, the queries and the reports, which is the `tasks` pattern again for no new
+lesson. The sheet **is** the report, and it is one the user can pivot without teaching
+Jarvis anything about pivots.
+
 ### Ideas with no phase assigned
 
-- **Forwarding Jarvis a message or a link** so it pulls the appointment out of it. Very
-  useful, but bringing in a URL from outside puts unpredictable size and latency inside
-  the 27 s: a download cap has to be decided first, along with what gets handed to the
-  model, because a page's raw HTML is tens of thousands of tokens.
-- **Web search as a tool.** Useful, not spectacular, and it would be the first third
-  party we do not control sitting inside a message's budget.
-- More tool domains: notes, expenses, shopping lists. There is nothing to learn there,
-  it is repeating the `tasks` pattern.
+- **Gmail triage.** Worth knowing before starting: the service account cannot read a
+  personal inbox —that needs domain-wide delegation, which is a Workspace thing— so it
+  means OAuth with consent and a refresh token kept as a secret. And the shape that
+  holds is not "summarise my inbox" but a label: only what gets tagged comes in, and
+  what comes out of it is **commitments** ("they need the form by Thursday") turned into
+  tasks. Bounded in volume, in tokens and in privacy, all three by the same decision.
+- **Reminders triggered by context instead of by date.** A `triggers` table matched on
+  keywords in the handler *before* the model call: zero tokens, zero third parties, and
+  nothing any task app does. "When the mortgage comes up, remind me to ask about the
+  rate." It is the cheapest idea on this page; it has no phase because the matching rule
+  is the whole problem, and one that fires on every other message is worse than nothing.
+- **The bank via PSD2** (GoCardless, ex-Nordigen). It would make 21 automatic instead of
+  dictated, which is the difference between an expense log that survives a month and one
+  that does not. But the consent has to be renewed every 90 days: that is a project, not
+  a phase.
+- More tool domains: notes, shopping lists. There is nothing to learn there, it is
+  repeating the `tasks` pattern. Google Tasks is the same thing with a worse ending:
+  duplicating our own table under somebody else's schema.
 - A web panel on Cloudflare Pages reading from Supabase. It takes the product out of
   Telegram, which is where it works.
 - Embeddings on `memories` (`pgvector`) once key-based recall genuinely falls short.
