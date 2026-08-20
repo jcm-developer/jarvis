@@ -59,6 +59,16 @@ export interface ToolDefinition {
    */
   requiresConfirmation: boolean;
   /**
+   * Whether this deployment can actually run it. Absent means always.
+   *
+   * Arrived with search_web, the first tool whose provider is optional: without the
+   * key the prompt goes back to saying it cannot search, and sending the schema anyway
+   * would leave the model reading a contradiction —a tool it has just been told it does
+   * not have. It is a function of the env and not of a provider instance, because
+   * asking must not require the key to exist.
+   */
+  available?: (env: Env) => boolean;
+  /**
    * The sentence shown when asking for confirmation. It is async and receives the
    * context so it can hit the database: asking "delete 'Comprar pan'?" is far safer
    * than "delete task 7f3a-...?", which nobody actually reviews.

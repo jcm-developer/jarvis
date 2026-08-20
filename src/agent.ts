@@ -10,6 +10,7 @@ import { createProvider } from './llm';
 import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
 import { buildSystemPrompt } from './prompts/system';
+import { searchConfigured } from './search';
 import { loadMemories } from './tools/memory';
 import type { PendingAction } from './tools/pending';
 import { savePending } from './tools/pending';
@@ -116,6 +117,10 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // Same idea, read from the config: with the job off the prompt has to go back to
         // saying that the calendar's own app is the one that warns him.
         eventAlertMinutes: config.eventAlertMinutes,
+        // And the same again for search: with no key the tool is not even offered
+        // (`toolSchemas`), so the prompt has to go back to saying it cannot search.
+        // Both readings come from the same place or they drift apart.
+        canSearchWeb: searchConfigured(env),
       }),
     },
     ...toLLMMessages(history),
@@ -130,7 +135,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     },
   ];
 
-  const schemas = toolSchemas();
+  const schemas = toolSchemas(env);
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration++) {
     // Before starting another round, check there is time. Launching it knowing it does

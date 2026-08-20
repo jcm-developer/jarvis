@@ -25,6 +25,21 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put GOOGLE_SA_PRIVATE_KEY   # private_key from the JSON, \n included
 #   wrangler secret put GOOGLE_CALENDAR_ID      # the calendar's id, never "primary"
 #
+# Web search and page reading (phase 20). Both optional, and they fail differently:
+#   wrangler secret put TAVILY_API_KEY   # tavily.com, free tier, no card
+#   wrangler secret put JINA_API_KEY     # optional: raises Jina Reader's rate limit
+#
+# Without TAVILY_API_KEY the search_web tool is not even offered to the model and the
+# prompt goes back to saying it cannot search: the assistant works exactly as before.
+# JINA_API_KEY is different — Jina Reader works without a key at a lower rate limit, so
+# read_url needs no secret at all.
+#
+# There is no SEARCH_PROVIDER var on purpose: with one provider it would be dead
+# configuration, the same call as the calendar's. The interface in src/search/ is what
+# makes swapping cheap, and it will need it: these free tiers move fast. Brave's was the
+# obvious pick until it became metered billing with no spending cap, and Google's Custom
+# Search closed to new customers.
+#
 # ⚠️ In the dashboard, changes under Variables and Secrets do NOT take effect until
 #    the Deploy button is pressed. Until then the Worker keeps running without them.
 [vars]

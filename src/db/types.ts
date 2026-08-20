@@ -31,6 +31,20 @@ export interface TaskRow {
   created_at: string;
 }
 
+/** A deferred job (phase 17). `payload` shape depends on `kind`. */
+export interface JobRow {
+  id: string;
+  user_id: string;
+  kind: 'read_url';
+  payload: Record<string, unknown>;
+  state: 'pending' | 'running' | 'done' | 'dead';
+  attempts: number;
+  run_after: string;
+  last_error: string | null;
+  started_at: string | null;
+  created_at: string;
+}
+
 export interface MemoryRow {
   id: string;
   user_id: string;

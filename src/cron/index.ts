@@ -6,15 +6,20 @@ import { TelegramClient } from '../telegram/client';
 import type { Env } from '../types';
 import { sendBriefingIfDue } from './briefing';
 import { sendEventAlerts } from './event-alerts';
+import { runDueJobs } from './jobs';
 import { sendDueReminders } from './reminders';
 
 /**
  * What runs on every cron tick (every five minutes, in UTC).
  *
  * This is where the assistant stops being reactive: nobody wrote anything and yet it has
- * to decide whether to speak. None of the three decisions —reminders, the heads-up before
- * an appointment and the briefing— goes through the model: two are read from Supabase and
- * the third from the calendar.
+ * to decide whether to speak. Three of the four decisions —reminders, the heads-up before
+ * an appointment and the briefing— do not go through the model: two are read from Supabase
+ * and the third from the calendar.
+ *
+ * The fourth, the deferred jobs of phase 17, is the exception and the reason this comment
+ * changed: summarising a page is not something code can compose. It runs last precisely
+ * because it is the only one that can afford to wait.
  *
  * The tick's hour says nothing on its own: the cron runs in UTC and what matters is each
  * user's local time, which `lib/localtime.ts` computes.
@@ -34,6 +39,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
   let reminded = 0;
   let announced = 0;
   let briefings = 0;
+  let jobsDone = 0;
   let failures = 0;
 
   for (const target of targets) {
@@ -89,6 +95,17 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       failures++;
       console.error(`cron: fallo en el briefing de ${target.telegramId}:`, error);
     }
+
+    // Last, and it is the one job here nobody is waiting on: it takes whatever budget the
+    // other three left and defers the rest to the next tick. Putting it any earlier would
+    // mean a page download delaying an appointment alert, and an appointment announced
+    // late is not an appointment announced.
+    try {
+      jobsDone += await runDueJobs({ env, config, db, telegram, target, now, deadline });
+    } catch (error) {
+      failures++;
+      console.error(`cron: fallo en los trabajos de ${target.telegramId}:`, error);
+    }
   }
 
   // One line per run. Nobody is watching the cron: unless the logs record that it ran
@@ -100,6 +117,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       reminded_tasks: reminded,
       events_announced: announced,
       briefings_sent: briefings,
+      jobs_done: jobsDone,
       failures,
       duration_ms: Date.now() - started,
       budget_left_ms: deadline.remainingMs(),

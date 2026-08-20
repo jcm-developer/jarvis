@@ -90,6 +90,8 @@ jarvis/
 │  │  ├─ deadline.ts           # time budget shared across a message
 │  │  ├─ localtime.ts          # the user's local time (Intl, clock changes)
 │  │  ├─ relative-time.ts      # "en 5 minutos" read from the user's message
+│  │  ├─ recurrence.ts         # frequencies: the next occurrence of what repeats
+│  │  ├─ events.ts             # shared shapes for calendar events
 │  │  └─ slots.ts              # interval arithmetic: busy time and free gaps
 │  │
 │  ├─ telegram/
@@ -112,6 +114,8 @@ jarvis/
 │  │  ├─ calendar.ts           # create/list/update/delete_event + overlap check
 │  │  ├─ agenda.ts             # find_free_slots, what_now
 │  │  ├─ memory.ts             # remember, recall
+│  │  ├─ search.ts             # search_web (in the turn), read_url (queued)
+│  │  ├─ snooze.ts             # postponing straight from the alert's buttons
 │  │  └─ pending.ts            # actions awaiting confirmation (KV)
 │  │
 │  ├─ stt/
@@ -119,6 +123,16 @@ jarvis/
 │  │  ├─ index.ts              # selection by env
 │  │  ├─ openai.ts             # OpenAI's Whisper
 │  │  └─ workers-ai.ts         # Whisper inside the Worker itself
+│  │
+│  ├─ search/
+│  │  ├─ provider.ts           # SearchProvider interface
+│  │  ├─ index.ts              # selection + "is it configured at all?"
+│  │  └─ tavily.ts             # Tavily: the only recurring free tier left
+│  │
+│  ├─ reader/
+│  │  ├─ provider.ts           # PageReader interface + the byte-safe cutter
+│  │  ├─ index.ts              # selection
+│  │  └─ jina.ts               # Jina Reader: url in, markdown out
 │  │
 │  ├─ calendar/
 │  │  ├─ provider.ts           # CalendarClient interface
@@ -131,6 +145,7 @@ jarvis/
 │  │  ├─ identity.ts           # users + conversations, cached in KV
 │  │  ├─ messages.ts           # conversation history
 │  │  ├─ logs.ts               # tool_call_logs
+│  │  ├─ jobs.ts               # the deferred-job queue: claim, retry, give up
 │  │  └─ types.ts              # table rows
 │  │
 │  ├─ prompts/
@@ -139,6 +154,8 @@ jarvis/
 │  └─ cron/
 │     ├─ index.ts              # what happens on every tick
 │     ├─ briefing.ts           # daily briefing at the local hour
+│     ├─ event-alerts.ts       # the heads-up before an appointment
+│     ├─ jobs.ts               # deferred jobs, last in the tick
 │     └─ reminders.ts          # alerts for tasks falling due
 │
 ├─ supabase/
@@ -237,6 +254,25 @@ create table tool_call_logs (
 );
 create index on tool_call_logs (created_at desc);
 
+-- Things the assistant owes the user (phase 17). Written inside a turn, settled by a
+-- later tick. `state` carries 'running' so a row can be claimed without a transaction,
+-- and 'dead' so "gave up" is distinguishable from "waiting for its next go" — see §16.
+create table jobs (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references users(id) on delete cascade,
+  kind            text not null check (kind in ('read_url')),
+  payload         jsonb not null,
+  state           text not null default 'pending'
+                    check (state in ('pending','running','done','dead')),
+  attempts        smallint not null default 0,
+  run_after       timestamptz not null default now(),   -- also the backoff
+  last_error      text,
+  started_at      timestamptz,                          -- to spot an abandoned row
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index on jobs (state, run_after);
+
 -- RLS is on for all of them. The Worker connects as service_role, which bypasses it.
 -- This hardens the database should the anon key ever be exposed.
 alter table users            enable row level security;
@@ -244,6 +280,7 @@ alter table conversations    enable row level security;
 alter table messages         enable row level security;
 alter table memories         enable row level security;
 alter table tasks            enable row level security;
+alter table jobs             enable row level security;
 alter table tool_call_logs   enable row level security;
 ```
 
@@ -384,6 +421,7 @@ export interface ToolDefinition {
   parameters: JSONSchema;
   mutates: boolean;                 // does it write? on a photo, everything that does waits
   requiresConfirmation: boolean;    // destructive actions → human confirmation
+  available?: (env) => boolean;     // can this deployment run it? absent means always
   confirmationPrompt?: (args, ctx) => Promise<string>;   // the sentence the user reads
   handler: (args: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -421,9 +459,19 @@ export type ToolResult =
 | `what_now` | Time left until the next appointment plus the pending tasks that fit, already crossed. | No |
 | `remember` | Stores a long-term fact about the user. | No |
 | `recall` | Searches the memories. | No |
+| `search_web` | Searches the internet and returns a handful of results with a snippet each. Not offered when there is no key. | No |
+| `read_url` | Queues the reading of a page. Returns nothing to read: the summary arrives later, in its own message. | No |
 
 The tool descriptions and the `error` strings stay in Spanish: they are read by the
 model and end up shaping what reaches the chat, so they are product rather than code.
+
+`available` arrived with `search_web`, the first tool whose provider is optional, and it
+filters the catalogue rather than the handler: with no key the schema is not sent at all.
+The alternative was leaving the model reading a contradiction —a list of limits saying it
+cannot search, next to a tool for searching— and that is exactly the kind of thing it
+resolves by promising a search it cannot run. `getTool` still resolves the name, so a
+model that asks anyway gets the configuration error instead of "that tool does not
+exist", which is the truth.
 
 ### The date rule
 
@@ -1520,7 +1568,187 @@ what it was sent for.
 
 ---
 
-## 16. Roadmap
+## 16. Deferred jobs: the things I owe you
+
+Some work does not fit inside a message and no amount of tuning changes that. Downloading
+a page is seconds of somebody else's latency, and the turn has 27 s to cover three model
+rounds as well. Phase 17 is the answer, and it is barely a feature: a table of things the
+assistant owes the user, written while answering "I'll tell you in a minute" and settled
+by a later tick.
+
+```sql
+jobs(id, user_id, kind, payload, state, attempts, run_after, last_error, started_at, ...)
+```
+
+What lives on it today is one kind, `read_url`. The point was never the kind: it is that
+once the table exists, anything blocked on latency stops being blocked. The slow half of
+the search is the first tenant; the Sunday review of phase 13 and the audio reply that did
+not fit in its turn are the obvious next ones.
+
+### Claiming a row without a transaction
+
+PostgREST cannot open one, and two overlapping ticks fetching the same URL twice is not
+hypothetical — it is what happens the first time a tick runs long. What it *can* do is a
+single `UPDATE ... RETURNING`, which is atomic per row. So the claim is a select for the
+candidates followed by one conditional update each:
+
+```
+PATCH /jobs?id=eq.<id>&state=eq.pending   { state: 'running', ... }
+```
+
+The `state=eq.pending` in the **filter** is the whole mechanism. The winner gets its row
+back; the loser gets an empty array and moves on. That is as close to a real claim as this
+client gets, and it is close enough.
+
+### The attempt is counted when the job is taken, not when it fails
+
+This is the part that looks wrong and is not. Incrementing `attempts` on failure only
+counts the failures the code got to *observe*, and the failure that matters here is the
+one where `waitUntil()` gets cancelled mid-fetch: no exception, no log, nothing written.
+A URL that reliably hangs would then be retried for ever, every five minutes, and the
+counter would sit at zero the whole time.
+
+### And a row left mid-flight has to be swept
+
+The same cancellation leaves the row in `running` for ever, invisible to the claim query.
+So before claiming anything, rows that have been `running` past a generous cutoff go back
+to `pending` —or straight to `dead` if they had already used their attempts, since one of
+those attempts is what took the tick down. Without this sweep, "I'll tell you later"
+becomes a lie with no trace anywhere.
+
+The cutoff is generous on purpose: reclaiming a job that is *still running* fetches the
+same page twice, which is worse than waiting another tick.
+
+### Retry, dead, and who gets told
+
+`dead` is a state and not a boolean because "waiting for its next go" and "gave up" are
+different things, and with nobody watching the table there is no other way to tell them
+apart. The backoff grows with the attempt: the usual reason a page read fails is a site
+that is down or rate-limiting us, and hammering it on the next tick is how a temporary
+block becomes a permanent one. What cannot be fixed by waiting —a 404— skips the retries
+entirely and dies on the spot.
+
+**The user only hears about a failure when the job is dead.** A retry still has ticks
+left, and announcing each attempt turns one link into three messages that say nothing.
+But when it gives up, they have to be told: they were promised a summary, and silence
+here is the exact failure this table exists to prevent.
+
+### Where it sits in the tick, and the rule it breaks
+
+Jobs go **last**, after the reminders, the alerts and the briefing. They are the only
+thing in the project nobody is waiting on, and an appointment announced late is not an
+appointment announced (§12). They ask the `Deadline` for their cap like everything else
+and leave what does not fit for five minutes later.
+
+They also break something that had been true since phase 5: **this is the first cron job
+that calls the model.** Until now every proactive message was composed in code —zero
+tokens, nothing to invent, no dependency on the provider being up when the alarm goes
+off— and that does not survive contact with "tell me what this page says", which is a
+summary and nothing else. The trade is contained the same way as everywhere else: if the
+call does not fit the budget, the job stays pending rather than the message going out
+half-written.
+
+No new KV writes. State goes to Supabase; KV stays at its one write per message for the
+`update_id` dedupe, which is the budget that actually binds.
+
+## 17. Web search, in two halves
+
+Search sat at the bottom of the roadmap for a long time as "useful, not spectacular", and
+that was true while it was one thing. Split, each half lands on a surface that can pay for
+it:
+
+- **`search_web` returns snippets, not pages.** One request, with the token count decided
+  in advance. That fits in a turn.
+- **`read_url` returns nothing at all.** It queues a job (§16) and the summary arrives in
+  its own message minutes later.
+
+The split is what keeps the first third party we do not control down to one bounded call
+inside a message's budget.
+
+### The provider was chosen on the shape of the free tier, not on results
+
+This is the decision worth recording, because the obvious criterion is the wrong one.
+Every candidate returns adequate results for "what time do they open"; what separates them
+is whether they still work in six months with nobody touching anything.
+
+| | Free tier | Verdict |
+|---|---|---|
+| **Tavily** | 1.000 credits/month, **renewed**, no card | ✅ chosen |
+| Serper | 2.500 queries, **once** | ❌ runs out and the bot goes mute on a random Tuesday |
+| Google CSE | 100/day, but closed to new customers and shutting down | ❌ cannot even sign up |
+| Brave | metered credits, card required, no spending cap | ❌ a loop becomes an invoice |
+
+A welcome credit is not a free tier. Serper's 2.500 look better than Tavily's 1.000 until
+you notice they do not come back: at the volume one person generates they last a few months
+and then the assistant silently loses a capability. Brave's is worse than absent — the
+whole project runs on the free plan precisely so that a bug costs nothing, and "no spending
+cap" undoes that.
+
+`search_depth: 'basic'` costs 1 credit against advanced's 2, which puts the ceiling at
+about 33 searches a day. The real ceiling is lower and has nothing to do with Tavily:
+`MAX_AGENT_ITERATIONS` is 3, so a search eats a third of the turn's rounds and there is
+room for one, maybe two, per message.
+
+Tavily can also return a written answer. We do not ask for it: relaying another model's
+summary as fact through ours leaves no way to tell which of the two got it wrong. Our
+model gets the snippets and cites them.
+
+### The token cost is decided in the tool, once
+
+Results × snippet cap, both constants in `tools/search.ts`, rather than whatever the
+provider feels like returning. Five results at 400 characters is roughly 500 tokens, which
+a turn can afford. What gets *persisted* is smaller still: the 600-character cap on tool
+results (§5) means later turns see only the head of a search, and that degradation is the
+right one — the model answers with everything in the turn where it searched.
+
+Every result carries its url and, when the provider knows it, its date; the result set
+carries the moment it was read. That is rule 4 of §7 in the domain where it bites hardest:
+a search result is a snapshot, and Friday's number presented as "now" on a Sunday is the
+same lie as an invented day.
+
+### Reading a page: cut it, and say that you cut it
+
+`read_url` hands the job a URL and the job hands the model extracted text, never HTML,
+truncated to a byte cap. Bytes and not characters because what is being protected is the
+token count, and a naive slice splits an accented letter in half — which in Spanish is
+most sentences.
+
+The flag saying it was truncated is the part that matters. **A model that does not know it
+is reading half a page will happily invent the other half**, so the summariser is told, in
+words, that the text is partial. That is the whole reason the reader returns an object
+instead of a string.
+
+The provider here is Jina Reader, and it is deliberately not the search provider: a URL
+prefix that returns markdown, extraction included, no key required. Its honest limit is
+that it does not fight anti-bot systems — a page behind a challenge or a paywall comes
+back as an error, and the job reports that instead of pretending it read something.
+
+### The prompt rule that had to be rewritten
+
+Phase 14's lesson, again: shipping this meant deleting a line that had been true since
+phase 1. The list of limits said flatly that it could not *search the internet, open
+links or read pages*, and that line was earning its place — without it the model offered
+to search and to "keep an eye on" things.
+
+It could not simply go, because the two halves are not symmetrical. Searching is now
+something the model does. Reading a page is something the **system** does later, and the
+model never sees the text at all. So the line splits into a capability and a limit that
+has to be stated even with the tool available, or the model answers as though it had
+already read the page.
+
+Both readings come from one place: with no key, `search_web` is not offered *and* the
+prompt goes back to denying it. Two switches would drift apart.
+
+### What is deliberately not here
+
+**No cache.** It was in the plan, justified by saving credits, and that justification
+collapsed once the credits turned out not to be scarce. What is left is latency, which
+only pays if the same query really does repeat — and `tool_call_logs` already stores every
+call with its arguments, so that is measurable instead of assumed. Same move as §13 makes
+with postponements: read the logs before adding structure. A table, a TTL and a purge are
+cheap to add later and impossible to un-add.
+
+## 18. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1541,10 +1769,10 @@ what it was sent for.
 | **14** | A heads-up before each appointment | ✅ Done |
 | **15** | Postponing an alert from the alert itself | ✅ Done |
 | **16** | Tasks and alerts that repeat | ✅ Done |
-| **17** | Deferred jobs: the link inbox | ⬜ Pending |
+| **17** | Deferred jobs: the link inbox | ✅ Done |
 | **18** | Weather and travel time inside the alerts | ⬜ Pending |
 | **19** | Markets: a watchlist, not a ticker | ⬜ Pending |
-| **20** | Web search, split in two | ⬜ Pending |
+| **20** | Web search, split in two | ✅ Done |
 | **21** | Expenses in a spreadsheet | ⬜ Pending |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
@@ -1594,6 +1822,13 @@ feature, it is where the others live: once there is a table for "things I owe yo
 link summary, the slow search, the review of §13 and even the audio reply that did not
 fit in its turn all stop being blocked on latency.
 
+Phases 17 and 20 shipped together, and that pairing was not a matter of convenience: 20
+is the phase that proves 17. Half of it —snippets— runs in the turn, and the other half
+—reading the page— is the first tenant of the queue, so shipping one without the other
+would have meant either a search that cannot open a link or a table with nothing in it.
+17 is told in §16 and 20 in §17. Between them they cost the cron its oldest rule, that no
+proactive message goes through the model, and the tool contract one new optional field.
+
 ### Phase 11 — Audio replies (TTS)
 
 Answering a voice note with a voice note. It is the detail that stops it feeling like a
@@ -1620,28 +1855,6 @@ tell moving a date apart from fixing a title. Start by reading it from
 adding a counter to `tasks`.
 
 In code like the briefing, and with a KV marker like its own: one write a week.
-
-### Phase 17 — Deferred jobs: the link inbox
-
-Forwarding a link and getting back what it says. The visible half is small; the half that
-matters is that the fetch does not happen in the turn. A `jobs` table —kind, payload,
-state, attempts, `run_after`— is written while answering "saved, I'll tell you later",
-and the next tick is what downloads, extracts and reports.
-
-- **The size cap gets decided once, in the job, and not again per feature.** That is the
-  question that kept this parked: a page's raw HTML is tens of thousands of tokens. What
-  reaches the model is extracted text, truncated by bytes, and told that it was
-  truncated —a model that does not know it is reading half a page will happily invent
-  the other half.
-- **Jobs go last in the tick, after the reminders, the alerts and the briefing.** They
-  are the only thing here that nobody is waiting for, and an appointment announced late
-  is not an appointment announced (§12). They ask the `Deadline` for their cap like
-  everything else and leave whatever does not fit for the next tick, five minutes later.
-- **Retries and a dead state, not just a boolean.** A silent failure here is worse than
-  in a turn: there is no user watching. The `cron_run` line grows a counter, which is
-  the only way to tell "ran and did nothing" from "never ran".
-- **No new KV writes.** State goes to Supabase; KV stays at its one write per message
-  for the `update_id` dedupe, which is the budget that actually binds.
 
 ### Phase 18 — Weather and travel time inside the alerts
 
@@ -1682,23 +1895,6 @@ drops below 140" is asked in one sentence and arrives on its own.
   plain CSV, or a keyed free tier such as Twelve Data or Finnhub, are the fallbacks; FX
   from the ECB via Frankfurter, crypto from CoinGecko. Which one is primary has to be
   checked the day this gets written, not decided here.
-
-### Phase 20 — Web search, split in two
-
-Search was parked as "useful, not spectacular", and that holds while it is one thing.
-Split, both halves land on the surface that can pay for them:
-
-- **`search_web` returns snippets, not pages.** A search API that extracts them for us
-  —Brave or Tavily, free key— is one request with tokens bounded by design. That fits in
-  a turn.
-- **`read_url` returns extracted text with a hard byte cap**, and it rides on 17's job
-  rather than the turn.
-- **`MAX_AGENT_ITERATIONS` is 3, and a search eats a whole round.** So the tool has to
-  come back with enough to answer with, not with links to go and open. Caching
-  query → result in Supabase for a day is worth it on its own: the same question twice
-  in an afternoon is the normal case, not the edge one.
-- It is still the first third party we do not control sitting inside a message's budget.
-  The split is what keeps that to one bounded call.
 
 ### Phase 21 — Expenses in a spreadsheet
 

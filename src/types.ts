@@ -29,6 +29,16 @@ export interface Env {
   GOOGLE_SA_PRIVATE_KEY?: string;
   /** Id of the shared calendar. Never 'primary': see src/calendar/index.ts. */
   GOOGLE_CALENDAR_ID?: string;
+  /**
+   * Web search (phase 20). Optional: without it search_web is not even offered to the
+   * model and the prompt goes back to saying it cannot search.
+   */
+  TAVILY_API_KEY?: string;
+  /**
+   * Page reading (phase 20). Genuinely optional, unlike the rest: Jina Reader works
+   * with no key at a lower rate limit, so read_url never depends on this being set.
+   */
+  JINA_API_KEY?: string;
 
   // --- Vars (wrangler.toml) ---
   DEFAULT_TIMEZONE: string;

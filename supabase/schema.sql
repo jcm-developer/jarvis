@@ -120,6 +120,47 @@ begin
   end if;
 end $$;
 
+-- Deferred jobs (phase 17) --------------------------------------------------
+-- Work that does not fit inside a message's 27 s and never will: fetching a page,
+-- extracting its text, summarising it. The turn writes the row and answers "I'll tell
+-- you later"; the cron is what actually does it.
+--
+-- No `conversation_id`: the cron already resolves the conversation from the user
+-- (`listCronTargets`), and a second column saying where the answer goes is a second
+-- thing that can disagree with the first. This is a single-user assistant, so they
+-- would always match anyway.
+create table if not exists jobs (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references users(id) on delete cascade,
+  kind         text not null check (kind in ('read_url')),
+  payload      jsonb not null,
+  -- 'running' is not decoration: it is how a row gets claimed without a transaction.
+  -- PostgREST cannot open one, but a single UPDATE ... RETURNING is atomic per row, so
+  -- flipping pending -> running and reading the row back is what stops two overlapping
+  -- ticks from fetching the same URL twice.
+  --
+  -- 'dead' is separate from 'failed' on purpose: it means "stop retrying". A boolean
+  -- here would leave no way to tell a job that is waiting for its next attempt from one
+  -- that has given up, and nobody is watching this table (§16).
+  state        text not null default 'pending'
+                 check (state in ('pending','running','done','dead')),
+  attempts     smallint not null default 0,
+  -- When it becomes eligible. Also the backoff: a failure pushes it into the future
+  -- instead of retrying on the very next tick, five minutes later.
+  run_after    timestamptz not null default now(),
+  -- Kept for the dead ones. Without it a job that gave up says nothing about why.
+  last_error   text,
+  -- When the row was claimed. It is what lets a tick that Cloudflare cancelled
+  -- mid-fetch be recovered: a 'running' row nobody ever finished is invisible without
+  -- this, which is exactly the silent failure this table is supposed to avoid.
+  started_at   timestamptz,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+-- The cron's only query: what is eligible, oldest first.
+create index if not exists jobs_claimable_idx
+  on jobs (state, run_after);
+
 -- Observability --------------------------------------------------------------
 -- Without this, understanding why the agent did something odd is impossible.
 create table if not exists tool_call_logs (
@@ -156,6 +197,10 @@ drop trigger if exists tasks_touch on tasks;
 create trigger tasks_touch before update on tasks
   for each row execute function touch_updated_at();
 
+drop trigger if exists jobs_touch on jobs;
+create trigger jobs_touch before update on jobs
+  for each row execute function touch_updated_at();
+
 -- Row Level Security ---------------------------------------------------------
 -- No policies: nobody gets in except `service_role`, which bypasses them by design.
 -- The Worker is the only client. This hardens the DB even if the anon key leaks.
@@ -164,4 +209,5 @@ alter table conversations  enable row level security;
 alter table messages       enable row level security;
 alter table memories       enable row level security;
 alter table tasks          enable row level security;
+alter table jobs           enable row level security;
 alter table tool_call_logs enable row level security;

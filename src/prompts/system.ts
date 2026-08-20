@@ -28,6 +28,17 @@ export interface SystemPromptInput {
    * cache either.
    */
   eventAlertMinutes?: number;
+  /**
+   * Whether a search provider is configured.
+   *
+   * Third flag of the same family, and it exists for the reason phase 14 made obvious:
+   * shipping a capability means rewriting a rule that had been true until that day. The
+   * list of limits said flatly that it could not search the internet —and it was that
+   * line that stopped the model offering to— so with search on, the line has to go, and
+   * with search off it has to come back. Constant for a given deployment, so it does not
+   * break the prefix cache.
+   */
+  canSearchWeb?: boolean;
 }
 
 /**
@@ -46,6 +57,7 @@ export function buildSystemPrompt({
   memories = [],
   canSeeImages = false,
   eventAlertMinutes = 0,
+  canSearchWeb = false,
 }: SystemPromptInput): string {
   // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
@@ -61,10 +73,22 @@ export function buildSystemPrompt({
     // Declaring the limits in writing is cheaper than fixing a broken promise: without
     // this list the model offered to search the internet and to "keep an eye on"
     // reminders it had never scheduled.
-    'Lo que puedes hacer: gestionar sus tareas, gestionar las citas de su calendario y',
-    'recordar datos suyos, con las herramientas que tienes. Nada más. En concreto NO',
-    'puedes:',
-    '- Buscar en internet, abrir enlaces ni leer páginas.',
+    'Lo que puedes hacer: gestionar sus tareas, gestionar las citas de su calendario,',
+    canSearchWeb
+      ? 'recordar datos suyos y buscar en internet, con las herramientas que tienes.'
+      : 'y recordar datos suyos, con las herramientas que tienes.',
+    'Nada más. En concreto NO puedes:',
+    // Two halves of what used to be one line, and they are not symmetrical: searching is
+    // something it can now do, reading a page is something the SYSTEM does later. The
+    // second half has to be spelled out as a limit even with the tool available, or the
+    // model answers as though it had already read the page.
+    ...(canSearchWeb
+      ? [
+          '- Leer una página web tú mismo, ni en este mensaje ni en el siguiente. Puedes',
+          '  encargarla con read_url y yo se la resumo aparte en unos minutos, pero tú no',
+          '  ves el contenido: no lo cuentes como si lo hubieras leído.',
+        ]
+      : ['- Buscar en internet, abrir enlaces ni leer páginas.']),
     canSeeImages
       ? '- Leer documentos, PDF ni ficheros adjuntos. Fotos sí ves: mira más abajo.'
       : '- Ver imágenes, fotos ni documentos.',
@@ -140,6 +164,25 @@ export function buildSystemPrompt({
           '- De las citas del calendario no aviso yo: los recordatorios los da su propia app',
           '  de calendario. No le prometas un aviso de una cita como si lo fuera a mandar yo.',
         ]),
+    ...(canSearchWeb
+      ? [
+          '- Si te pregunta algo que no puedes saber —un precio, un resultado, un horario,',
+          '  algo que ha pasado hace poco— busca con search_web en vez de contestar de',
+          '  memoria o de decir que no llegas. Tu conocimiento tiene fecha de caducidad y',
+          '  el suyo no espera.',
+          '- No busques lo que ya sabes ni lo que está en el contexto: la fecha de hoy, sus',
+          '  tareas, sus citas o lo que te acaba de decir. Buscar cuesta una ronda de las',
+          '  tres que tienes.',
+          '- De una búsqueda cuenta solo lo que digan los extractos, y di de dónde sale. Si',
+          '  los resultados no contestan a lo que preguntaba, dilo: mejor eso que rellenar',
+          '  el hueco.',
+          '- Los resultados son de un momento concreto, no de "ahora". Si traen fecha,',
+          '  dila; y no presentes como actual un dato que puede ser de la semana pasada.',
+          '- Cuando te mande un enlace y quiera saber qué dice, encárgalo con read_url y',
+          '  dile que se lo cuentas en un rato. Una vez encargado no vuelvas a hablar de',
+          '  ello: el mensaje con el resumen se lo mando yo.',
+        ]
+      : []),
     '- Nunca calcules tú si dos citas se solapan, cuánto rato libre queda entre ellas ni',
     '  cuándo tiene un hueco: eso lo hago yo. Para los huecos usa find_free_slots y para',
     '  "¿qué hago ahora?" usa what_now, que ya te da la agenda y las tareas cruzadas.',

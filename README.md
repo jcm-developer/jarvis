@@ -4,9 +4,11 @@ A personal assistant over Telegram, running on Cloudflare Workers with Supabase 
 
 Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Status: phase 10** — tasks, memory, voice notes, photos with vision, history in
-Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search and
-a "what should I do now?" that crosses the agenda with the task list.
+**Status: phase 20** — tasks, memory, voice notes, photos with vision, history in
+Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
+"what should I do now?" that crosses the agenda with the task list, things that repeat,
+and web search: it looks things up in the conversation and reads the links you send it in
+a message of its own.
 
 The bot talks Spanish: everything it says in the chat, the system prompt and the tool
 descriptions are written in Spanish on purpose. The code and the docs are in English.
@@ -72,6 +74,7 @@ After the first deploy: **Worker → Settings → Variables and Secrets → Add*
 | `GOOGLE_SA_EMAIL` | from phase 6 on. The `client_email` from the service account JSON |
 | `GOOGLE_SA_PRIVATE_KEY` | same JSON, the `private_key`: paste it as is, `\n` included |
 | `GOOGLE_CALENDAR_ID` | same, the shared calendar's id. Never `primary` |
+| `TAVILY_API_KEY` | from phase 20 on, and optional. [tavily.com](https://tavily.com) → API key. Free, no card. Without it the bot simply cannot search |
 
 **Press Deploy when you are done.** The secrets do not take effect until then.
 
@@ -800,6 +803,95 @@ with 30 days becomes the 30th instead of slipping into the following month, and
 `tasks`; the script is idempotent, so re-running the whole thing is safe. No new secrets
 and no new vars.
 
+## What phases 17 and 20 do: it can look things up now
+
+Two phases, one idea, and they shipped together because each is half of the other. Until
+now the bot's answer to *"how much does the Cercanías cost"* was that it could not look
+it up.
+
+**Ask it something it cannot know and it searches.**
+
+```
+— ¿A qué hora abre mañana la biblioteca de Sants?
+
+De 8:30 a 20:30 de lunes a viernes, y mañana es jueves. Lo pone la web del
+Ayuntamiento, consultado hoy a las 18:04.
+biblioteques.barcelona.cat/...
+```
+
+It cites where it comes from, and it says **when** it read it. That is on purpose: a
+search result is a snapshot, and a price from last week presented as today's is the same
+kind of lie as an invented date.
+
+**Send it a link and it reads it — but not straight away.**
+
+```
+— https://ejemplo.com/articulo-largo  ¿qué dice de los precios?
+
+Apuntado, te lo cuento en un rato.
+```
+
+And a few minutes later, on its own:
+
+```
+Ya he leído Los precios de la vivienda en 2026.
+
+Sube un 8% de media, con Madrid y Baleares por encima del 12%. El artículo
+lo atribuye a la falta de obra nueva más que a la demanda...
+
+https://ejemplo.com/articulo-largo
+```
+
+That delay is the design, not a limitation we failed to fix. A message has 27 seconds
+total to cover everything including the model, and downloading a page is somebody else's
+latency inside that. So the link goes into a queue and the cron settles it — which also
+means a slow page cannot make the reply that promised it arrive late.
+
+If it cannot read the page it says so instead of going quiet:
+
+```
+No he podido leer https://ejemplo.com/x: la página no me deja entrar.
+```
+
+It tries three times, spacing them out, before giving up. Paywalls and anti-bot
+challenges are the usual reason, and there is no fix for those on our side.
+
+### What it deliberately will not do
+
+- **It does not read a page inside the conversation.** Search gives it snippets; the full
+  text only ever reaches the summary that arrives separately. If it ever talks as though
+  it had opened the link itself, that is a bug.
+- **It does not search what it already knows.** The date, your tasks, your appointments
+  and what you just said are all in front of it. Searching costs a third of the rounds a
+  message gets.
+- **It does not invent when the results come up empty.** It says the search found
+  nothing.
+
+### Setting it up
+
+One secret, and the bot works without it:
+
+| Secret | Value |
+|---|---|
+| `TAVILY_API_KEY` | [tavily.com](https://tavily.com) → sign up → API key. Free tier, **no card** |
+
+Without it, `search_web` is not even offered to the model and the assistant behaves
+exactly as it did in phase 16 — it says it cannot search. Nothing else breaks.
+
+Reading links needs **no** secret: it runs on Jina Reader, which works keyless. Set
+`JINA_API_KEY` only if you hit its rate limit.
+
+**One manual step on an existing deploy:** re-run
+[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds the `jobs` table;
+the script is idempotent, so re-running the whole thing is safe. No new vars.
+
+### What it costs
+
+Nothing, with a ceiling: Tavily's free tier is 1.000 searches a month, renewed monthly,
+and one search costs one. That is about 33 a day for a single user. The real limit is
+tighter and is ours, not theirs — a message allows three model rounds and a search eats
+one, so there is room for one or two searches per message, not five.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
@@ -809,5 +901,7 @@ comprar pan y revisar el podcast"* creates all three tasks at once.
 ## Next
 
 **Audio replies**: answering a voice note with a voice note. Behind it, a weekly review
-that says what you have been postponing. The full list is at the end of
+that says what you have been postponing — and now that there is a queue for work nobody
+is waiting on, that review has somewhere to live. Then the weather and the travel time
+inside the appointment alerts. The full list is at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md).
