@@ -13,6 +13,19 @@ export interface ToolCall {
   arguments: string;
 }
 
+/**
+ * An image attached to a user message.
+ *
+ * It travels as raw bytes on purpose. How an image is written on the wire —base64
+ * inside a data URL, split into `image_url` parts, with its `detail` level— is the
+ * adapter's business, and the moment that shape appears in this interface it starts
+ * leaking into `agent.ts`, which must not learn how a photo is sent.
+ */
+export interface LLMImage {
+  mimeType: string;
+  data: ArrayBuffer;
+}
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
@@ -20,6 +33,14 @@ export interface LLMMessage {
   toolCalls?: ToolCall[];
   /** Only on role='tool', links back to the call that produced the result. */
   toolCallId?: string;
+  /**
+   * Only on role='user': what came attached to this message.
+   *
+   * Never persisted and never replayed from the history. One photo per turn would fill
+   * the whole window on its own, so `messages` keeps the reference and the bytes live
+   * for exactly one request.
+   */
+  images?: LLMImage[];
 }
 
 export interface ToolSchema {
@@ -46,6 +67,14 @@ export interface ChatOptions {
 export interface LLMProvider {
   readonly name: string;
   readonly model: string;
+  /**
+   * Whether this model reads images.
+   *
+   * Asked BEFORE downloading the photo. With a text-only model the alternative is
+   * spending the budget on a download and getting a 400 back from the provider halfway
+   * through the turn, which reaches the user as "algo ha fallado por dentro".
+   */
+  readonly supportsImages: boolean;
   chat(
     messages: LLMMessage[],
     tools?: ToolSchema[],

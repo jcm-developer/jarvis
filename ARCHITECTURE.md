@@ -1,7 +1,7 @@
 # Jarvis — a personal assistant over Telegram
 
 Architecture document. The source of truth for technical decisions.
-Last revised: 2026-08-19.
+Last revised: 2026-08-20.
 
 ---
 
@@ -47,6 +47,8 @@ Telegram
 │  [3] Input normalisation                                                 │
 │      ├─ text       → as is                                               │
 │      ├─ voice      → getFile → download OGG → Whisper (OpenAI) → text    │
+│      ├─ photo      → pick size → download JPEG → travels as an image     │
+│      │              (caption = the message's text)                       │
 │      └─ anything   → "not supported yet" reply                           │
 │                                                                          │
 │  [4] sendChatAction("typing")                                            │
@@ -93,6 +95,7 @@ jarvis/
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
 │  │  ├─ client.ts             # sendMessage, sendChatAction, getFile, answerCallbackQuery
+│  │  ├─ photos.ts             # which of Telegram's photo sizes gets downloaded
 │  │  └─ handler.ts            # update router + commands
 │  │
 │  ├─ llm/
@@ -178,8 +181,9 @@ create table messages (
   content         text,
   tool_calls      jsonb,          -- when role='assistant' and it asks for tools
   tool_call_id    text,           -- when role='tool'
-  source          text not null default 'text' check (source in ('text','voice')),
+  source          text not null default 'text' check (source in ('text','voice','photo')),
   transcript_raw  text,           -- the original transcribed audio, before cleanup
+  attachment_ref  text,           -- a photo's file_id. The reference, never the image
   created_at      timestamptz not null default now()
 );
 create index on messages (conversation_id, created_at desc);
@@ -312,6 +316,29 @@ export interface LLMProvider {
 Selection happens at runtime through `LLM_PROVIDER`. Switching provider is two vars
 plus its API key; the agent never notices.
 
+### Images in the interface (phase 10)
+
+`LLMMessage` gained `images?: LLMImage[]` —raw bytes plus a mime type— and `LLMProvider`
+gained `supportsImages`. The plan said the change would be in `content`, going from
+`string | null` to a list of parts; it is not, and the reason is worth the paragraph.
+Content in parts is **the wire format**, not the contract: the moment that shape reaches
+the interface, everything that reads `.content` —the history, the agent's reply, the
+cron— has to narrow a union to get at a string it always had. So the parts are built in
+the adapter, on the way out, and the layer above hands over bytes. What §10's plan
+actually asked for —that `agent.ts` must not learn how a photo is sent— holds either
+way, and this way nothing else moves.
+
+The base64 lives for exactly one request. In `messages` what gets stored is the
+`file_id`, because a photo as base64 is hundreds of thousands of characters: one would
+fill the history window and travel again in the prompt of every message after it.
+
+`supportsImages` comes from an allowlist by model name in
+[llm/index.ts](src/llm/index.ts), and it is read **before** downloading anything. The
+two ways of being wrong do not cost the same: assuming a text-only model can see means
+spending the budget on a download and getting a 400 back mid-turn, which reaches the
+user as "algo ha fallado por dentro"; assuming the reverse costs one sentence saying it
+cannot see photos. The doubt resolves towards the recoverable one.
+
 | `LLM_PROVIDER` | Base URL | Model in use / suggested | Secret |
 |---|---|---|---|
 | `openai` (**in production**) | `https://api.openai.com/v1` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
@@ -352,7 +379,9 @@ export interface ToolDefinition {
   name: string;
   description: string;              // the model decides from this: be explicit
   parameters: JSONSchema;
+  mutates: boolean;                 // does it write? on a photo, everything that does waits
   requiresConfirmation: boolean;    // destructive actions → human confirmation
+  confirmationPrompt?: (args, ctx) => Promise<string>;   // the sentence the user reads
   handler: (args: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -449,6 +478,7 @@ code, and the prompt stays as help rather than control.
 | Moving an appointment without a stated duration reads the one it had | Turning "move it to Friday" into an appointment of a different length |
 | `create_event` checks the overlap **after** writing, and only with budget to spare | An appointment left unwritten because a courtesy lookup ate the message's time |
 | Free gaps and overlaps are computed in `lib/slots.ts`, never by the model | Invented gaps, which raise no error and sound exactly as confident |
+| From a photo, everything that writes waits for one confirmation | Five rows dated off a poster with nobody having read them |
 
 Rejecting a duplicate is not a `throw`: it is an `{ok: false, error}` telling the model
 which id to use with `update_task`, so it corrects itself on the next loop iteration.
@@ -659,7 +689,7 @@ carries duration, size, time spent and remaining budget so it can be looked at.
 | Workers requests | 100,000/day | No |
 | Workers CPU | 10 ms/request | **No** — network waiting (LLM, Supabase) does not count as CPU |
 | Workers AI | ~10,000 Neurons/day | Not applicable: transcription goes through OpenAI. Only counts with `STT_PROVIDER = "workers-ai"` |
-| KV writes | 1,000/day | Tight. One per message (dedupe) plus one a day (the briefing marker); do not add more |
+| KV writes | 1,000/day | Tight. One per message (dedupe), one a day (the briefing marker) and one per confirmation asked — routine since phase 10, where every photo asks. Still far from the limit for one person; do not add more |
 | Cron triggers | Included, down to 1 min granularity | No. Every 5 min is 288 invocations a day |
 | Supabase | 500 MB | No |
 | OpenAI | Paid credits, no queue | Not biting: a few euros a month at this volume (see §6) |
@@ -1210,7 +1240,117 @@ inverted window, the day already past, and a range crossing October's clock chan
 
 ---
 
-## 15. Roadmap
+## 15. Images: the universal capture
+
+Phase 10. A photo of the school letter, the concert poster, the receipt or a meeting's
+whiteboard, and out come the tasks and the appointments. It is the phase that saves the
+most manual work, and the only one so far that opened up the LLM layer (§6).
+
+The path is the audio one from §10 with the transcription step removed: `message.photo` →
+pick a size → `getFile` → download → and from there the same flow as a text message, with
+the caption as the message's text.
+
+### Which photo, because there are four
+
+Telegram does the compressing: one `sendPhoto` arrives as several versions —90, 320, 800
+and 1280 px are the usual ones— each with its own `file_id`. Taking the last of the array
+is the obvious move and the wrong one: it is the slowest to come down, the most expensive
+to send, and past a point it adds nothing, because what is being read is the text on a
+letter, not the grain of the paper.
+
+[telegram/photos.ts](src/telegram/photos.ts) takes the **biggest one under both caps**:
+1280 px on the long edge and 700 KB. Below 800 px a letter is no longer legible, which is
+why the smallest is not simply always taken. When nothing fits —a message carrying only
+the original— the smallest goes anyway: a photo the model can barely read still beats
+telling the user their photo is unusable.
+
+The array is re-sorted rather than trusted. It does arrive ordered, nothing in the API
+promises it, and the whole point of the function is to not depend on that.
+
+The mime type is hardcoded to `image/jpeg`. Telegram compresses to JPEG and, unlike
+`voice`, does not send a `mime_type` for photos.
+
+### The budget
+
+Download 8 s with one retry, the same shape as the audio path and for the same reason: the
+typical failure is a momentary spike on Telegram's file server and the second attempt
+answers instantly. Two differences from audio: a little more time to come down (the 1280
+version is 150-300 KB against the ~120 KB of a minute of audio) and clearly more reserved
+for what comes after —10 s— because a call carrying an image is slower than a text one and
+a photo with several things in it spends a second iteration.
+
+The retry only happens when what is left covers the download **and** the answer. Nothing
+new: it is the lesson of §10 applied to a different file.
+
+### One confirmation before writing anything
+
+The important decision of the phase, and it is not about images: it is about dates.
+
+The date guardrails of §7 work by reading the user's message. **A photo with no caption
+has no message**, so the corrector has nothing to hold on to —exactly the same hole as
+the confirmation-button path— and the day the model reads off a poster goes in
+uncorrected. On top of that, one photo fires several writes in a single turn.
+
+So on a photo turn, **everything that writes waits for one confirmation**, destructive or
+not. That is what `mutates` in `ToolDefinition` is for: `requiresConfirmation` answers
+"is this irreversible?", `mutates` answers "does this write?", and they are different
+questions. Read-only tools keep running as usual, because the model needs them to word
+itself.
+
+Which forced two things the previous phases had not:
+
+- **Every tool that writes now has a `confirmationPrompt`.** Until now only the two
+  `delete_` tools had one, and the fallback for the rest was `Ejecutar "create_task"`,
+  which is not something anybody can review. They state what the ARGUMENTS say —"¿Apunto
+  'Llevar el impreso' para el 3 de septiembre a las 10:00?"— and they say it the way the
+  reminders do (§12), because this sentence is the whole guardrail: it is where a day
+  read off a letter wrong gets caught.
+- **The caption travels with the pending action.** A photo's caption is user text and does
+  feed the corrector, so it is stored in KV with the call and read back when the button is
+  pressed. Without it the guardrails would see an empty message and a "pásalo al jueves"
+  written under the photo would be lost between the question and the answer.
+
+`executeConfirmed` used to answer "Hecho, borrado", which was the only thing it ever had
+to say. It now reports what it stored, with the date, read off the tools' own results.
+That is rule 4 of §7 —make it state the date it stored— on a path where there is no model
+reply to carry it.
+
+The confirmation states the arguments, and the handler applies the guardrails afterwards,
+so the two can differ: with a caption naming a relative delay and a model date deviating
+more than ten minutes, what gets written is not exactly what was read. The message after
+confirming names the real stored date, which is where that closes.
+
+### What the history keeps
+
+`source='photo'` and the `file_id` in `attachment_ref`. The stored text carries a `[foto]`
+marker: without it, the caption would be read back on the following turns as though it had
+arrived on its own, and the model would have no idea where the three tasks it created came
+from.
+
+### The prompt stops lying in one direction and starts in the other
+
+The list of limits used to say "no puedo ver imágenes, fotos ni documentos", and with
+vision on that sentence became false. It is now conditional on `supportsImages`, so with
+a text-only model configured the prompt keeps saying it cannot see. Documents stay out
+either way: a photo sent "as a file" arrives in `message.document` and is not handled.
+
+The photo rules are all about what NOT to do, because the failure mode is not refusing to
+read the photo, it is filling in what the photo does not say: no hour if the poster does
+not give one, no day rather than a made-up day, and no describing the image, which is not
+what it was sent for.
+
+### Two limits left standing
+
+- **An album is several messages.** Telegram sends each photo of a media group as its own
+  update, so three photos are three turns and three confirmations. Grouping them would
+  mean holding state between updates for a case that has not come up yet.
+- **A photo sent as a file is not read.** "Send as file" skips the compression and lands in
+  `document`, with the full original behind it. Supporting it means deciding a size cap
+  for something Telegram has not compressed for us.
+
+---
+
+## 16. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1224,7 +1364,7 @@ inverted window, the day already past, and a range crossing October's clock chan
 | **7** | Reading, moving and deleting calendar appointments | ✅ Done |
 | **8** | Overlap warning on create and free-slot search | ✅ Done |
 | **9** | "What should I do now?": tasks + agenda + clock in one answer | ✅ Done |
-| **10** | Images with vision: the universal capture | ⬜ Pending |
+| **10** | Images with vision: the universal capture | ✅ Done |
 | **11** | Audio replies (TTS) | ⬜ Pending |
 | **12** | The briefing covering the day's meetings | ⬜ Pending |
 | **13** | The Sunday review | ⬜ Pending |
@@ -1240,33 +1380,10 @@ Phases 8 and 9 shipped together for the opposite reason: 9 is almost free once 8
 —the interval arithmetic is the same— and splitting them would have meant two deploys
 for one idea. Both are told in §14.
 
-**From 10 to 13 the order is about risk, not importance.** Phase 10 is the only one
-that opens up the LLM layer, and it comes after the agenda is complete so a contract
-change is not mixed in with new functionality. If only one were ever built, 10 is the
-one that saves the most manual work.
-
-### Phase 10 — Images with vision: the universal capture
-
-The photo of the school letter, the concert poster, the receipt or a meeting's
-whiteboard, and out come the tasks and appointments. It is what saves the most manual
-work of anything left, and the only item that forces opening a contract:
-
-- **`LLMMessage.content` goes from `string | null` to accepting parts** (text +
-  image). It is the biggest change to the LLM layer since phase 1 and it has to stay
-  inside `src/llm/`: `agent.ts` must not learn that an image exists. In `messages` the
-  reference gets stored, never the base64 — one photo per turn would fill the history
-  window on its own.
-- **The budget.** Downloading the photo plus a call with an image costs more than text:
-  take the already-compressed size Telegram offers in `message.photo` —whichever one
-  will do, not the original— and ask the `Deadline` for the cap, exactly like the audio
-  path in §10.
-- **The predictable trap is the dates again.** A photo with five things in it fires
-  several tools in one turn, and here **there is no user message to read**: the
-  corrector in §7 has nothing to hold on to, the same hole as the confirmation-button
-  path. So this phase summarises what it understood and asks for **one** confirmation
-  before writing anything. It is slower, and it is what prevents five badly dated rows
-  at once.
-- A photo's `caption` is user text and does feed the corrector.
+**From 11 to 13 the order is about risk, not importance.** Phase 10 came first of the
+four because it was the only one that opened up the LLM layer, and it went in after the
+agenda was complete so that a contract change was not mixed in with new functionality.
+It is told in §15.
 
 ### Phase 11 — Audio replies (TTS)
 

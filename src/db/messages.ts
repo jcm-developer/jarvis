@@ -25,9 +25,19 @@ export interface StoredTurn {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   /** Only on role='user': where the message came from. */
-  source?: 'text' | 'voice';
+  source?: 'text' | 'voice' | 'photo';
   /** Only on audio: what the STT returned, for debugging odd transcriptions. */
   transcriptRaw?: string;
+  /**
+   * Only on a photo: Telegram's file_id.
+   *
+   * The reference and never the image. A photo as base64 is hundreds of thousands of
+   * characters, so a single one would fill the history window and travel again in the
+   * prompt of every following message. With the id, the actual photo can still be
+   * fetched when the agent reads something odd out of it, which is the only reason to
+   * want it later.
+   */
+  attachmentRef?: string;
 }
 
 /** The N most recent messages, in chronological order and ready to replay. */
@@ -69,6 +79,16 @@ export async function saveTurns(
   // it is a 400 from the API that leaves the bot mute.
   const base = Date.now();
 
+  // `attachment_ref` only travels when there is one, and then on every row of the batch.
+  //
+  // Two things at once. PostgREST rejects a bulk insert whose objects do not all carry
+  // the same keys, so it cannot be added per row. And the column arrived with phase 10:
+  // on a database where schema.sql has not been re-run, sending it fails the INSERT, and
+  // this function swallows its errors —the user already has their answer— so the symptom
+  // would be a conversation that silently stops being remembered. This way only the
+  // photo turns are lost, which is the failure you can actually notice.
+  const withAttachment = turns.some((turn) => turn.attachmentRef);
+
   try {
     await db.insertMany(
       'messages',
@@ -80,6 +100,7 @@ export async function saveTurns(
         tool_call_id: turn.toolCallId ?? null,
         source: turn.source ?? 'text',
         transcript_raw: turn.transcriptRaw ?? null,
+        ...(withAttachment ? { attachment_ref: turn.attachmentRef ?? null } : {}),
         created_at: new Date(base + index).toISOString(),
       })),
     );

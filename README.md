@@ -4,9 +4,9 @@ A personal assistant over Telegram, running on Cloudflare Workers with Supabase 
 
 Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Status: phase 9** — tasks, memory, voice notes, history in Supabase, proactive cron
-alerts, a full read/write Google Calendar, free-slot search and a "what should I do
-now?" that crosses the agenda with the task list.
+**Status: phase 10** — tasks, memory, voice notes, photos with vision, history in
+Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search and
+a "what should I do now?" that crosses the agenda with the task list.
 
 The bot talks Spanish: everything it says in the chat, the system prompt and the tool
 descriptions are written in Spanish on purpose. The code and the docs are in English.
@@ -188,6 +188,13 @@ With the CommonJS build you can replace `createCalendarClient` on the calendar
 module's exports object and drive `find_free_slots`, `what_now` or `create_event`
 against events you made up. It has already caught real bugs — the latest being an
 overlap check that fitted in the budget while the reply that had to report it did not.
+
+The same trick works for the LLM adapter: compile `openai-compatible.ts`, replace
+`globalThis.fetch` with one that captures the body, and you can assert exactly what
+travels on the wire — that a photo goes as a data URL, that a message with no attachment
+still sends its content as a plain string, and that a 300 KB image survives the base64
+round-trip. Phase 10 was checked that way, along with the sentences each tool shows
+before writing anything.
 
 ---
 
@@ -607,6 +614,49 @@ Friday at 14:00" can land on something taken without a word. It is written down 
 No new secrets and no schema changes. The two new vars have defaults, so an existing
 deploy keeps working without touching anything.
 
+## What phase 10 does: photos
+
+Send it a photo —the school letter, a concert poster, a receipt, the whiteboard after a
+meeting— and it pulls out what needs writing down. Tasks go to tasks, appointments go to
+the calendar, and the caption counts as part of the message: "esto es para el jueves"
+under the photo is read as yours, not as the photo's.
+
+**It asks once before writing anything.** Not politeness: the date corrector works by
+reading your message (see [ARCHITECTURE.md §7](ARCHITECTURE.md)), and a photo with no
+caption gives it nothing to read, so a wrong day would go in unchecked — five at a time,
+because one photo can produce five things. What arrives is a list of what it understood,
+with the dates spelled out, and two buttons:
+
+```
+De la foto saco esto:
+
+• ¿Apunto "Llevar el impreso firmado" para el 3 de septiembre a las 10:00?
+• ¿Pongo en el calendario "Reunión de padres" el 12 de septiembre a las 17:00?
+
+[✅ Confirmar]  [❌ Cancelar]
+```
+
+After confirming it repeats what it stored with the date, which is your second chance to
+catch a wrong day.
+
+Which version of the photo travels is decided in code, not by whatever Telegram sends
+last: the biggest one under 1280 px and 700 KB. The original is slower to download, more
+expensive to send and no more legible. Only the reference is stored in `messages`, never
+the image: one photo as base64 would fill the history window on its own.
+
+Two things it does not do. **An album is several messages** — Telegram sends each photo of
+a media group as its own update, so three photos are three confirmations. And **a photo
+sent "as a file"** lands in `document` and is not read; send it the normal way.
+
+It needs a model that reads images. Production runs `gpt-4.1-mini`, which does; `/ping`
+says so on its `fotos:` line, and with a text-only model configured the bot says it cannot
+see photos instead of failing halfway.
+
+**One manual step on an existing deploy:** re-run [supabase/schema.sql](supabase/schema.sql)
+in the SQL editor. It adds `attachment_ref` to `messages` and lets `source` be `'photo'`;
+the script is idempotent, so re-running the whole thing is safe. No new secrets and no new
+vars.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
@@ -615,8 +665,6 @@ comprar pan y revisar el podcast"* creates all three tasks at once.
 
 ## Next
 
-The next candidate is **understanding images**: the photo of the school letter or the
-concert poster, and out come the tasks and appointments. Behind it, in order of risk:
-audio replies, the briefing covering the day's meetings, and a weekly review that says
-what you have been postponing. The full list is at the end of
-[ARCHITECTURE.md](ARCHITECTURE.md).
+**Audio replies**: answering a voice note with a voice note. Behind it, the briefing
+covering the day's meetings, and a weekly review that says what you have been
+postponing. The full list is at the end of [ARCHITECTURE.md](ARCHITECTURE.md).

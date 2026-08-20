@@ -83,6 +83,20 @@ export interface TelegramAudio {
   file_size?: number;
 }
 
+/**
+ * One of the versions Telegram makes of a photo.
+ *
+ * They arrive as an array, from a thumbnail to the compressed original. Which one gets
+ * downloaded is decided in `telegram/photos.ts`: the biggest is not the best choice.
+ */
+export interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
 export interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
@@ -92,7 +106,8 @@ export interface TelegramMessage {
   caption?: string;
   voice?: TelegramVoice;
   audio?: TelegramAudio;
-  photo?: unknown[];
+  photo?: TelegramPhotoSize[];
+  /** Not consumed: a photo sent "as a file" arrives here and is not supported. */
   document?: unknown;
 }
 

@@ -119,6 +119,21 @@ const RECURRENCE_RULES: Record<string, string> = {
 
 const FREQUENCIES = Object.keys(RECURRENCE_RULES);
 
+/**
+ * The same frequency, said out loud.
+ *
+ * A confirmation reading "y se repite anual" sounds like a form field. The keys are the
+ * model's, the phrasing is ours, which is the same split as with the colours and the
+ * RRULE itself.
+ */
+const REPEAT_PHRASES: Record<string, string> = {
+  anual: 'todos los años',
+  mensual: 'todos los meses',
+  semanal: 'todas las semanas',
+  diario: 'todos los días',
+  laborables: 'de lunes a viernes',
+};
+
 /** What update_event and delete_event act on when the appointment repeats. */
 const SCOPES = ['esta', 'serie'];
 
@@ -296,7 +311,42 @@ export const createEvent: ToolDefinition = {
     },
     required: ['title'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  // Read on the photo path, where the appointment is described before being written. A
+  // misread day matters more here than on a task: it takes up a slot the user believes
+  // is free, and they only find out when they show up.
+  confirmationPrompt: async (args, ctx) => {
+    const title = cleanTitle(optionalString(args, 'title', 200) ?? 'esa cita');
+    const startIso = resolveOffset(args, 'start_in_minutes') ?? optionalIsoDate(args, 'start_at');
+    const start = startIso === null ? null : new Date(startIso);
+
+    // The article belongs to the date and not to the sentence: "el 10 de septiembre" but
+    // "del 23 al 26", and neither when there is no date at all.
+    let when = '';
+    if (start !== null && !Number.isNaN(start.getTime())) {
+      if (optionalBoolean(args, 'all_day')) {
+        const lastDay = optionalString(args, 'end_date', 10);
+        const first = formatDay(start, ctx.timezone);
+        // The last day is stated as the user said it, without the +1 Google needs: the
+        // question has to read like the trip they described, not like the row. Same
+        // wording as list_events, so a trip reads identically in both places.
+        when =
+          lastDay !== null
+            ? ` del ${first} al ${dayName(lastDay, ctx.timezone, false)}, todo el día`
+            : ` el ${first}, todo el día`;
+      } else {
+        when = ` el ${formatDayAndTime(start, ctx.timezone)}`;
+      }
+    }
+
+    const repeats = optionalString(args, 'repeats', 20)?.toLowerCase() ?? null;
+    const phrase = repeats === null ? undefined : REPEAT_PHRASES[repeats];
+    const every = phrase ? `, ${phrase}` : '';
+    const place = optionalString(args, 'location', 300);
+
+    return `¿Pongo en el calendario "${title}"${when}${place ? ` en ${place}` : ''}${every}?`;
+  },
   handler: async (args, ctx): Promise<ToolResult> => {
     const title = cleanTitle(requireString(args, 'title', 200));
 
@@ -508,6 +558,7 @@ export const listEvents: ToolDefinition = {
     },
     required: [],
   },
+  mutates: false,
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
     const day = optionalString(args, 'day', 10);
@@ -582,7 +633,25 @@ export const updateEvent: ToolDefinition = {
     },
     required: ['event_id'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  // Worded from the arguments alone, without asking Google for the title the way
+  // delete_event does. This one is only reached from a photo, where several calls are
+  // confirmed at once: a network round trip per line would spend the message's budget
+  // on the question and leave none for the answer.
+  confirmationPrompt: async (args, ctx) => {
+    const startIso = resolveOffset(args, 'start_in_minutes') ?? optionalIsoDate(args, 'start_at');
+    const when = startIso === null ? null : new Date(startIso);
+    const wholeSeries = (optionalString(args, 'scope', 10) ?? 'esta').toLowerCase() === 'serie';
+    const target = wholeSeries ? 'esa cita y todas sus repeticiones' : 'esa cita';
+
+    if (when !== null && !Number.isNaN(when.getTime())) {
+      return `¿Muevo ${target} al ${formatDayAndTime(when, ctx.timezone)}?`;
+    }
+    const title = optionalString(args, 'title', 200);
+    if (title !== null) return `¿Cambio el título de ${target} a "${cleanTitle(title)}"?`;
+    return `¿Cambio ${target}?`;
+  },
   handler: async (args, ctx): Promise<ToolResult> => {
     const eventId = requireString(args, 'event_id', 1024);
 
@@ -692,6 +761,7 @@ export const deleteEvent: ToolDefinition = {
     },
     required: ['event_id'],
   },
+  mutates: true,
   requiresConfirmation: true,
   confirmationPrompt: async (args, ctx) => {
     const eventId = typeof args['event_id'] === 'string' ? args['event_id'] : '';

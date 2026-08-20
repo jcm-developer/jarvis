@@ -9,6 +9,15 @@ export interface SystemPromptInput {
   timezone: string;
   now: Date;
   memories?: MemoryFact[];
+  /**
+   * Whether the configured model reads images.
+   *
+   * The list of limits is not decoration: it is what stops the model promising things it
+   * cannot do. With a text-only model it has to keep saying it cannot see photos, and
+   * with a model that does see, saying so would be a lie in the other direction. It is
+   * constant for a given deployment, so it does not break the prefix cache.
+   */
+  canSeeImages?: boolean;
 }
 
 /**
@@ -21,7 +30,12 @@ export interface SystemPromptInput {
  * The prompt's text stays in Spanish: it is what shapes how the bot sounds in the chat,
  * so it is product, not code.
  */
-export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPromptInput): string {
+export function buildSystemPrompt({
+  timezone,
+  now,
+  memories = [],
+  canSeeImages = false,
+}: SystemPromptInput): string {
   // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
   // OpenAI automatically caches the common prefix of consecutive requests and charges
@@ -40,7 +54,9 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     'recordar datos suyos, con las herramientas que tienes. Nada más. En concreto NO',
     'puedes:',
     '- Buscar en internet, abrir enlaces ni leer páginas.',
-    '- Ver imágenes, fotos ni documentos.',
+    canSeeImages
+      ? '- Leer documentos, PDF ni ficheros adjuntos. Fotos sí ves: mira más abajo.'
+      : '- Ver imágenes, fotos ni documentos.',
     '- Invitar a otras personas a una cita del calendario. Puedes crear la cita, pero no',
     '  añadirle asistentes: no tengo permiso para eso y la API lo rechaza.',
     '- Cambiar la hora de una serie entera de citas. Puedes mover una repetición suelta;',
@@ -111,6 +127,29 @@ export function buildSystemPrompt({ timezone, now, memories = [] }: SystemPrompt
     '- Cuando guardes una fecha o una hora, dila en tu respuesta tal como te la devuelve',
     '  la herramienta. Es la forma de que él te corrija si te has equivocado de día.',
   ];
+
+  // Photos are the capture route: a letter, a poster, a receipt, a whiteboard. The rules
+  // are about what NOT to do, because the failure mode here is not refusing to read the
+  // photo, it is filling in what the photo does not say.
+  if (canSeeImages) {
+    sections.push(
+      '',
+      'Fotos:',
+      '- Cuando te manda una foto (una carta del colegio, un cartel, una pizarra, un',
+      '  ticket), tu trabajo es sacar de ahí lo que tenga que apuntarse: tareas con',
+      '  create_task y citas con create_event, todas las llamadas en la misma respuesta.',
+      '- Antes de escribir nada le pido confirmación con botones, y ahí lee lo que has',
+      '  entendido. No le preguntes tú además: haz las llamadas.',
+      '- Solo lo que se lea en la foto. Si no pone la hora, no te la inventes: apúntalo',
+      '  con el día y ya está. Si no pone ni el día, mejor sin fecha que con una falsa.',
+      '- La fecha que ponga la foto es la que vale, aunque no cuadre con lo que él suele',
+      '  hacer. Y si trae el año, respétalo.',
+      '- Si no se lee, o no hay nada que apuntar, dilo en una frase. No describas la',
+      '  imagen entera: no te la manda para que la comentes.',
+      '- Si el texto que acompaña a la foto dice otra cosa que la foto ("esto es para el',
+      '  jueves"), manda lo que dice él.',
+    );
+  }
 
   sections.push(
     '',

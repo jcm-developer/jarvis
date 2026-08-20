@@ -45,6 +45,15 @@ export interface ToolDefinition {
   /** JSON Schema of the arguments. */
   parameters: Record<string, unknown>;
   /**
+   * Whether running it changes anything.
+   *
+   * Not the same question as `requiresConfirmation`, which is about the irreversible.
+   * This one exists for the photo path: with an image there is no user text for the
+   * date guardrails to lean on, so everything that writes waits behind one button,
+   * while the lookups the model needs to word itself run as usual.
+   */
+  mutates: boolean;
+  /**
    * When true the agent does NOT execute: it asks the user for confirmation with
    * buttons. Reserved for the irreversible.
    */
@@ -53,6 +62,12 @@ export interface ToolDefinition {
    * The sentence shown when asking for confirmation. It is async and receives the
    * context so it can hit the database: asking "delete 'Comprar pan'?" is far safer
    * than "delete task 7f3a-...?", which nobody actually reviews.
+   *
+   * Every tool that writes needs one, not just the destructive ones: on a photo it is
+   * this sentence that the user reads to catch a wrong date before anything is stored,
+   * and "Ejecutar create_task" is not something anybody can review. It states what the
+   * ARGUMENTS say, without applying the guardrails: what the handler ends up correcting
+   * is reported afterwards, once written, which is the moment the date is certain.
    */
   confirmationPrompt?: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;

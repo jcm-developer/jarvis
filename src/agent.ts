@@ -11,21 +11,37 @@ import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
 import { buildSystemPrompt } from './prompts/system';
 import { loadMemories } from './tools/memory';
-import type { PendingCall } from './tools/pending';
+import type { PendingAction } from './tools/pending';
 import { savePending } from './tools/pending';
 import { getTool, toolSchemas } from './tools/registry';
 import type { ToolContext, ToolResult } from './tools/types';
 import { ToolValidationError } from './tools/types';
 import type { Env, TelegramUser } from './types';
 
+/**
+ * A photo attached to the message.
+ *
+ * The bytes live for exactly one request: what gets persisted is `ref`, the Telegram
+ * file id. Storing the base64 in `messages` would put one photo's worth of tokens into
+ * every following turn and fill the history window on its own.
+ */
+export interface AgentImage {
+  mimeType: string;
+  data: ArrayBuffer;
+  /** Telegram's file_id, so an odd reading can be traced back to the actual photo. */
+  ref: string;
+}
+
 export interface AgentInput {
   chatId: number;
   from: TelegramUser | undefined;
+  /** What the user wrote. A photo's caption counts, and may be empty. */
   text: string;
-  /** 'text' by default. Stored in the history for debugging audio. */
-  source?: 'text' | 'voice';
+  /** 'text' by default. Stored in the history for debugging audio and photos. */
+  source?: 'text' | 'voice' | 'photo';
   /** What the STT returned, when the message came from audio. */
   transcriptRaw?: string;
+  image?: AgentImage;
 }
 
 export interface AgentDeps {
@@ -73,11 +89,17 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const newTurns: StoredTurn[] = [
     {
       role: 'user',
-      content: input.text,
+      // With a photo the stored text carries a marker. Without it the caption would be
+      // read back on the following turns as though it had arrived on its own, and the
+      // model would have no idea where the three tasks it created came from.
+      content: input.image ? photoLabel(input.text) : input.text,
       source: input.source ?? 'text',
       ...(input.transcriptRaw ? { transcriptRaw: input.transcriptRaw } : {}),
+      ...(input.image ? { attachmentRef: input.image.ref } : {}),
     },
   ];
+
+  const provider = createProvider(env, config);
 
   const messages: LLMMessage[] = [
     {
@@ -86,13 +108,24 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         timezone: identity.timezone,
         now: new Date(),
         memories: memories.map((memory) => ({ key: memory.key, value: memory.value })),
+        // Asked of the provider that is going to answer, not of the config: the list of
+        // limits must not promise what this model cannot do, and with a text-only one the
+        // prompt has to keep saying it cannot see photos.
+        canSeeImages: provider.supportsImages,
       }),
     },
     ...toLLMMessages(history),
-    { role: 'user', content: input.text },
+    {
+      role: 'user',
+      content: input.text || null,
+      // How the photo is written on the wire is the adapter's business (src/llm): from
+      // here it is bytes with a mime type.
+      ...(input.image
+        ? { images: [{ mimeType: input.image.mimeType, data: input.image.data }] }
+        : {}),
+    },
   ];
 
-  const provider = createProvider(env, config);
   const schemas = toolSchemas();
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration++) {
@@ -140,17 +173,31 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
 
     // Destructive calls are grouped and asked about at once. Asking one at a time turns
     // "delete them all" into an absurd chain of dialogues.
-    const confirmable = response.toolCalls.filter(
-      (call) => getTool(call.name)?.requiresConfirmation,
-    );
+    //
+    // With a photo, EVERYTHING that writes waits for the same button, destructive or
+    // not. Two reasons that compound: a photo with five things in it fires five calls in
+    // one turn, and there is no user text for the date corrector of §7 to hold on to
+    // —the same hole as the confirmation-button path—, so the day the model reads off a
+    // poster goes in uncorrected. One question before writing is slower, and it is what
+    // stops five badly dated rows landing at once.
+    const confirmable = response.toolCalls.filter((call) => {
+      const tool = getTool(call.name);
+      if (!tool) return false;
+      return tool.requiresConfirmation || (input.image !== undefined && tool.mutates);
+    });
 
     if (confirmable.length > 0) {
       // Nothing from this turn is persisted: until the person says yes, nothing has
       // happened that the model should remember.
-      const prompt = await buildConfirmationPrompt(confirmable, toolCtx);
+      const prompt = await buildConfirmationPrompt(confirmable, toolCtx, input.image !== undefined);
       const token = await savePending(env, input.chatId, {
         calls: confirmable.map((call) => ({ toolName: call.name, args: parseArguments(call) })),
         prompt,
+        // The caption travels with the pending action so the corrector still has it when
+        // the button gets pressed. Without it the guardrails would see an empty message,
+        // and a "pásalo al jueves" written under the photo would be lost between the
+        // question and the answer.
+        userMessage: input.text,
       });
       return { kind: 'confirm', text: prompt, token };
     }
@@ -176,17 +223,41 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
 async function buildConfirmationPrompt(
   calls: ToolCall[],
   ctx: ToolContext,
+  fromPhoto = false,
 ): Promise<string> {
   const lines = await Promise.all(
     calls.map(async (call) => {
       const tool = getTool(call.name);
       if (!tool?.confirmationPrompt) return `Ejecutar "${call.name}"`;
-      return tool.confirmationPrompt(parseArguments(call), ctx);
+      try {
+        return await tool.confirmationPrompt(parseArguments(call), ctx);
+      } catch (error) {
+        // Wording the question is not worth the turn. A prompt builder validates the
+        // model's arguments to word itself, and a throw here would leave the user with
+        // an internal error instead of a button on an action that may well be fine.
+        console.warn(`no se pudo redactar la confirmación de ${call.name}:`, error);
+        return `Ejecutar "${call.name}"`;
+      }
     }),
   );
 
   if (lines.length === 1) return lines[0]!;
-  return ['¿Confirmas estas acciones?', '', ...lines.map((line) => `• ${line}`)].join('\n');
+
+  // The heading says where this came from. On a photo the list IS the summary of what
+  // was understood, and the point of the phase is that the user reads it before
+  // anything gets written.
+  const heading = fromPhoto ? 'De la foto saco esto:' : '¿Confirmas estas acciones?';
+  return [heading, '', ...lines.map((line) => `• ${line}`)].join('\n');
+}
+
+/**
+ * What the history keeps of a photo message.
+ *
+ * The bytes never get here —that is the point— so the marker is what tells the model, on
+ * the following turns, that there was an image and that the caption belonged to it.
+ */
+function photoLabel(caption: string): string {
+  return caption ? `[foto] ${caption}` : '[foto]';
 }
 
 /**
@@ -210,10 +281,11 @@ export async function forgetConversation(
 
 /** Runs the actions the user has already confirmed. */
 export async function executeConfirmed(
-  calls: PendingCall[],
+  action: PendingAction,
   input: { chatId: number; from: TelegramUser | undefined },
   deps: AgentDeps,
 ): Promise<string> {
+  const calls = action.calls;
   const db = createDb(deps.env);
   const identity = await resolveIdentity(
     deps.env,
@@ -230,11 +302,14 @@ export async function executeConfirmed(
     env: deps.env,
     config: deps.config,
     deadline: deps.deadline,
-    // No new message: this comes from a confirmation button.
-    userMessage: '',
+    // Normally empty: pressing a button carries no new text. A photo's caption is the
+    // exception and travels with the pending action, so the date guardrails see exactly
+    // the same message they saw when the question was worded.
+    userMessage: action.userMessage ?? '',
   };
 
   const failures: string[] = [];
+  const stored: string[] = [];
   let done = 0;
 
   for (const call of calls) {
@@ -242,17 +317,64 @@ export async function executeConfirmed(
       { id: 'confirmed', name: call.toolName, arguments: JSON.stringify(call.args) },
       ctx,
     );
-    if (result.ok) done++;
-    else failures.push(result.error);
+    if (result.ok) {
+      done++;
+      const line = describeStored(result.data);
+      if (line) stored.push(line);
+    } else {
+      failures.push(result.error);
+    }
   }
 
   if (failures.length === 0) {
-    return done === 1 ? 'Hecho, borrado.' : `Hecho, ${done} borradas.`;
+    // Deletions say so and nothing else: naming what has just stopped existing reads
+    // like an offer to undo it, and there is none.
+    if (calls.every((call) => call.toolName.startsWith('delete_'))) {
+      return done === 1 ? 'Hecho, borrado.' : `Hecho, ${done} borradas.`;
+    }
+    // Everything else states the date it stored. Same rule the prompt puts on the model
+    // (§7): what the user reads back is their chance to catch a wrong day, and on this
+    // path there is no model reply to carry it.
+    if (stored.length === 0) return 'Hecho.';
+    if (stored.length === 1) return `Hecho: ${stored[0]}`;
+    return ['Hecho:', '', ...stored.map((line) => `- ${line}`)].join('\n');
   }
   if (done === 0) {
     return `No he podido: ${failures[0]}`;
   }
   return `He completado ${done}, pero ${failures.length} han fallado: ${failures[0]}`;
+}
+
+/**
+ * One line naming what a tool has just written, read off its own result.
+ *
+ * It leans on the shape the handlers already return —`title` plus a Spanish date in
+ * `when` or `due`— instead of a per-tool description: those fields exist precisely so
+ * the model can repeat the date in its reply, and here they serve the same purpose with
+ * no model in the middle.
+ */
+function describeStored(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const row = data as Record<string, unknown>;
+
+  const title = typeof row['title'] === 'string' ? row['title'] : null;
+  if (title === null) {
+    // remember() returns key and value, no title.
+    const key = typeof row['key'] === 'string' ? row['key'] : null;
+    const value = typeof row['value'] === 'string' ? row['value'] : null;
+    return key && value ? `${key}: ${value}` : null;
+  }
+
+  const when =
+    typeof row['when'] === 'string'
+      ? row['when']
+      : typeof row['due'] === 'string'
+        ? row['due']
+        : typeof row['remind'] === 'string'
+          ? row['remind']
+          : null;
+
+  return when ? `${title} — ${when}` : title;
 }
 
 async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {

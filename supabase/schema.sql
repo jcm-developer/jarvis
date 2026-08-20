@@ -33,12 +33,30 @@ create table if not exists messages (
   content          text,
   tool_calls       jsonb,        -- role='assistant' when it asks for tools
   tool_call_id     text,         -- role='tool', links to the call that produced it
-  source           text not null default 'text' check (source in ('text','voice')),
+  source           text not null default 'text' check (source in ('text','voice','photo')),
   transcript_raw   text,         -- raw audio transcript, for debugging
+  attachment_ref   text,         -- telegram file_id of an attached photo, never the image
   created_at       timestamptz not null default now()
 );
 create index if not exists messages_conversation_created_idx
   on messages (conversation_id, created_at desc);
+
+-- Phase 10 added photos: the column for the reference, and 'photo' in the source list.
+-- `create table if not exists` does not touch a table that already exists, so both have
+-- to be stated separately for a database created before this.
+alter table messages add column if not exists attachment_ref text;
+
+-- The check is replaced rather than added: there is no `add constraint if not exists`,
+-- and on a fresh table the inline check above is already named like this, so dropping it
+-- and putting back an identical one keeps the script re-runnable.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'messages_source_check') then
+    alter table messages drop constraint messages_source_check;
+  end if;
+  alter table messages
+    add constraint messages_source_check check (source in ('text','voice','photo'));
+end $$;
 
 -- Long-term memory -----------------------------------------------------------
 -- Written by the agent itself through the remember() tool.

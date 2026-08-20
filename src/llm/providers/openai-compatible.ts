@@ -1,6 +1,7 @@
 import type {
   ChatOptions,
   FinishReason,
+  LLMImage,
   LLMMessage,
   LLMProvider,
   LLMResponse,
@@ -24,9 +25,20 @@ interface WireToolCall {
   function: { name: string; arguments: string };
 }
 
+/**
+ * Content in parts, which is how an image travels.
+ *
+ * A plain string still works and is what every message without an attachment sends: the
+ * array form costs more tokens to serialise for nothing, and it is only accepted on
+ * 'user' messages anyway.
+ */
+type WireContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail: 'auto' | 'low' | 'high' } };
+
 interface WireMessage {
   role: string;
-  content?: string | null;
+  content?: string | null | WireContentPart[];
   tool_calls?: WireToolCall[];
   tool_call_id?: string;
 }
@@ -45,6 +57,8 @@ export interface OpenAICompatibleOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  /** Decided in `llm/index.ts` from the model's name. Off unless it is known to see. */
+  supportsImages?: boolean;
 }
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
@@ -54,6 +68,7 @@ const RETRY_DELAY_MS = 2_000;
 export class OpenAICompatibleProvider implements LLMProvider {
   readonly name: string;
   readonly model: string;
+  readonly supportsImages: boolean;
 
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -64,6 +79,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   constructor(options: OpenAICompatibleOptions) {
     this.name = options.name;
     this.model = options.model;
+    this.supportsImages = options.supportsImages ?? false;
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.temperature = options.temperature ?? 0.6;
@@ -180,7 +196,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }));
 
     return {
-      content: stripReasoning(choice.message.content ?? null),
+      // A reply never comes back in parts: that shape only exists on the way out, for
+      // an image. Anything else is treated as no text at all.
+      content: stripReasoning(
+        typeof choice.message.content === 'string' ? choice.message.content : null,
+      ),
       toolCalls,
       finishReason: toFinishReason(choice.finish_reason),
       usage: {
@@ -193,6 +213,27 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
 function toWireMessage(message: LLMMessage): WireMessage {
   const wire: WireMessage = { role: message.role, content: message.content };
+
+  if (message.images?.length) {
+    // With an attachment the content becomes an array of parts. The text goes first
+    // because that is the order the models were trained on, and it is skipped when
+    // empty: a photo with no caption is a legitimate message, and an empty text part
+    // is one more thing for the model to interpret.
+    const parts: WireContentPart[] = [];
+    const text = message.content?.trim();
+    if (text) parts.push({ type: 'text', text });
+    for (const image of message.images) {
+      parts.push({
+        type: 'image_url',
+        // 'auto' and not 'high': the size is already chosen when picking which of
+        // Telegram's versions to download (telegram/photos.ts), and asking for more
+        // detail here would spend tokens re-reading a picture that was compressed
+        // before it ever arrived.
+        image_url: { url: toDataUrl(image), detail: 'auto' },
+      });
+    }
+    wire.content = parts;
+  }
 
   if (message.toolCalls?.length) {
     wire.tool_calls = message.toolCalls.map((call) => ({
@@ -216,6 +257,27 @@ function toFinishReason(raw: string | undefined): FinishReason {
     default:
       return 'other';
   }
+}
+
+function toDataUrl(image: LLMImage): string {
+  return `data:${image.mimeType};base64,${toBase64(image.data)}`;
+}
+
+/**
+ * In chunks: spreading hundreds of thousands of bytes at once blows the stack.
+ *
+ * The same shape as in `stt/workers-ai.ts`, and deliberately not shared with it: a
+ * five-line helper in a module of its own so two call sites can import it costs more
+ * than the duplication, and neither of them is going to change.
+ */
+function toBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { MemoryRow } from '../db/types';
 import type { ToolDefinition, ToolResult } from './types';
-import { requireString } from './types';
+import { optionalString, requireString } from './types';
 
 /**
  * Long-term memory. This is what separates a chatbot from an assistant: the
@@ -27,7 +27,12 @@ export const remember: ToolDefinition = {
     },
     required: ['key', 'value'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  confirmationPrompt: async (args) => {
+    const value = optionalString(args, 'value', 500);
+    return value ? `¿Me guardo que ${value}?` : '¿Me guardo ese dato sobre ti?';
+  },
   handler: async (args, ctx): Promise<ToolResult> => {
     const key = requireString(args, 'key', 80)
       .toLowerCase()
@@ -69,6 +74,7 @@ export const recall: ToolDefinition = {
     },
     required: ['query'],
   },
+  mutates: false,
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
     const query = requireString(args, 'query', 100);

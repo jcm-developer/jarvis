@@ -3,13 +3,21 @@ import type { Config } from '../config';
 import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
 import { DeadlineExceededError } from '../lib/deadline';
+import { seesImages } from '../llm';
 import { LLMError } from '../llm/provider';
 import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
-import type { Env, TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '../types';
+import type {
+  Env,
+  TelegramCallbackQuery,
+  TelegramMessage,
+  TelegramPhotoSize,
+  TelegramUpdate,
+} from '../types';
 import type { Actor } from './guard';
 import { isTimeout, MAX_DOWNLOAD_BYTES, TelegramClient } from './client';
+import { PHOTO_MIME_TYPE, pickPhotoSize } from './photos';
 
 export interface HandlerContext {
   env: Env;
@@ -30,6 +38,17 @@ export interface HandlerContext {
  */
 const MAX_DOWNLOAD_MS = 6_000;
 const MAX_STT_MS = 10_000;
+
+/**
+ * The photo's own caps.
+ *
+ * A little more time to come down than a voice note —Telegram's 1280 px version is
+ * 150-300 KB against the ~120 KB of a minute of audio— and clearly more reserved for what
+ * comes after: a call carrying an image is slower than a text one, and a photo with
+ * several things in it spends a second iteration wording the confirmation.
+ */
+const MAX_PHOTO_DOWNLOAD_MS = 8_000;
+const MIN_PHOTO_ANSWER_MS = 10_000;
 
 /**
  * What has to be left for the agent after transcribing in order to afford retrying the
@@ -73,14 +92,19 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
   const text = message.text?.trim();
 
   const voice = message.voice ?? message.audio;
-  if (!text && !voice) {
-    return { kind: 'text', text: 'Por ahora solo entiendo texto y audio.' };
+  const photo = message.photo?.length ? message.photo : undefined;
+  if (!text && !voice && !photo) {
+    return { kind: 'text', text: 'Por ahora solo entiendo texto, audio y fotos.' };
   }
 
   try {
     if (text?.startsWith('/')) {
       return { kind: 'text', text: await handleCommand(text, message, ctx) };
     }
+
+    // A photo carries its text in `caption`, not in `text`, so it is checked before the
+    // audio branch and never mixed with it: a message is one thing or the other.
+    if (photo) return await replyToPhoto(photo, message, ctx);
 
     const prompt = text ?? (await transcribeVoice(voice!, ctx));
     // Transcription returns an already formatted Reply when it fails.
@@ -101,6 +125,94 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
   }
 }
 
+/**
+ * A photo, from Telegram to the model.
+ *
+ * The whole phase in one function: pick which of Telegram's versions to download, bring
+ * it down inside the budget, and hand it to the agent with the caption as the message's
+ * text. What comes out is not a reply yet: it is a confirmation, because with a photo
+ * nothing gets written before the user reads what was understood (see agent.ts).
+ */
+async function replyToPhoto(
+  sizes: TelegramPhotoSize[],
+  message: TelegramMessage,
+  ctx: HandlerContext,
+): Promise<Reply> {
+  // Asked before downloading anything: with a text-only model the photo would come down,
+  // spend the budget, and come back as a 400 from the provider.
+  if (!seesImages(ctx.config)) {
+    return {
+      kind: 'text',
+      text:
+        `No puedo ver fotos con el modelo que tengo puesto (${ctx.config.llmModel}). ` +
+        'Cuéntamelo por escrito y te lo apunto igual.',
+    };
+  }
+
+  const size = pickPhotoSize(sizes);
+  if (!size) {
+    return { kind: 'text', text: 'Esa foto me ha llegado vacía. Vuelve a mandármela.' };
+  }
+
+  const started = Date.now();
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await downloadFileWithRetry(
+      size.file_id,
+      MAX_PHOTO_DOWNLOAD_MS,
+      MIN_PHOTO_ANSWER_MS,
+      ctx,
+    );
+  } catch (error) {
+    const timedOut = isTimeout(error);
+    // Same fields as the audio failure, and for the same reason: a bare AbortError does
+    // not say whether getFile hung, the download did, or there was no budget left.
+    console.error(
+      JSON.stringify({
+        event: 'photo_download_failed',
+        timed_out: timedOut,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        width: size.width,
+        height: size.height,
+        bytes: size.file_size ?? null,
+        elapsed_ms: Date.now() - started,
+        budget_left_ms: ctx.deadline.remainingMs(),
+      }),
+    );
+    return {
+      kind: 'text',
+      text: timedOut
+        ? 'Telegram ha tardado demasiado en darme esa foto. Vuelve a mandármela.'
+        : 'Telegram no me ha dejado descargar esa foto. Vuelve a mandármela.',
+    };
+  }
+
+  console.info(
+    JSON.stringify({
+      event: 'photo_received',
+      width: size.width,
+      height: size.height,
+      bytes: bytes.byteLength,
+      has_caption: Boolean(message.caption?.trim()),
+      download_ms: Date.now() - started,
+      budget_left_ms: ctx.deadline.remainingMs(),
+    }),
+  );
+
+  return runAgent(
+    {
+      chatId: ctx.actor.chatId,
+      from: message.from,
+      // The caption is user text and does feed the date guardrails. Empty when there is
+      // none, which is precisely the case the confirmation exists for.
+      text: message.caption?.trim() ?? '',
+      source: 'photo',
+      image: { mimeType: PHOTO_MIME_TYPE, data: bytes, ref: size.file_id },
+    },
+    ctx,
+  );
+}
+
 type VoiceLike = { file_id: string; duration: number; mime_type?: string; file_size?: number };
 
 /** Returns the transcribed text, or an already formatted Reply when something fails. */
@@ -112,7 +224,12 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
   const started = Date.now();
   let audio: ArrayBuffer;
   try {
-    audio = await downloadVoice(voice, ctx);
+    audio = await downloadFileWithRetry(
+      voice.file_id,
+      MAX_DOWNLOAD_MS,
+      MAX_STT_MS + MIN_AGENT_MS,
+      ctx,
+    );
   } catch (error) {
     const timedOut = isTimeout(error);
     // The failure is logged with the same data as the success. Only the exception used
@@ -179,18 +296,26 @@ async function transcribeVoice(voice: VoiceLike, ctx: HandlerContext): Promise<s
  * Download with one retry.
  *
  * This is the fix for the "sometimes it works and sometimes it does not": the typical
- * failure is not the audio, it is a momentary spike on Telegram's file server, and the
+ * failure is not the file, it is a momentary spike on Telegram's file server, and the
  * second attempt usually answers instantly. It only retries when there is budget left
- * afterwards to transcribe and reply; otherwise a message now beats being cut off
- * halfway by Cloudflare.
+ * afterwards to do something with what comes down; otherwise a message now beats being
+ * cut off halfway by Cloudflare.
+ *
+ * `reserveMs` is what the rest of the turn needs: transcribing and answering for a voice
+ * note, reading the image and answering for a photo.
  */
-async function downloadVoice(voice: VoiceLike, ctx: HandlerContext): Promise<ArrayBuffer> {
+async function downloadFileWithRetry(
+  fileId: string,
+  maxMs: number,
+  reserveMs: number,
+  ctx: HandlerContext,
+): Promise<ArrayBuffer> {
   try {
-    return await ctx.telegram.downloadFile(voice.file_id, ctx.deadline.budgetFor(MAX_DOWNLOAD_MS));
+    return await ctx.telegram.downloadFile(fileId, ctx.deadline.budgetFor(maxMs));
   } catch (error) {
-    if (!ctx.deadline.hasRoomFor(MAX_DOWNLOAD_MS + MAX_STT_MS + MIN_AGENT_MS)) throw error;
-    console.warn('reintentando la descarga del audio:', error);
-    return ctx.telegram.downloadFile(voice.file_id, ctx.deadline.budgetFor(MAX_DOWNLOAD_MS));
+    if (!ctx.deadline.hasRoomFor(maxMs + reserveMs)) throw error;
+    console.warn('reintentando la descarga del fichero:', error);
+    return ctx.telegram.downloadFile(fileId, ctx.deadline.budgetFor(maxMs));
   }
 }
 
@@ -222,7 +347,7 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
 
   try {
     const outcome = await executeConfirmed(
-      pending.calls,
+      pending,
       { chatId: ctx.actor.chatId, from: query.from },
       ctx,
     );
@@ -269,6 +394,12 @@ async function handleCommand(
         'Escríbeme lo que quieras. Puedo apuntarte tareas, decirte qué tienes pendiente y recordar cosas sobre ti para conversaciones futuras.',
         '',
         'Prueba con algo como "recuérdame llamar al banco mañana a las 10".',
+        ...(seesImages(ctx.config)
+          ? [
+              '',
+              'También puedes mandarme una foto: una carta del colegio, un cartel, la pizarra de una reunión. Saco lo que haya que apuntar y te lo enseño antes de guardar nada.',
+            ]
+          : []),
         '',
         '/help para ver los comandos.',
       ].join('\n');
@@ -283,6 +414,9 @@ async function handleCommand(
         '',
         'También escribo yo: por la mañana con lo que tienes ese día, y cuando algo está a punto de vencer.',
         '',
+        ...(seesImages(ctx.config)
+          ? ['Con una foto saco lo que haya que apuntar, y te lo enseño antes de guardarlo.', '']
+          : []),
         'Para todo lo demás, escríbeme normal.',
         'Lo que recuerdo de ti a largo plazo no se borra con /reset.',
       ].join('\n');
@@ -299,6 +433,7 @@ async function handleCommand(
         `modelo: ${ctx.config.llmModel}`,
         `proveedor: ${ctx.config.llmProvider}`,
         `zona horaria: ${ctx.config.defaultTimezone}`,
+        `fotos: ${seesImages(ctx.config) ? 'sí' : 'no, el modelo no las lee'}`,
         `briefing: ${String(ctx.config.briefingHour).padStart(2, '0')}:00 hora local`,
       ].join('\n');
 

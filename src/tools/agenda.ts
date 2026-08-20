@@ -91,6 +91,7 @@ export const findFreeSlots: ToolDefinition = {
     },
     required: [],
   },
+  mutates: false,
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
     const now = new Date();
@@ -214,6 +215,7 @@ export const whatNow: ToolDefinition = {
     'siguiente, si le da tiempo a algo, o cuando diga que tiene un rato muerto. Ya viene ' +
     'todo cruzado: no llames además a list_tasks ni a list_events.',
   parameters: { type: 'object', properties: {}, required: [] },
+  mutates: false,
   requiresConfirmation: false,
   handler: async (_args, ctx): Promise<ToolResult> => {
     const now = new Date();

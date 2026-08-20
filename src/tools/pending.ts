@@ -20,6 +20,15 @@ export interface PendingAction {
   calls: PendingCall[];
   /** What the user was shown when asked. */
   prompt: string;
+  /**
+   * The message that led to the question, when there was one.
+   *
+   * Empty on the usual path —a button carries no text— and set for a photo's caption,
+   * which is user text and does feed the date guardrails. Storing it means the
+   * correction applied when the action runs is the same one that was applied when the
+   * question was worded, instead of quietly disappearing in between.
+   */
+  userMessage?: string;
 }
 
 export async function savePending(
@@ -60,6 +69,7 @@ export async function takePending(
     return {
       calls: calls.filter(isPendingCall),
       prompt: typeof candidate['prompt'] === 'string' ? candidate['prompt'] : '',
+      userMessage: typeof candidate['userMessage'] === 'string' ? candidate['userMessage'] : '',
     };
   } catch {
     return null;

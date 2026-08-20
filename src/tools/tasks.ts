@@ -1,4 +1,5 @@
 import type { TaskRow } from '../db/types';
+import { formatDayAndTime } from '../lib/localtime';
 import { OFFSET_HINT, cleanTitle, honourUserDeadlines, resolveOffset } from './guardrails';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { optionalBoolean, optionalInt, optionalIsoDate, optionalString, requireString } from './types';
@@ -54,7 +55,24 @@ export const createTask: ToolDefinition = {
     },
     required: ['title'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  // Only read on the photo path, where nothing gets written without being read back
+  // first. It names the date the way the reply would, which is what lets the user catch
+  // a day taken off a letter wrong before it becomes a row.
+  confirmationPrompt: async (args, ctx) => {
+    const title = cleanTitle(optionalString(args, 'title', 200) ?? 'eso');
+    const isReminder = (optionalString(args, 'kind', 20) ?? 'task') === 'reminder';
+
+    const remindAt = resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at');
+    const dueAt = resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at');
+    const when = whenPhrase(remindAt ?? dueAt, ctx.timezone);
+
+    if (isReminder) {
+      return when ? `¿Te aviso de "${title}" el ${when}?` : `¿Te pongo un aviso de "${title}"?`;
+    }
+    return when ? `¿Apunto "${title}" para el ${when}?` : `¿Apunto "${title}"?`;
+  },
   handler: async (args, ctx): Promise<ToolResult> => {
     const title = cleanTitle(requireString(args, 'title', 200));
 
@@ -207,6 +225,7 @@ export const listTasks: ToolDefinition = {
     },
     required: [],
   },
+  mutates: false,
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
     const status = optionalString(args, 'status') ?? 'pending';
@@ -286,7 +305,23 @@ export const updateTask: ToolDefinition = {
     },
     required: ['task_id'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  confirmationPrompt: async (args, ctx) => {
+    const title = await titleOf(args, ctx);
+    const when = whenPhrase(
+      resolveOffset(args, 'remind_in_minutes') ??
+        optionalIsoDate(args, 'remind_at') ??
+        resolveOffset(args, 'due_in_minutes') ??
+        optionalIsoDate(args, 'due_at'),
+      ctx.timezone,
+    );
+    const newTitle = optionalString(args, 'title', 200);
+
+    if (when) return `¿Paso ${title} al ${when}?`;
+    if (newTitle) return `¿Cambio ${title} a "${cleanTitle(newTitle)}"?`;
+    return `¿Cambio ${title}?`;
+  },
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
 
@@ -371,7 +406,9 @@ export const completeTask: ToolDefinition = {
     },
     required: ['task_id'],
   },
+  mutates: true,
   requiresConfirmation: false,
+  confirmationPrompt: async (args, ctx) => `¿Marco ${await titleOf(args, ctx)} como hecha?`,
   handler: async (args, ctx): Promise<ToolResult> => {
     const taskId = requireString(args, 'task_id', 64);
 
@@ -400,6 +437,7 @@ export const deleteTask: ToolDefinition = {
     },
     required: ['task_id'],
   },
+  mutates: true,
   requiresConfirmation: true,
   confirmationPrompt: async (args, ctx) => {
     const taskId = typeof args['task_id'] === 'string' ? args['task_id'] : '';
@@ -428,6 +466,35 @@ export const deleteTask: ToolDefinition = {
     return { ok: true, data: { deleted: true, title: task.title } };
   },
 };
+
+/**
+ * The date, worded the way the reminders are (§12): "21 de agosto a las 10:00", never
+ * an ISO string. What goes into a question the user has to read in a chat.
+ */
+function whenPhrase(iso: string | null, timezone: string): string | null {
+  if (iso === null) return null;
+  const instant = new Date(iso);
+  return Number.isNaN(instant.getTime()) ? null : formatDayAndTime(instant, timezone);
+}
+
+/**
+ * The task's title, for a question about a task that already exists.
+ *
+ * Costs a SELECT, same as the one `delete_task` has always paid: "¿marco 7f3a-... como
+ * hecha?" is not a question anybody can answer, and the id is all the model sends.
+ */
+async function titleOf(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const taskId = typeof args['task_id'] === 'string' ? args['task_id'] : '';
+  if (!taskId) return 'esa tarea';
+
+  const rows = await ctx.db.select<TaskRow>('tasks', {
+    columns: 'id,title',
+    filters: { id: `eq.${taskId}`, user_id: `eq.${ctx.userId}` },
+    limit: 1,
+  });
+  const task = rows[0];
+  return task ? `"${task.title}"` : 'esa tarea';
+}
 
 function notFound(taskId: string): ToolResult {
   return {

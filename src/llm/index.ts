@@ -40,6 +40,37 @@ export function isProviderName(value: string): value is ProviderName {
 }
 
 /**
+ * Which models read images, by name.
+ *
+ * An allowlist and not a `true` per provider, because the two ways of being wrong do
+ * not cost the same. Guessing that a text-only model sees means downloading the photo,
+ * spending the budget and getting a 400 back mid-turn, which reaches the user as
+ * "algo ha fallado por dentro". Guessing the other way costs one sentence saying it
+ * cannot see photos. Only the second one is recoverable, so the doubt resolves there.
+ *
+ * The OpenAI entry covers `gpt-4o`, `gpt-4.1` and `gpt-5` with their `-mini` variants,
+ * which is where production lives. On Groq and NVIDIA vision is the exception rather
+ * than the rule, so only the families that announce it are listed.
+ */
+const VISION_MODELS: Record<ProviderName, RegExp> = {
+  openai: /^(gpt-4o|gpt-4\.1|gpt-5|o3|o4)/,
+  groq: /vision|llama-4|scout|maverick/,
+  nvidia: /vision|llama-4|vila|neva/,
+};
+
+/**
+ * Whether the configured model can be sent a photo.
+ *
+ * Read outside `src/llm/` in two places —the handler, to answer before downloading
+ * anything, and the prompt, so the list of limits does not promise something the model
+ * cannot do— and it is a function of the config, not of the provider instance: asking
+ * it must not require an API key.
+ */
+export function seesImages(config: Config): boolean {
+  return VISION_MODELS[config.llmProvider].test(config.llmModel.trim().toLowerCase());
+}
+
+/**
  * Throws LLMError when the key is missing. That is deliberate: the agent catches it and
  * warns over Telegram, instead of dying silently the way a configuration failure would.
  */
@@ -59,5 +90,6 @@ export function createProvider(env: Env, config: Config): LLMProvider {
     baseUrl: endpoint.baseUrl,
     apiKey,
     model: config.llmModel,
+    supportsImages: seesImages(config),
   });
 }
