@@ -201,6 +201,8 @@ create table tasks (
   user_id         uuid not null references users(id) on delete cascade,
   title           text not null,
   notes           text,
+  kind            text not null default 'task'
+                    check (kind in ('task','reminder')),  -- lifecycle, not storage
   due_at          timestamptz,
   remind_at       timestamptz,             -- when to alert, when it is not at the deadline
   priority        smallint not null default 2 check (priority between 1 and 3), -- 1 high
@@ -374,8 +376,8 @@ export type ToolResult =
 
 | Tool | Description | Confirmation |
 |---|---|---|
-| `create_task` | Creates a task, with an optional deadline and alert time, in ISO or in minutes from now. Rejects duplicates. | No |
-| `list_tasks` | Lists with filters: status, date range, priority. | No |
+| `create_task` | Creates a task or an alert (`kind`), with an optional deadline and alert time, in ISO or in minutes from now. Rejects duplicate tasks. | No |
+| `list_tasks` | Lists with filters: status, date range, kind. Tasks unless `kind='reminder'` is asked for. | No |
 | `update_task` | Changes the deadline, alert time, title, notes, priority or status of an existing task. Reopens the alert when a date changes. | No |
 | `complete_task` | Marks it as done. | No |
 | `delete_task` | Deletes permanently. | **Yes** |
@@ -770,6 +772,58 @@ thing to do.
 - **`update_task` sets `reminded_at` to null when either date changes.** Without that,
   postponing a task that was already announced would leave it without a reminder
   forever: the cron only looks at the ones with a null `reminded_at`.
+
+### A task waits; an alert is spent
+
+`kind` does not decide where a row is stored. It decides **when it dies**:
+
+| | Announced | Afterwards | Shows up in |
+|---|---|---|---|
+| `task` | at `remind_at`, or an hour before `due_at` | stays open until it is completed | the pending list, the briefing, `what_now` |
+| `reminder` | at `remind_at`, which is mandatory | closed on the spot | nothing, and that is the point |
+
+The bug that forced it: "remind me at 21:00 to take the bins out" was a task with a
+`remind_at` and nothing else. The alert went out, `reminded_at` got stamped, and the row
+stayed `pending` for ever, because nobody marks an alert as done. The pending list turned
+into a graveyard of alerts already delivered, and they were competing for the briefing's
+25 slots with what was genuinely left to do.
+
+**One table, not two.** A `reminders` table of its own would have meant duplicating the
+cron's queries, the date guardrails and the tool catalogue — and handing the model two
+near-identical sets of tools to confuse in both directions, which is the most expensive
+failure mode this architecture has. What separates the two things is one column's worth,
+and it is a lifecycle, not a schema.
+
+**And the calendar cannot take the tasks over either**, which is the other half of the
+same question. An errand on the calendar is an errand occupying a slot it does not
+occupy: `busyIntervals` would count "buy filters" as busy time and §14's three
+computations —free gaps, the overlap warning, the minutes left until the next
+appointment— would start answering with a day that is not the real one. Google Tasks is
+not a way out: it is user data, so it runs into the same wall as §13's service account.
+
+What follows from the split:
+
+- **The cron announces both and closes only the alerts** (`markAnnounced`). Two writes
+  instead of one, and only for the group that is not empty.
+- **`list_tasks` returns tasks unless it is asked otherwise.** Without the `kind`
+  parameter a pending alert would be unreachable: no id means it can be neither moved nor
+  cancelled.
+- **An alert with no time is rejected, and a time the model put in `due_at` is moved to
+  `remind_at`.** From `due_at` it would go out an hour early —the right courtesy for a
+  deadline, plain wrong for "at 12:10"— and with no time at all it would be a row nobody
+  ever hears of again, because it is not on any list either.
+- **No duplicate control between alerts.** Two with the same title are two different
+  alerts —the pill at 09:00 and the pill at 21:00— so blocking the second one loses it.
+  Between tasks the check stays exactly as it was.
+- **An alert that has gone out is spent**: the prompt has the model create a new one
+  rather than reopen it. Reopening would mean writing a date onto a closed row, and the
+  cron only looks at pending ones, so the alert would never arrive — a silent failure.
+- **The briefing and `what_now` read `kind='task'`.** An alert arrives by itself; naming
+  it in the morning tells the user something he is about to be told again.
+
+`kind` defaults to `'task'`, and the tool description says so as well. Getting it wrong
+in that direction leaves a row too many in a list the user reads; getting it wrong the
+other way makes something disappear on its own. Of the two, only the first is visible.
 
 ### What the alerts sound like
 

@@ -219,8 +219,10 @@ export const whatNow: ToolDefinition = {
     const now = new Date();
     const endOfDay = endOfLocalDay(now, ctx.timezone);
 
+    // Only tasks: an alert already has an hour of its own and will arrive on its own,
+    // so suggesting it as something to do now is answering a question nobody asked.
     const pending = await ctx.db.select<TaskRow>('tasks', {
-      filters: { user_id: `eq.${ctx.userId}`, status: 'eq.pending' },
+      filters: { user_id: `eq.${ctx.userId}`, status: 'eq.pending', kind: 'eq.task' },
       order: 'due_at.asc.nullslast,priority.asc',
       limit: TASK_SCAN_LIMIT,
     });

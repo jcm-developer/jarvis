@@ -19,6 +19,7 @@ export interface TaskRow {
   user_id: string;
   title: string;
   notes: string | null;
+  kind: 'task' | 'reminder';
   due_at: string | null;
   remind_at: string | null;
   priority: number;

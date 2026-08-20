@@ -128,7 +128,7 @@ wrong.
 Supabase → SQL Editor → paste [supabase/schema.sql](supabase/schema.sql) → Run.
 
 It is idempotent and can be re-run: that is how later phases' schema changes arrive
-(the last one, `remind_at` on `tasks`, for alerts at a specific time).
+(the last one, `kind` on `tasks`, which tells a task apart from an alert).
 
 ### 7. Trying it
 
@@ -316,8 +316,8 @@ inside the prompt, which would duplicate the source of truth.
 
 | Tool | What it does | Confirmation |
 |---|---|---|
-| `create_task` | Creates a task with a deadline, alert time, priority and notes | No |
-| `list_tasks` | Filters by status and due date | No |
+| `create_task` | Creates a task, or an alert that goes out and closes itself | No |
+| `list_tasks` | Filters by status, due date and kind | No |
 | `update_task` | Changes the deadline, alert time, title, notes, priority or status | No |
 | `complete_task` | Marks it as done | No |
 | `delete_task` | Deletes permanently | **Yes** |
@@ -407,8 +407,20 @@ minutes and tells two classes of alert apart:
 | "recuérdamelo a las 12:10" | `remind_at` | At 12:10 (within those 5 minutes) |
 | a task with a deadline | `due_at` | One hour before it is due |
 
-Each task is announced once (`reminded_at`), and anything already overdue comes in too,
+Each row is announced once (`reminded_at`), and anything already overdue comes in too,
 capped at 10 per run so day one is not an avalanche.
+
+**An alert does not survive going out.** *"Recuérdame a las nueve que saque la basura"* is
+a `kind='reminder'` row: the message lands at nine and the row closes itself. It never
+reaches your pending list, because once you have been told there is nothing left of it. A
+task —*"pagar el IBI antes del viernes"*— stays open until you say it is done: what
+matters there is not the alert, it is the payment. Before this, alerts already delivered
+piled up as pending for ever and took the briefing's slots away from the real plan.
+
+One table with one extra column, not a `reminders` table: two would have meant two
+near-identical sets of tools for the model to mix up. And the calendar cannot take the
+tasks over either — an errand sitting there would count as an occupied slot and would
+break the free-gap search.
 
 The message is written to sound like a person, not like an alarm:
 

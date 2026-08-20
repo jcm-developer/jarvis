@@ -28,6 +28,9 @@ import type { TelegramClient } from '../telegram/client';
  * `reminded_at` is what stops the alert repeating on every tick until the task is
  * completed. The first time this runs, tasks that were already overdue come in too: they
  * are the ones that most needed reminding.
+ *
+ * Both kinds of row are announced here, but they do not survive it the same way: see
+ * `markAnnounced`.
  */
 
 /** Same as the cron's period: the alert lands within those five minutes. */
@@ -97,7 +100,7 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
   // Marked AFTER sending, on purpose: if the send fails, the task stays unmarked and the
   // alert is retried on the next tick. The other way round, a Telegram failure would turn
   // into a reminder that never arrives.
-  await markReminded(db, tasks, now);
+  await markAnnounced(db, tasks, now);
 
   // The alert goes into the history so the model knows what it is being told about when
   // the user answers "done" or "push it back".
@@ -106,10 +109,39 @@ export async function sendDueReminders(deps: ReminderDeps): Promise<number> {
   return tasks.length;
 }
 
-async function markReminded(db: Db, tasks: TaskRow[], now: Date): Promise<void> {
-  const ids = tasks.map((task) => task.id).join(',');
+/**
+ * Records that these rows have been announced. The two kinds part ways here.
+ *
+ * **A reminder is spent the moment it goes out.** Its whole content was the alert, so it
+ * gets closed instead of waiting for a "done" that is never coming. Before this, "remind
+ * me at 21:00 to take the bins out" stayed `pending` for ever: the pending list filled
+ * up with alerts already delivered and they took the briefing's limited slots away from
+ * what was genuinely left to do.
+ *
+ * **A task only gets `reminded_at`.** The alert is not the point of it —paying the bill
+ * is— so it stays open until the user says otherwise.
+ */
+async function markAnnounced(db: Db, tasks: TaskRow[], now: Date): Promise<void> {
+  const stamp = now.toISOString();
+  const spent = tasks.filter((task) => task.kind === 'reminder').map((task) => task.id);
+  const open = tasks.filter((task) => task.kind !== 'reminder').map((task) => task.id);
+
+  const writes: Promise<unknown>[] = [];
+  if (spent.length > 0) {
+    writes.push(
+      db.update(
+        'tasks',
+        { id: `in.(${spent.join(',')})` },
+        { reminded_at: stamp, status: 'done', completed_at: stamp },
+      ),
+    );
+  }
+  if (open.length > 0) {
+    writes.push(db.update('tasks', { id: `in.(${open.join(',')})` }, { reminded_at: stamp }));
+  }
+
   try {
-    await db.update('tasks', { id: `in.(${ids})` }, { reminded_at: now.toISOString() });
+    await Promise.all(writes);
   } catch (error) {
     // A repeated alert is annoying; a lost one is not merely annoying. If this fails the
     // alert goes out again later, and that is the preferable failure mode.

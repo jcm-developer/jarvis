@@ -57,8 +57,11 @@ export async function sendBriefingIfDue(deps: BriefingDeps): Promise<boolean> {
   const marker = `briefing:${target.userId}:${local.date}`;
   if (await env.STATE.get(marker)) return false;
 
+  // Alerts stay out (`kind='task'`). They announce themselves at their own time, so
+  // listing them here would say the same thing twice, and one "remind me at 21:00" would
+  // take a slot away from something that really is on the day's plan.
   const tasks = await db.select<TaskRow>('tasks', {
-    filters: { user_id: `eq.${target.userId}`, status: 'eq.pending' },
+    filters: { user_id: `eq.${target.userId}`, status: 'eq.pending', kind: 'eq.task' },
     order: 'due_at.asc.nullslast,priority.asc',
     limit: MAX_TASKS,
   });

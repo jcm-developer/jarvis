@@ -53,11 +53,16 @@ create table if not exists memories (
 );
 
 -- Domain: tasks --------------------------------------------------------------
+-- One table for two lifecycles. `kind` does not change how a row is stored, it changes
+-- when it dies: a 'reminder' is spent once the cron announces it, a 'task' waits to be
+-- completed. Two tables would have meant duplicating the cron, the date guardrails and
+-- the tool catalogue for one column's worth of difference.
 create table if not exists tasks (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references users(id) on delete cascade,
   title          text not null,
   notes          text,
+  kind           text not null default 'task' check (kind in ('task','reminder')),
   due_at         timestamptz,
   remind_at      timestamptz,   -- when to alert, when it is not at the deadline
   priority       smallint not null default 2 check (priority between 1 and 3), -- 1 = high
@@ -73,9 +78,20 @@ create index if not exists tasks_user_status_due_idx
 create index if not exists tasks_user_status_remind_idx
   on tasks (user_id, status, remind_at);
 
--- For databases created before remind_at existed: `create table if not exists` does
+-- For databases created before these columns existed: `create table if not exists` does
 -- not add columns to a table that is already there, so this is needed.
 alter table tasks add column if not exists remind_at timestamptz;
+alter table tasks add column if not exists kind text not null default 'task';
+
+-- The check has to go in separately, and guarded: there is no `add constraint if not
+-- exists`, and on a fresh table the inline check above is already named like this, so a
+-- re-run finds it and skips.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'tasks_kind_check') then
+    alter table tasks add constraint tasks_kind_check check (kind in ('task','reminder'));
+  end if;
+end $$;
 
 -- Observability --------------------------------------------------------------
 -- Without this, understanding why the agent did something odd is impossible.

@@ -8,15 +8,27 @@ const PRIORITY_LABELS: Record<number, string> = { 1: 'alta', 2: 'normal', 3: 'ba
 export const createTask: ToolDefinition = {
   name: 'create_task',
   description:
-    'Crea una tarea o recordatorio para el usuario. Úsala cuando pida apuntar algo, ' +
-    'recordarle algo, o mencione algo que tiene que hacer. Para una fecha concreta usa ' +
-    'ISO 8601 partiendo de la fecha de hoy del contexto; para un plazo relativo ("en ' +
-    'diez minutos", "esta tarde"), usa los campos en minutos y deja que yo calcule.',
+    'Crea una tarea o un aviso para el usuario. Úsala cuando pida apuntar algo, ' +
+    'recordarle algo, o mencione algo que tiene que hacer. Mira kind para elegir cuál ' +
+    'de las dos cosas es. Para una fecha concreta usa ISO 8601 partiendo de la fecha de ' +
+    'hoy del contexto; para un plazo relativo ("en diez minutos", "esta tarde"), usa ' +
+    'los campos en minutos y deja que yo calcule.',
   parameters: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'Qué hay que hacer, en una frase corta.' },
       notes: { type: 'string', description: 'Detalles adicionales, si los hay.' },
+      kind: {
+        type: 'string',
+        enum: ['task', 'reminder'],
+        description:
+          'Por defecto "task". Usa "reminder" cuando lo único que quiere es que le avise a ' +
+          'una hora y ahí se acabe ("recuérdame a las nueve que saque la basura", "avísame ' +
+          'en cinco minutos"): el aviso sale y desaparece de sus pendientes, así que hace ' +
+          'falta la hora. Usa "task" cuando lo que importa es que quede hecho y quiera ' +
+          'verlo en la lista hasta entonces ("pagar el IBI antes del viernes"). Si dudas, ' +
+          '"task": una tarea de más se ve en la lista, un aviso de más desaparece solo.',
+      },
       due_at: {
         type: 'string',
         description: 'Fecha límite en ISO 8601 con zona horaria, ej. 2026-08-20T09:00:00+02:00.',
@@ -46,9 +58,14 @@ export const createTask: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const title = cleanTitle(requireString(args, 'title', 200));
 
+    const kind = optionalString(args, 'kind', 20) ?? 'task';
+    if (kind !== 'task' && kind !== 'reminder') {
+      return { ok: false, error: `kind "${kind}" no válido. Usa "task" o "reminder".` };
+    }
+
     // The relative offset wins over the ISO date: the Worker computed it against the
     // real clock. And above both of them, whatever the user said in their message.
-    const { dueAt, remindAt } = honourUserDeadlines(
+    let { dueAt, remindAt } = honourUserDeadlines(
       {
         dueAt: resolveOffset(args, 'due_in_minutes') ?? optionalIsoDate(args, 'due_at'),
         remindAt: resolveOffset(args, 'remind_in_minutes') ?? optionalIsoDate(args, 'remind_at'),
@@ -56,7 +73,34 @@ export const createTask: ToolDefinition = {
       ctx,
     );
 
-    if (!optionalBoolean(args, 'force')) {
+    if (kind === 'reminder') {
+      // An alert's time belongs in remind_at, never in due_at: from due_at the cron
+      // announces it an hour early, which is the right courtesy for a deadline and plain
+      // wrong for "remind me at 12:10". The model mixes the two fields up, so the value
+      // is moved here instead of being asked for again.
+      if (remindAt === null && dueAt !== null) {
+        remindAt = dueAt;
+        dueAt = null;
+      }
+      // A reminder with no time never fires, and it is not on the pending list either:
+      // it would be a row nobody ever hears about again.
+      if (remindAt === null) {
+        return {
+          ok: false,
+          error:
+            'Un aviso sin hora no llegaría nunca. Si el usuario ha dicho cuándo, repite la ' +
+            'llamada con remind_at o remind_in_minutes. Si no lo ha dicho, pregúntaselo; y ' +
+            'si en realidad es algo que hay que hacer y no un aviso, mándalo con ' +
+            'kind="task".',
+        };
+      }
+    }
+
+    // Duplicate control is for tasks only. Two alerts with the same title are two
+    // different alerts —the pill at 09:00 and the pill at 21:00— so blocking the second
+    // one would lose it; and an alert that has already gone out is closed, so it cannot
+    // block anything either way.
+    if (kind === 'task' && !optionalBoolean(args, 'force')) {
       const duplicate = await findSimilarPending(title, ctx);
       if (duplicate) {
         // An error instead of a new row. The model ignores the prompt rule telling it
@@ -77,6 +121,7 @@ export const createTask: ToolDefinition = {
       user_id: ctx.userId,
       title,
       notes: optionalString(args, 'notes'),
+      kind,
       due_at: dueAt,
       remind_at: remindAt,
       priority: optionalInt(args, 'priority', 1, 3) ?? 2,
@@ -99,7 +144,7 @@ async function findSimilarPending(title: string, ctx: ToolContext): Promise<Task
 
   const pending = await ctx.db.select<TaskRow>('tasks', {
     columns: 'id,title',
-    filters: { user_id: `eq.${ctx.userId}`, status: 'eq.pending' },
+    filters: { user_id: `eq.${ctx.userId}`, status: 'eq.pending', kind: 'eq.task' },
     order: 'created_at.desc',
     limit: 50,
   });
@@ -136,7 +181,8 @@ export const listTasks: ToolDefinition = {
   name: 'list_tasks',
   description:
     'Lista las tareas del usuario. Úsala cuando pregunte qué tiene pendiente, y ' +
-    'también antes de modificar, completar o borrar algo, para obtener el id correcto.',
+    'también antes de modificar, completar o borrar algo, para obtener el id correcto. ' +
+    'Los avisos no salen aquí salvo que pidas kind="reminder".',
   parameters: {
     type: 'object',
     properties: {
@@ -144,6 +190,14 @@ export const listTasks: ToolDefinition = {
         type: 'string',
         enum: ['pending', 'done', 'cancelled'],
         description: 'Por defecto "pending".',
+      },
+      kind: {
+        type: 'string',
+        enum: ['task', 'reminder'],
+        description:
+          'Por defecto "task". Manda "reminder" solo si pregunta por los avisos que tiene ' +
+          'puestos o quiere cambiar o quitar uno. Los avisos que ya han salido no ' +
+          'aparecen: están gastados.',
       },
       due_before: {
         type: 'string',
@@ -160,9 +214,15 @@ export const listTasks: ToolDefinition = {
       return { ok: false, error: `status "${status}" no válido. Usa pending, done o cancelled.` };
     }
 
+    const kind = optionalString(args, 'kind', 20) ?? 'task';
+    if (kind !== 'task' && kind !== 'reminder') {
+      return { ok: false, error: `kind "${kind}" no válido. Usa "task" o "reminder".` };
+    }
+
     const filters: Record<string, string> = {
       user_id: `eq.${ctx.userId}`,
       status: `eq.${status}`,
+      kind: `eq.${kind}`,
     };
 
     const dueBefore = optionalIsoDate(args, 'due_before');
@@ -382,6 +442,9 @@ function summarize(task: TaskRow, timezone: string) {
     id: task.id,
     title: task.title,
     notes: task.notes,
+    // Only said out loud when it is an alert: 'task' is the norm and naming it on every
+    // row of a twenty-task list is tokens spent on every following message.
+    ...(task.kind === 'reminder' ? { kind: 'aviso' } : {}),
     due: task.due_at ? formatDate(task.due_at, timezone) : null,
     due_iso: task.due_at,
     // Only when there is a reminder of its own: across twenty tasks, one extra field
