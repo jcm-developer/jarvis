@@ -504,10 +504,15 @@ function lastMovement(html: string): LastMovement | null {
 /**
  * Whether the punch landed, according to the portal.
  *
- * Three outcomes and only one of them is success. The important one is the middle: if the
- * last movement did not change to what we just asked for, we do NOT know whether it was
- * written, and the caller must never retry on that — clocking in twice on an attendance
- * record is worse than not clocking in.
+ * Two signals, and which one is available is not up to us. "Último movimiento" is the good
+ * one —it names the reason and the time to the second— but the real portal paints that
+ * panel with JavaScript, so it is usually not in the html at all. The fallback is the phase
+ * flipping: the button we pressed must be gone, because the page only ever offers the phase
+ * that comes next.
+ *
+ * What matters is the third outcome. If the movement line IS there and does not say what we
+ * just sent, we do NOT know whether it was written, and the caller must never retry on that
+ * — clocking in twice on an attendance record is worse than not clocking in.
  */
 function confirm(
   action: PunchAction,

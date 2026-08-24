@@ -281,6 +281,10 @@ async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
     if (state.lastMovement) {
       const { time, label } = state.lastMovement;
       details.push(`Lo último que registró el portal: ${label}, a las ${time}.`);
+    } else {
+      // Stated rather than left blank: an absent line reads like a bug, and this one is a
+      // property of the portal — it paints that panel with JavaScript.
+      details.push('El portal no trae el último movimiento en el HTML: lo pinta con JavaScript.');
     }
     return { details };
   }

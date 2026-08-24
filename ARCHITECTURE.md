@@ -1830,8 +1830,11 @@ why there is no "have I punched today?" flag anywhere in the schema:
 - **`punch_status`.** What the user reads is the portal's state and its own "Último
   movimiento", not our log. Our log answers the other half —what the automation did— which
   the portal cannot.
-- **Verification.** After submitting, "Último movimiento" must be the reason we just sent.
-  Anything else and either it did not land or we cannot tell, and those are not the same.
+- **Verification.** After submitting, the phase must have flipped: the button just pressed
+  is gone. "Último movimiento" would be the better signal —it names the reason and the time
+  to the second— but the portal paints that panel with JavaScript, so it reaches this code
+  only sometimes. When it does and it disagrees with what was just sent, that is the one
+  outcome that must never be retried: it means the write may have landed.
 
 ### The four endings of one punch, and why they cannot share code
 
