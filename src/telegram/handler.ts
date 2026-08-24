@@ -7,7 +7,7 @@ import {
   snoozeReminder,
 } from '../agent';
 import type { Config } from '../config';
-import { runFicha } from '../ficha';
+import { runPunchCommand } from '../punch';
 import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
 import { DeadlineExceededError } from '../lib/deadline';
@@ -437,8 +437,8 @@ async function handleCommand(
         '/ping — estado y configuración',
         '/test — mide qué va lento: base de datos, ficharweb y el modelo',
         '/test html — enseña la página de ficharweb tal como llega',
-        '/ficha — cómo va el fichaje de hoy, sin fichar nada',
-        '/ficha entrada | comer | vuelta | salida — ficha eso ahora',
+        '/punch — cómo va el fichaje de hoy, sin fichar nada',
+        '/punch in | lunch | back | out — ficha eso ahora',
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
@@ -483,11 +483,11 @@ async function handleCommand(
       );
     }
 
-    case 'ficha': {
-      // Everything after the command word, so "/ficha vuelta de comer" arrives whole.
+    case 'punch': {
+      // Everything after the command word, so "/punch lunch" arrives with its argument.
       const arg = text.trim().slice(text.trim().indexOf(command) + command.length).trim();
       return withTyping(ctx, () =>
-        runFicha(
+        runPunchCommand(
           {
             env: ctx.env,
             config: ctx.config,

@@ -62,7 +62,7 @@ export interface Project {
    *
    * It is the site's index and not an id of ours: the table is regenerated per day, so
    * this is only meaningful together with the day it was scraped on. That is why the
-   * cache in `db/ficha.ts` is keyed by day.
+   * cache in `db/timeclock.ts` is keyed by day.
    */
   index: number;
   project: string;

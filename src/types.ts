@@ -54,7 +54,7 @@ export interface Env {
    *
    * Secrets and not vars, even though a hostname is not a credential: wrangler.toml is
    * read straight off a public repo, and there is no reason to publish which company's
-   * time-tracking system this talks to. Defaults live in src/ficha/, so an install
+   * time-tracking system this talks to. Defaults live in src/timeclock/, so an install
    * without them still works.
    */
   TIMECLOCK_BASE_URL?: string;

@@ -10,7 +10,7 @@ import type { Env, TelegramUser } from './types';
 
 
 /**
- * `/ficha`: the portal's state, and a punch, without going through the model.
+ * `/punch`: the portal's state, and a punch, without going through the model.
  *
  * It exists for the day the punch did not happen. `punch_status` and `punch_now` already
  * cover both jobs, and both of them are tools — so they need the model to decide to call
@@ -19,7 +19,7 @@ import type { Env, TelegramUser } from './types';
  * through the one component that was broken.
  *
  * Same rule as `/test` (§12): composed in code, no model call anywhere, so it answers when
- * everything else does not. Bare `/ficha` writes nothing; only an explicit action punches.
+ * everything else does not. Bare `/punch` writes nothing; only an explicit action punches.
  */
 
 /** Cap for a punch: three requests against somebody else's portal. */
@@ -31,7 +31,7 @@ const MIN_PUNCH_MS = 7_000;
 const MAX_STATE_MS = 10_000;
 const MIN_STATE_MS = 4_000;
 
-export interface FichaDeps {
+export interface PunchCommandDeps {
   env: Env;
   config: Config;
   deadline: Deadline;
@@ -40,49 +40,44 @@ export interface FichaDeps {
 }
 
 /**
- * What the user may type after `/ficha`, in the words a person actually uses.
+ * The word after `/punch`, and which stage it means.
  *
- * Longer phrases first: "vuelta de comer" has to win over "comer", which is the break's
- * start. Getting that order wrong means punching the opposite end of lunch, on a record
- * that is not ours to correct.
+ * `back` before `lunch` is not alphabetical, it is the whole care taken here: matching is by
+ * containment, so with the other order "back from lunch" would punch the START of the break.
+ * That is the opposite end of lunch, written into a record that is not ours to correct.
  */
 const WORDS: readonly { say: string; action: PunchAction }[] = [
-  { say: 'vuelta de comer', action: 'break_end' },
-  { say: 'vuelta del descanso', action: 'break_end' },
-  { say: 'vuelta', action: 'break_end' },
-  { say: 'entrada del descanso', action: 'break_end' },
-  { say: 'salida a comer', action: 'break_start' },
-  { say: 'salida al descanso', action: 'break_start' },
-  { say: 'descanso', action: 'break_start' },
-  { say: 'comer', action: 'break_start' },
-  { say: 'entrada', action: 'clock_in' },
-  { say: 'salida', action: 'clock_out' },
+  { say: 'back', action: 'break_end' },
+  { say: 'lunch', action: 'break_start' },
+  { say: 'in', action: 'clock_in' },
+  { say: 'out', action: 'clock_out' },
 ];
 
-export async function runFicha(deps: FichaDeps, arg?: string): Promise<string> {
+/** The four stages as the reply names them, so the help does not read like a config file. */
+const USAGE = [
+  '/punch — cómo va el día, sin fichar nada',
+  '/punch in — entrada al trabajo',
+  '/punch lunch — salida a comer',
+  '/punch back — vuelta de comer',
+  '/punch out — salida del trabajo',
+];
+
+export async function runPunchCommand(deps: PunchCommandDeps, arg?: string): Promise<string> {
   if (!punchConfigured(deps.env)) return 'No hay credenciales de ficharweb configuradas.';
 
   const wanted = arg?.trim().toLowerCase();
-  if (!wanted || wanted === 'estado') return reportState(deps);
+  if (!wanted || wanted === 'status') return reportState(deps);
 
-  const match = WORDS.find((word) => wanted.includes(word.say));
-  if (!match) {
-    return [
-      `No sé qué es "${arg}".`,
-      '',
-      '/ficha — cómo va el día, sin fichar nada',
-      '/ficha entrada — entrada al trabajo',
-      '/ficha comer — salida a comer',
-      '/ficha vuelta — vuelta de comer',
-      '/ficha salida — salida del trabajo',
-    ].join('\n');
-  }
+  // Exact and not by containment, unlike everywhere else in this file: "in" appears inside
+  // half the words a person might type, and a fuzzy match here punches the wrong stage.
+  const match = WORDS.find((word) => word.say === wanted);
+  if (!match) return [`No sé qué es "${arg}".`, '', ...USAGE].join('\n');
 
   return punchNow(deps, match.action);
 }
 
 /** One read, no writes. What the portal offers and what our own log says. */
-async function reportState(deps: FichaDeps): Promise<string> {
+async function reportState(deps: PunchCommandDeps): Promise<string> {
   const budget = deps.deadline.budgetFor(MAX_STATE_MS);
   if (budget < MIN_STATE_MS) return 'No me queda tiempo en este mensaje para consultar el portal.';
 
@@ -133,7 +128,7 @@ async function reportState(deps: FichaDeps): Promise<string> {
  * questions and merging them is how "you clocked in at 09:00" got said about a punch that
  * never happened: `punch_schedules` holds the plan, `punches` holds the facts.
  */
-async function ownPunches(deps: FichaDeps): Promise<string> {
+async function ownPunches(deps: PunchCommandDeps): Promise<string> {
   try {
     const db = createDb(deps.env);
     const identity = await resolveIdentity(
@@ -155,7 +150,7 @@ async function ownPunches(deps: FichaDeps): Promise<string> {
 }
 
 /** A punch asked for out loud, logged the same way the tool logs one. */
-async function punchNow(deps: FichaDeps, action: PunchAction): Promise<string> {
+async function punchNow(deps: PunchCommandDeps, action: PunchAction): Promise<string> {
   const budget = deps.deadline.budgetFor(MAX_PUNCH_MS);
   if (budget < MIN_PUNCH_MS) {
     return (
