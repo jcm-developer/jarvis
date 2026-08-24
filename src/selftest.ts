@@ -340,6 +340,11 @@ function describe(error: unknown): string {
   if (error instanceof LLMError) {
     return `${error.kind}${error.status ? ` ${error.status}` : ''}`;
   }
-  if (error instanceof TimeclockError) return error.userMessage;
+  // The technical message and not `userMessage`: this command IS the technical channel, and
+  // the polite sentence ("the portal does not respond") hid which hop had failed.
+  if (error instanceof TimeclockError) {
+    const route = error.trail.length > 0 ? ` | ruta: ${error.trail.join(' -> ')}` : '';
+    return `${error.kind}: ${error.message}${route}`;
+  }
   return error instanceof Error ? error.message.slice(0, 80) : String(error);
 }

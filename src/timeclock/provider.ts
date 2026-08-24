@@ -214,6 +214,16 @@ export type TimeclockErrorKind =
   | 'unverified';
 
 export class TimeclockError extends Error {
+  /**
+   * The pages this run went through before failing.
+   *
+   * Attached on the way out rather than passed in, because the useful trail is the one the
+   * whole operation walked while the throw happens three levels down. Twice now a failure
+   * has been reported with a message that was true and useless —"the portal does not
+   * respond"— while the answer was in the hop before it.
+   */
+  trail: string[] = [];
+
   constructor(
     readonly kind: TimeclockErrorKind,
     message: string,

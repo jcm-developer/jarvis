@@ -1,4 +1,5 @@
 import {
+  decodeEntities,
   findControl,
   findRadio,
   formState,
@@ -186,31 +187,49 @@ export class HttpPunchClient implements PunchClient {
     const jar = new Jar();
     const trail: string[] = [];
 
-    // Straight at the register page. Logged out, the site redirects to its own login, so
-    // there is no login URL to guess and no page of ours to be wrong about.
-    let page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
-    trail.push(describePage(page));
-
-    if (hasPassword(page.form)) {
-      page = await this.login(page, jar, clock);
+    try {
+      // Straight at the register page. Logged out, the site redirects to its own login, so
+      // there is no login URL to guess and no page of ours to be wrong about.
+      let page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
       trail.push(describePage(page));
-    }
 
-    // The login lands on a bridge: a page whose form the browser posts by itself from a
-    // script. Not following it means never getting a session, and the symptom is identical
-    // to a wrong password — which is exactly the wrong turn this cost.
-    for (let bounce = 0; bounce < MAX_BRIDGES && isBridge(page.form); bounce++) {
-      page = await this.submit(page, {}, jar, clock);
-      trail.push(describePage(page));
-    }
+      if (hasPassword(page.form)) {
+        page = await this.login(page, jar, clock);
+        trail.push(describePage(page));
+      }
 
-    // The login lands wherever it wants; the punching happens on one page only.
-    if (!isRegisterPage(page.form)) {
-      page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
-      trail.push(describePage(page));
-    }
+      // The login does not end at the login: it lands on a bridge, a page whose only job is
+      // to move you along. Not following it means never getting a session, and the symptom
+      // is identical to a wrong password — which is exactly the wrong turn this cost.
+      for (let bounce = 0; bounce < MAX_BRIDGES; bounce++) {
+        const step = bridgeStep(page);
+        if (!step) break;
+        page =
+          step.kind === 'go'
+            ? await this.request(
+                new URL(step.url, page.url).toString(),
+                { method: 'GET' },
+                jar,
+                clock,
+              )
+            : await this.submit(page, {}, jar, clock);
+        trail.push(`${step.kind === 'go' ? 'refresh' : 'puente'} -> ${describePage(page)}`);
+      }
 
-    return { page: { ...page, trail }, jar, clock };
+      // The login lands wherever it wants; the punching happens on one page only.
+      if (!isRegisterPage(page.form)) {
+        page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
+        trail.push(describePage(page));
+      }
+
+      return { page: { ...page, trail }, jar, clock };
+    } catch (error) {
+      // The trail is worth more than the message: "the portal does not respond" is equally
+      // true of a 500 on the third hop and of a redirect loop on the first, and those are
+      // not the same problem.
+      if (error instanceof TimeclockError) error.trail = trail;
+      throw error;
+    }
   }
 
   /**
@@ -361,7 +380,7 @@ function describePage(page: Page): string {
   const marks = [
     hasPassword(page.form) ? 'login' : '',
     isRegisterPage(page.form) ? 'fichaje' : '',
-    isBridge(page.form) ? 'puente' : '',
+    bridgeStep(page) ? 'puente' : '',
     page.form.radios.length > 0 ? `${page.form.radios.length} motivos` : '',
     // The count that was missing: a page reported as "nada reconocible" while carrying
     // hidden fields is a form waiting to be posted, not a dead end.
@@ -379,14 +398,32 @@ function hasPassword(form: ParsedForm): boolean {
 }
 
 /**
- * A page whose form nobody can press: inputs and no button, a script and a redirect.
+ * How to get off a page that only exists to move you along, if it is one.
  *
- * There is no JavaScript here to read the script with, and there does not need to be: a
- * form with nothing to press is a form meant to be posted as it stands, which is precisely
- * what the browser's own script does with it.
+ * Two mechanisms, and the meta refresh goes first because it needs no guessing at all: the
+ * page states where it is going. A form with nothing to press is the other one — there is no
+ * JavaScript here to run its script with, and there does not need to be, because a form
+ * nobody can press is a form meant to be posted as it stands.
  */
-function isBridge(form: ParsedForm): boolean {
-  return form.hasForm && form.controls.length === 0 && !hasPassword(form) && !isRegisterPage(form);
+function bridgeStep(page: Page): { kind: 'go'; url: string } | { kind: 'post' } | null {
+  if (hasPassword(page.form) || isRegisterPage(page.form)) return null;
+
+  const refresh = metaRefresh(page.html);
+  if (refresh) return { kind: 'go', url: refresh };
+
+  if (page.form.hasForm && page.form.controls.length === 0) return { kind: 'post' };
+  return null;
+}
+
+/** `<meta http-equiv="refresh" content="0;url=algo">`, the honest half of a bridge page. */
+function metaRefresh(html: string): string | null {
+  for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
+    if (!/http-equiv\s*=\s*['"]?refresh/i.test(tag[0])) continue;
+    const content = /content\s*=\s*['"]([^'"]+)['"]/i.exec(tag[0]);
+    const url = content ? /url\s*=\s*(.+)$/i.exec(content[1]!.trim()) : null;
+    if (url) return decodeEntities(url[1]!.trim().replace(/^['"]|['"]$/g, ''));
+  }
+  return null;
 }
 
 /** Whether this is the page that can punch, i.e. it carries one of the two buttons. */
