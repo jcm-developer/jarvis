@@ -167,13 +167,18 @@ export class HttpPunchClient implements PunchClient {
       );
     }
 
+    // A reason that demands a written justification is not one this can register: there is
+    // nobody here to write it, and an empty justification on an attendance record is worse
+    // than a missing punch.
+    if (radio?.requiresComment) {
+      throw new TimeclockError(
+        'not_available',
+        `"${radio.label}" pide un comentario y yo no tengo ninguno que dar`,
+      );
+    }
+
     const before = state.lastMovement;
-    const after = await this.submit(
-      page,
-      { ...(radio ? { [radio.name]: radio.value } : {}), ...button.fields },
-      jar,
-      clock,
-    );
+    const after = await this.submit(page, { ...reasonFields(radio), ...button.fields }, jar, clock);
 
     return { action, registeredAt: confirm(action, stateOf(after), before) };
   }
@@ -530,6 +535,28 @@ function confirm(
       ? `el portal sigue diciendo que lo último fue "${movement.label}" a las ${movement.time}`
       : 'el portal no dice cuál fue el último movimiento',
   );
+}
+
+/**
+ * What the page's own script fills in before posting.
+ *
+ * The visible radio group is the interface; what the server reads are the hidden fields,
+ * and `fEnviar()` is what copies one into the other. With no JavaScript to run, that copy
+ * is done here: the chosen reason goes into `tipo` as well as into the radio, `subtipo`
+ * stays empty because these reasons declare `consubmotivo="False"`, and `comentario` is
+ * cleared because the automation never writes one.
+ *
+ * The names are the page's own, so a portal that renames them stops being understood rather
+ * than being written to wrongly — which is the right way round.
+ */
+function reasonFields(radio: { name: string; value: string } | null): Record<string, string> {
+  if (!radio) return {};
+  return {
+    [radio.name]: radio.value,
+    tipo: radio.value,
+    subtipo: '',
+    comentario: '',
+  };
 }
 
 /** The caller's budget, spent across the requests one operation needs. */

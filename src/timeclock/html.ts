@@ -23,6 +23,14 @@ export interface RadioOption {
   value: string;
   /** The visible text, normalised. What the user reads on the row. */
   label: string;
+  /**
+   * Whether the page marks this option as needing a written reason.
+   *
+   * On this portal it is the `conobservacion` attribute, and it is not decoration: two of
+   * the four reasons demand a comment, and the automation has none to give. Better to
+   * refuse than to submit an empty justification into an attendance record.
+   */
+  requiresComment: boolean;
 }
 
 /** A control that submits the form: either a real submit input or a __doPostBack link. */
@@ -178,21 +186,23 @@ export function parseForm(html: string): ParsedForm {
       continue;
     }
 
-    // A `<button>` with NO type attribute is a submit: that is the HTML default, and it is
-    // what the register page's own button relies on. Requiring the attribute cost a
-    // production run — the page parsed, its four reasons parsed, and the button that was
-    // right there went unseen.
+    // Every `<button>` is recorded, whatever its type, and the difference is in what gets
+    // sent rather than in whether it exists:
     //
-    // `type="button"` is the one to skip: it does whatever its script does, and pressing it
-    // by posting the form would be inventing an action. On the login page that one is
-    // "Cambiar Contraseña", and posting it lands on a password change form.
+    // - `type="submit"` (the default when the attribute is absent) contributes its own
+    //   name and value, which is how a server knows which button was pressed.
+    // - `type="button"` contributes nothing, because a browser sends nothing for it: it
+    //   runs a script. The register page's own button is one of these —
+    //   `onclick="fEnviar('send')"`— and skipping those meant never finding it. What
+    //   protects against pressing the wrong one is matching the label, not the type.
+    if (match[1]!.toLowerCase() !== 'button' || !label) continue;
+
     const type = (attrs['type'] ?? 'submit').toLowerCase();
-    if (match[1]!.toLowerCase() !== 'button' || type !== 'submit') continue;
-    if (!label) continue;
+    if (type === 'reset') continue;
 
     controls.push({
       label,
-      fields: attrs['name'] ? { [attrs['name']]: attrs['value'] ?? '' } : {},
+      fields: type === 'submit' && attrs['name'] ? { [attrs['name']]: attrs['value'] ?? '' } : {},
     });
   }
 
@@ -208,7 +218,13 @@ export function parseForm(html: string): ParsedForm {
  * the following radio starts. A `<label for>` is preferred when the page provides one.
  */
 export function parseRadios(html: string): RadioOption[] {
-  const radios: { name: string; value: string; id: string; end: number }[] = [];
+  const radios: {
+    name: string;
+    value: string;
+    id: string;
+    requiresComment: boolean;
+    end: number;
+  }[] = [];
   for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
     const attrs = attributes(match[0]);
     if ((attrs['type'] ?? '').toLowerCase() !== 'radio') continue;
@@ -217,6 +233,7 @@ export function parseRadios(html: string): RadioOption[] {
       name: attrs['name'],
       value: attrs['value'] ?? '',
       id: attrs['id'] ?? '',
+      requiresComment: (attrs['conobservacion'] ?? '').toLowerCase() === 'true',
       end: (match.index ?? 0) + match[0].length,
     });
   }
@@ -232,6 +249,7 @@ export function parseRadios(html: string): RadioOption[] {
     return {
       name: radio.name,
       value: radio.value,
+      requiresComment: radio.requiresComment,
       // Three ways of naming an option, in order of how much they can be trusted. The
       // middle one is the one this page actually uses and the one no amount of staring at
       // a failed parse would have suggested: the reason is not text next to the radio, it
