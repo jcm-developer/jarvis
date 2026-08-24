@@ -7,7 +7,13 @@ import { timingSafeEqual } from '../core/secret';
 import { Deadline, DeadlineExceededError } from '../lib/deadline';
 import { SttError } from '../stt/provider';
 import type { Env } from '../types';
-import { runVoiceConfirm, runVoiceTurn, type VoiceContext, type VoiceOutcome } from './handler';
+import {
+  runVoiceConfirm,
+  runVoiceText,
+  runVoiceTurn,
+  type VoiceContext,
+  type VoiceOutcome,
+} from './handler';
 import { VOICE_TEST_PAGE } from './page';
 
 /**
@@ -31,6 +37,9 @@ const VOICE_BUDGET_MS = 30_000;
  * instead of a bill.
  */
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
+
+/** A typed turn is a person at a keyboard, not a paste of a novel. */
+const MAX_TEXT_CHARS = 2_000;
 
 /**
  * What the browser is allowed to send.
@@ -79,6 +88,32 @@ export function registerVoiceRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!authorized(c.req.raw, c.env)) return unauthorized();
 
     const type = baseContentType(c.req.header('content-type'));
+
+    // A typed turn. Not a feature of the channel, a control: it is the only way to tell a
+    // truncated recording from a model that ignored the message, and both fail identically
+    // from the outside.
+    if (type === 'application/json') {
+      const ctx = contextFor(c.env, config);
+      let body: { text?: unknown };
+      try {
+        body = await c.req.json();
+      } catch {
+        return problem(400, 'El cuerpo no era JSON válido.');
+      }
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) return problem(400, 'Falta el campo "text".');
+      if (text.length > MAX_TEXT_CHARS) {
+        return problem(413, `Ese mensaje tiene ${text.length} caracteres y el tope son ${MAX_TEXT_CHARS}.`);
+      }
+      try {
+        const outcome = await runVoiceText(text, ctx);
+        logTurn(outcome, 0, 'text', ctx);
+        return respond(outcome);
+      } catch (error) {
+        return failure(error, ctx, text);
+      }
+    }
+
     if (!ACCEPTED_TYPES.has(type)) {
       return problem(415, `Formato no soportado: ${type || 'sin Content-Type'}.`);
     }
@@ -215,8 +250,14 @@ function respond(outcome: VoiceOutcome): Response {
   );
 }
 
-/** A failure the user should hear about, wearing the same 200 as a normal turn. */
-function failure(error: unknown, ctx: VoiceContext): Response {
+/**
+ * A failure the user should hear about, wearing the same 200 as a normal turn.
+ *
+ * `transcript` travels when the caller knows it. It is not bookkeeping: the client shows
+ * the conversation as text, and a failed turn that drops what was said is the one turn you
+ * most want to read back.
+ */
+function failure(error: unknown, ctx: VoiceContext, transcript?: string): Response {
   let text: string;
   if (error instanceof DeadlineExceededError) {
     text = error.userMessage;
@@ -237,6 +278,7 @@ function failure(error: unknown, ctx: VoiceContext): Response {
   return respond({
     kind: 'text',
     text,
+    ...(transcript ? { transcript } : {}),
     notice: 'Sin audio: el turno se cortó antes de llegar a la voz.',
     timings: { total: VOICE_BUDGET_MS - ctx.deadline.remainingMs() },
   });

@@ -69,6 +69,20 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid #2a2f3a;
     background: #0b0d12; color: #e6e8ec; font: inherit;
   }
+  .log { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow-y: auto; }
+  .turn { display: flex; flex-direction: column; gap: 2px; }
+  .turn b { font-size: 10px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; }
+  .turn.me b { color: #5b8dd9; }
+  .turn.bot b { color: #4a9d6b; }
+  .turn.me span, .turn.bot span { white-space: pre-wrap; word-break: break-word; }
+  .turn.empty span { color: #e8a33d; font-style: italic; }
+  .composer { display: flex; gap: 8px; }
+  .composer input { flex: 1; }
+  .composer button { padding: 11px 16px; border-radius: 10px; border: 1px solid #2a2f3a;
+                     background: #171b23; color: #e6e8ec; font: inherit; cursor: pointer; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .head button { border: 0; background: none; color: #4b5263; font: inherit; font-size: 11px;
+                 cursor: pointer; padding: 0; }
   .modes { display: flex; gap: 8px; }
   .modes button {
     flex: 1; padding: 9px; border-radius: 9px; border: 1px solid #232833;
@@ -111,8 +125,16 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       </div>
     </div>
 
-    <div id="heardCard" class="card hidden"><h2>Te he oído</h2><p id="heard"></p></div>
-    <div id="saidCard" class="card hidden"><h2>Respuesta</h2><p id="said"></p></div>
+    <div class="composer">
+      <input id="say" type="text" autocomplete="off" placeholder="…o escríbelo aquí y pulsa Enter">
+      <button id="send">Enviar</button>
+    </div>
+
+    <div id="logCard" class="card hidden">
+      <div class="head"><h2>Conversación</h2><button id="clearLog">limpiar vista</button></div>
+      <div id="log" class="log"></div>
+    </div>
+
     <div id="noticeCard" class="card hidden"><h2>Aviso</h2><p id="notice" class="muted"></p></div>
     <div id="timesCard" class="card hidden"><h2>Tiempos</h2><table id="times"></table></div>
   </div>
@@ -126,6 +148,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   var $ = function (id) { return document.getElementById(id); };
   var token = '';
   var recorder = null, chunks = [], stream = null, recording = false, busy = false;
+  var recordStartedAt = 0, lastRecordMs = 0;
 
   // ---- token ------------------------------------------------------------
   try { token = localStorage.getItem(KEY) || ''; } catch (e) { token = ''; }
@@ -146,6 +169,58 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     token = '';
     try { localStorage.removeItem(KEY); } catch (e) {}
     showToken(true);
+  }
+
+  // ---- conversation log -------------------------------------------------
+  // The transcript of every turn, kept on screen. It is the answer to the question this
+  // page exists for: when the assistant says it has nothing to note down, the only way to
+  // tell a bad recording from a bad answer is to read what it actually heard.
+  //
+  // It survives a reload because the interesting case —"it has been doing this all
+  // afternoon"— is exactly the one you lose by refreshing. It is a VIEW: clearing it
+  // clears the screen and not the conversation, which lives in Supabase and is shared with
+  // Telegram. /reset over Telegram is what forgets it for real.
+  var LOG_KEY = 'jarvis.voice.log';
+  var LOG_MAX = 40;
+  var log = [];
+  try { log = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) { log = []; }
+  if (!Array.isArray(log)) log = [];
+  renderLog();
+
+  $('clearLog').onclick = function () {
+    log = [];
+    try { localStorage.removeItem(LOG_KEY); } catch (e) {}
+    renderLog();
+  };
+
+  function pushTurn(who, text) {
+    log.push({ who: who, text: text || '', at: Date.now() });
+    if (log.length > LOG_MAX) log = log.slice(-LOG_MAX);
+    try { localStorage.setItem(LOG_KEY, JSON.stringify(log)); } catch (e) {}
+    renderLog();
+  }
+
+  // Built with createElement and textContent, never innerHTML: half of what goes in here
+  // is written by a model and the other half by whatever the STT thought it heard.
+  function renderLog() {
+    var box = $('log');
+    box.textContent = '';
+    log.forEach(function (turn) {
+      var empty = !turn.text;
+      var row = document.createElement('div');
+      row.className = 'turn ' + (turn.who === 'me' ? 'me' : 'bot') + (empty ? ' empty' : '');
+      var who = document.createElement('b');
+      var when = new Date(turn.at);
+      who.textContent = (turn.who === 'me' ? 'Tú' : 'Jarvis') + ' · ' +
+        String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+      var body = document.createElement('span');
+      body.textContent = empty ? '(vacío — no se transcribió nada)' : turn.text;
+      row.appendChild(who);
+      row.appendChild(body);
+      box.appendChild(row);
+    });
+    $('logCard').classList.toggle('hidden', log.length === 0);
+    box.scrollTop = box.scrollHeight;
   }
 
   // ---- status -----------------------------------------------------------
@@ -198,6 +273,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   // the first question when nothing comes back, and this answers it without a round trip.
   var SILENCE_MS = 1400;
   var CALIBRATE_MS = 250;
+  // Nothing is cut before this. Without it, a pause for breath right after the first word
+  // sends half a sentence, which comes back as an answer to a question nobody asked.
+  var MIN_RECORD_MS = 900;
   var MAX_RECORD_MS = 30000;
   var audioCtx = null, analyser = null, meterTimer = null;
 
@@ -239,7 +317,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       // 413 and a bill instead of an answer.
       if (elapsed > MAX_RECORD_MS) { stop(); return; }
       // Cutting on silence only makes sense when there is no finger on the button.
-      if (mode === 'toggle' && spoke && Date.now() - lastLoud > SILENCE_MS) stop();
+      if (mode === 'toggle' && spoke && elapsed > MIN_RECORD_MS && Date.now() - lastLoud > SILENCE_MS) stop();
     }, 80);
   }
 
@@ -282,6 +360,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     recorder.onstop = function () { send(new Blob(chunks, { type: recorder.mimeType })); };
     recorder.start();
     recording = true;
+    recordStartedAt = Date.now();
     $('talk').classList.add('rec');
     label();
     startMeter();
@@ -291,6 +370,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   function stop() {
     if (!recording) return;
     recording = false;
+    lastRecordMs = Date.now() - recordStartedAt;
     $('talk').classList.remove('rec');
     stopMeter();
     label();
@@ -300,6 +380,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   // ---- the turn ---------------------------------------------------------
   async function send(blob) {
     if (!blob.size) { status('No se grabó nada.', 'err'); return; }
+    localText = '';
     busy = true;
     $('talk').disabled = true;
     $('confirm').classList.add('hidden');
@@ -340,6 +421,45 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   var pendingToken = '';
+  // What we know we sent. On a spoken turn it stays empty —only the STT knows— and on a
+  // typed one it is what rescues the log when the request never comes back.
+  var localText = '';
+
+  // A typed turn takes the microphone out of the loop. Same endpoint, same history, same
+  // agent: the only thing that changes is that there is no STT to blame.
+  async function sendText() {
+    var text = $('say').value.trim();
+    if (!text || busy) return;
+    $('say').value = '';
+    localText = text;
+    busy = true;
+    $('talk').disabled = true;
+    $('confirm').classList.add('hidden');
+    var startedAt = Date.now();
+    busyFrom(startedAt);
+    try {
+      var response = await fetch('/voice', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text })
+      });
+      await handle(response, Date.now() - startedAt, 0);
+    } catch (e) {
+      stopTicker();
+      pushTurn('me', text);
+      status('No se pudo llegar al servidor.', 'err');
+    } finally {
+      busy = false;
+      $('talk').disabled = false;
+    }
+  }
+
+  $('send').onclick = sendText;
+  $('say').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); sendText(); }
+    // Otherwise the space bar inside the box would start recording.
+    e.stopPropagation();
+  });
 
   async function handle(response, clientMs, bytes) {
     stopTicker();
@@ -354,8 +474,10 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       var raw = response.headers.get(name);
       try { return raw ? decodeURIComponent(raw) : ''; } catch (e) { return raw || ''; }
     };
-    show('heard', 'heardCard', header('X-Jarvis-Transcript'));
-    show('said', 'saidCard', header('X-Jarvis-Reply'));
+    // The user's turn goes in even when it is empty: a blank line labelled as such is the
+    // whole diagnosis when the answer is "no tengo nada que apuntar".
+    pushTurn('me', response.headers.has('X-Jarvis-Transcript') ? header('X-Jarvis-Transcript') : localText);
+    pushTurn('bot', header('X-Jarvis-Reply'));
     show('notice', 'noticeCard', header('X-Jarvis-Notice'));
 
     var server = parseTiming(response.headers.get('Server-Timing'));
@@ -409,7 +531,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       var slow = row[1] > 4000 ? ' class="slow"' : '';
       html += '<tr><td>' + row[0] + '</td><td' + slow + '>' + row[1] + ' ms</td></tr>';
     });
-    if (bytes) html += '<tr><td>audio enviado</td><td>' + Math.round(bytes / 1024) + ' KB</td></tr>';
+    if (bytes) {
+      // Duration and size together, because separately neither says much: 8 s in 3 KB is a
+      // microphone that captured silence, and 0.4 s is the auto-stop cutting too early.
+      html += '<tr><td>audio grabado</td><td>' + (lastRecordMs / 1000).toFixed(1) + ' s · ' +
+              Math.round(bytes / 1024) + ' KB</td></tr>';
+    }
     $('times').innerHTML = html;
     $('timesCard').classList.toggle('hidden', !html);
   }

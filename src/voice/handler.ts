@@ -84,8 +84,44 @@ export async function runVoiceTurn(
 
   if (!transcript) {
     // Never hand an empty string to the model: it would answer something, confidently.
-    return finish(ctx, { kind: 'text', text: new SttError('empty', 'sin texto').userMessage }, timings, startedAt);
+    return finish(
+      ctx,
+      { kind: 'text', text: new SttError('empty', 'sin texto').userMessage },
+      timings,
+      startedAt,
+    );
   }
+
+  return askAgent(transcript, 'voice', ctx, timings, startedAt);
+}
+
+/**
+ * The same turn with the microphone taken out of the loop.
+ *
+ * It exists as a control, not as a feature. When an answer is wrong there are two
+ * suspects —what the STT heard and what the model did with it— and they are impossible to
+ * tell apart from the outside: a truncated recording and a model that ignored the message
+ * both come back as "no tengo nada que apuntar". Typing the same sentence answers which
+ * one it was in one turn.
+ *
+ * It writes to the same history as everything else, so the control is genuinely the same
+ * conversation and not a clean room.
+ */
+export async function runVoiceText(text: string, ctx: VoiceContext): Promise<VoiceOutcome> {
+  return askAgent(text, 'text', ctx, { total: 0 }, Date.now());
+}
+
+async function askAgent(
+  text: string,
+  // 'voice' and 'text' and nothing else: `messages.source` is constrained to
+  // ('text','voice','photo'). A fourth value would need a migration, and `saveTurns`
+  // swallows its errors — so the symptom of getting it wrong would be a conversation that
+  // quietly stops being remembered.
+  source: 'voice' | 'text',
+  ctx: VoiceContext,
+  timings: StageTimings,
+  startedAt: number,
+): Promise<VoiceOutcome> {
   if (!ctx.deadline.hasRoomFor(MIN_AGENT_MS)) {
     throw new DeadlineExceededError();
   }
@@ -95,13 +131,9 @@ export async function runVoiceTurn(
     {
       chatId: ctx.chatId,
       from: ctx.principal,
-      text: transcript,
-      // 'voice' and not a channel of its own: `messages.source` is constrained to
-      // ('text','voice','photo') and this IS voice. A fourth value would need a migration,
-      // and `saveTurns` swallows its errors — so the symptom of getting it wrong would be
-      // a conversation that quietly stops being remembered.
-      source: 'voice',
-      transcriptRaw: transcript,
+      text,
+      source,
+      ...(source === 'voice' ? { transcriptRaw: text } : {}),
     },
     ctx,
   );
@@ -110,8 +142,8 @@ export async function runVoiceTurn(
   return finish(
     ctx,
     result.kind === 'confirm'
-      ? { kind: 'confirm', text: result.text, confirmToken: result.token, transcript }
-      : { kind: 'text', text: result.text, transcript },
+      ? { kind: 'confirm', text: result.text, confirmToken: result.token, transcript: text }
+      : { kind: 'text', text: result.text, transcript: text },
     timings,
     startedAt,
   );
