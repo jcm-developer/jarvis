@@ -70,6 +70,9 @@ export interface Env {
   STT_MODEL?: string;
   STT_LANGUAGE?: string;
   BRIEFING_HOUR?: string;
+  /** Weekly review (phase 13): local day, 0 = Sunday, and local hour. */
+  REVIEW_DAY?: string;
+  REVIEW_HOUR?: string;
   EVENT_ALERT_MINUTES?: string;
   /** The day's window (local hours) find_free_slots searches for gaps in. */
   DAY_START_HOUR?: string;

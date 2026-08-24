@@ -18,6 +18,16 @@ export interface Config {
   /** Local hour (0-23) at which the cron's daily briefing goes out. */
   briefingHour: number;
   /**
+   * Local day of the weekly review, 0 = Sunday (phase 13).
+   *
+   * A var and not a constant for one practical reason: without it the job can only be
+   * tried out on Sundays, and a weekly message that is debugged once a week is a message
+   * that never gets debugged.
+   */
+  reviewDay: number;
+  /** Local hour (0-23) at which the weekly review goes out. */
+  reviewHour: number;
+  /**
    * Minutes of notice for the heads-up before an appointment. 0 turns the job off.
    *
    * It is capped rather than free: with more notice than the cron's own period the alert
@@ -112,6 +122,8 @@ export function loadConfig(env: Env): Config {
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),
     maxAgentIterations: parsePositiveInt(env.MAX_AGENT_ITERATIONS, 5),
     briefingHour: parseHour(env.BRIEFING_HOUR, 8),
+    reviewDay: parseHour(env.REVIEW_DAY, 0, 6),
+    reviewHour: parseHour(env.REVIEW_HOUR, 19),
     eventAlertMinutes: parseMinutes(env.EVENT_ALERT_MINUTES, 15),
     dayStartHour: sensibleDay ? dayStartHour : 9,
     dayEndHour: sensibleDay ? dayEndHour : 21,

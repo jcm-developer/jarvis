@@ -33,6 +33,17 @@ export function localNow(instant: Date, timezone: string): LocalNow {
 }
 
 /**
+ * Local day of the week, 0 = Sunday.
+ *
+ * Taken from the local calendar date and not from `getDay()` on the instant: at 00:30 in
+ * Madrid it is still the previous day in UTC, and a weekly job keyed on the weekday would
+ * fire on Saturday. The date is parsed at noon so no offset can push it either way.
+ */
+export function localWeekday(instant: Date, timezone: string): number {
+  return new Date(`${localNow(instant, timezone).date}T12:00:00Z`).getUTCDay();
+}
+
+/**
  * The instant matching a local hour on a local day.
  *
  * Used to rebuild "13:14 today" from the hour the model picked and the day that

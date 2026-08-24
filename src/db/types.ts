@@ -100,6 +100,24 @@ export interface MessageRow {
 }
 
 /**
+ * A tool call as it was recorded (phase 2), read back (phase 13).
+ *
+ * It was write-only for eleven phases: an audit trail you open when something went wrong.
+ * The weekly review is the first thing that queries it, and that is the whole reason it
+ * can count postponements without a new column — `arguments` already holds what the model
+ * asked for and `result` what the database answered.
+ */
+export interface ToolCallLogRow {
+  id: string;
+  conversation_id: string | null;
+  tool_name: string;
+  arguments: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  success: boolean;
+  created_at: string;
+}
+
+/**
  * A scheduled punch (phase 23). Replaces the scheduler's schedules.json.
  *
  * One row per action and time, rolled forward like `tasks`: there is no row per day.

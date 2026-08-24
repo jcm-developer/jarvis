@@ -8,6 +8,7 @@ import { sendBriefingIfDue } from './briefing';
 import { sendEventAlerts } from './event-alerts';
 import { runDueJobs } from './jobs';
 import { sendDueReminders } from './reminders';
+import { sendWeeklyReviewIfDue } from './review';
 import { runScheduledPunches } from './timeclock';
 
 /**
@@ -45,6 +46,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
   let punched = 0;
   let announced = 0;
   let briefings = 0;
+  let reviews = 0;
   let jobsDone = 0;
   let failures = 0;
 
@@ -115,6 +117,25 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       console.error(`cron: fallo en el briefing de ${target.telegramId}:`, error);
     }
 
+    // After the briefing and before the jobs: it reads only Supabase, so it cannot be
+    // held up by anybody else's outage, and on the other 2,015 ticks of the week it is
+    // two comparisons and no query at all.
+    try {
+      const sent = await sendWeeklyReviewIfDue({
+        env,
+        db,
+        telegram,
+        target,
+        now,
+        reviewDay: config.reviewDay,
+        reviewHour: config.reviewHour,
+      });
+      if (sent) reviews++;
+    } catch (error) {
+      failures++;
+      console.error(`cron: fallo en el repaso semanal de ${target.telegramId}:`, error);
+    }
+
     // Last, and it is the one job here nobody is waiting on: it takes whatever budget the
     // other three left and defers the rest to the next tick. Putting it any earlier would
     // mean a page download delaying an appointment alert, and an appointment announced
@@ -137,6 +158,7 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       punches_sent: punched,
       events_announced: announced,
       briefings_sent: briefings,
+      reviews_sent: reviews,
       jobs_done: jobsDone,
       failures,
       duration_ms: Date.now() - started,

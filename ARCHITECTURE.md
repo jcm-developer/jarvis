@@ -155,6 +155,7 @@ jarvis/
 │  └─ cron/
 │     ├─ index.ts              # what happens on every tick
 │     ├─ briefing.ts           # daily briefing at the local hour
+│     ├─ review.ts             # the weekly review: what you have been putting off
 │     ├─ event-alerts.ts       # the heads-up before an appointment
 │     ├─ jobs.ts               # deferred jobs, last in the tick
 │     └─ reminders.ts          # alerts for tasks falling due
@@ -1133,6 +1134,50 @@ own, not a setting on the appointment.
 
 ---
 
+### The weekly review (phase 13)
+
+One message a week, on Sunday evening: what got closed, what is still open, and **what you
+have been putting off**. The first two are courtesy and any task app draws them. The third
+is the reason the phase exists — nothing else in the system ever says "you have moved this
+three times since the 3rd", and it is the line that gets read.
+
+**It is the first thing that READS `tool_call_logs`.** That table had been write-only since
+phase 2: an audit trail you open when the agent did something odd. Counting postponements
+needs data that `tasks` does not hold —`updated_at` cannot tell moving a date apart from
+fixing a title— and the log already has it, because every `update_task` is stored with the
+arguments the model sent. So the phase costs no new column, no counter and, above all, no
+extra write per message.
+
+**What counts as a postponement is a decision and not a detail.** An `update_task` only
+counts when its arguments carry a date (`due_at`, `remind_at` or either of the two in
+minutes); renaming, reprioritising or adding notes do not. Getting this wrong in the
+generous direction turns "I fixed a typo" into "you have been putting this off", and one
+line like that is enough for the whole message to stop being believed.
+
+**The snooze button had to start writing a log row.** It never was a tool call —it comes
+off an inline keyboard and never goes through the agent (§12, phase 15)— so it left no
+trace anywhere. And it is the most used way of postponing there is: that is the entire
+premise of phase 15. A weekly count built only on what was said out loud would have
+reported a fraction of the truth, so `applySnooze` now records itself in `tool_call_logs`
+under the name `snooze`. One Supabase insert per button press; nothing on the KV budget.
+
+**Two windows, not one.** The closed and open counts cover the last seven local days. The
+postponements are counted over four weeks, because "you keep putting this off" is not
+something that happens inside a week, and a task moved once last Tuesday is not news. A
+task is only named after two moves, and only while it is still pending: something
+postponed three times and then finished is a story with an ending, and naming it is
+nagging about work already done.
+
+**Composed in code, like the briefing.** The model would add cost, latency and the chance
+of inventing a task that is not on the list. What is uncomfortable here is the data, not
+the wording.
+
+`REVIEW_DAY` and `REVIEW_HOUR` are vars for a practical reason rather than a
+configurational one: with Sunday hard-coded, the only way to try the job out is to wait
+for Sunday, and a weekly message debugged once a week never gets debugged.
+
+---
+
 ## 13. Calendar
 
 Four tools: `create_event`, `list_events`, `update_event` and `delete_event`.
@@ -2009,7 +2054,7 @@ this domain that gets caught for certain — at the bookshop.
 | **10** | Images with vision: the universal capture | ✅ Done |
 | **11** | Audio replies (TTS) | ⬜ Pending |
 | **12** | The briefing covering the day's meetings | ✅ Done |
-| **13** | The Sunday review | ⬜ Pending |
+| **13** | The Sunday review | ✅ Done |
 | **14** | A heads-up before each appointment | ✅ Done |
 | **15** | Postponing an alert from the alert itself | ✅ Done |
 | **16** | Tasks and alerts that repeat | ✅ Done |
@@ -2076,6 +2121,11 @@ would have meant either a search that cannot open a link or a table with nothing
 17 is told in §16, 20 in §17 and 22 in §18. Between them they cost the cron its oldest rule, that no
 proactive message goes through the model, and the tool contract one new optional field.
 
+Phase 13 shipped right after 24 and out of order too, and it is the one phase here that
+was unblocked by something already built rather than by a decision: it needs a month of
+`tool_call_logs` to have anything to count, and that table has been filling up since phase
+2. It is told in §12, with the rest of the cron.
+
 **Phase 24 broke the order of this list and it is worth saying why.** It is not the next
 number, it is not blocked on anything and it was asked for out loud, which is the only
 reason a phase jumps the queue here: the list is a plan, not a contract. It also cost
@@ -2097,18 +2147,6 @@ interface in `src/tts/`, like the STT.
   that only arrives as audio is an alert that cannot be read in a meeting.
 - It goes at the end of the turn with whatever budget is left. If it does not fit, the
   text is sent and nothing is said: an audio is no reason to lose the reply.
-
-### Phase 13 — The Sunday review
-
-One message a week: what got closed, what is still open, and what has been postponed
-for three weeks. That last one is what impresses, and what no app says out loud.
-
-Counting postponements needs the data, and today it is not there: `updated_at` does not
-tell moving a date apart from fixing a title. Start by reading it from
-`tool_call_logs`, which already stores every `update_task` with its arguments, before
-adding a counter to `tasks`.
-
-In code like the briefing, and with a KV marker like its own: one write a week.
 
 ### Phase 18 — Weather and travel time inside the alerts
 

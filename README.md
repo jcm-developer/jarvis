@@ -8,8 +8,9 @@ Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
 "what should I do now?" that crosses the agenda with the task list, things that repeat,
 web search that looks things up in the conversation and reads the links you send it in a
-message of its own, the workday's punches on their own schedule, and a reading log that
-recommends from what you have actually read.
+message of its own, the workday's punches on their own schedule, a reading log that
+recommends from what you have actually read, and a Sunday review that says what you have
+been putting off.
 
 The bot talks Spanish: everything it says in the chat, the system prompt and the tool
 descriptions are written in Spanish on purpose. The code and the docs are in English.
@@ -169,9 +170,10 @@ curl.exe "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
 ```
 
 Every run leaves a `cron_run` line in the logs with how many users it looked at, and
-how many reminders, appointment heads-ups and briefings went out. Neither the briefing
-nor an appointment already announced repeats: to test them again, delete the KV key
-(`briefing:<userId>:<date>` or `event_alert:<userId>:<eventId>:<startAt>`).
+how many reminders, appointment heads-ups and briefings went out. Neither the briefing,
+the weekly review nor an appointment already announced repeats: to test them again, delete
+the KV key (`briefing:<userId>:<date>`, `review:<userId>:<date>` or
+`event_alert:<userId>:<eventId>:<startAt>`).
 
 ### Testing delicate logic without a test framework
 
@@ -1028,6 +1030,62 @@ morning. It reads the page and never presses anything.
 
 It costs two model calls, so it is not free — but it is on demand, and cheaper than reading
 `wrangler tail` with a token counter in the other hand.
+
+## What phase 13 does: the Sunday review
+
+Sunday at seven in the evening, one message:
+
+```
+Repaso de la semana, del 17 de agosto al 23 de agosto.
+
+Cerradas: 7.
+- Pagar el IBI
+- Sacar la basura
+- Llamar a David
+- Revisar el presupuesto
+- Cambiar las ruedas
+- y 2 más.
+
+Pendientes: 12, y 3 ya vencidas:
+- Renovar el DNI (20 ago, 12:00)
+- Devolver el paquete (21 ago, 10:00)
+- Pedir cita en el dentista (22 ago, 09:00)
+
+Llevas aplazando:
+- Renovar el DNI: 4 veces desde el 3 de agosto.
+- Pedir cita en el dentista: 2 veces desde el 10 de agosto.
+```
+
+Las dos primeras secciones las hace cualquier app. **La tercera es la que importa**: nada
+más en el sistema te dice en voz alta que llevas un mes moviendo lo mismo.
+
+Sale de `tool_call_logs`, la tabla de auditoría que llevaba desde la fase 2 guardando cada
+llamada a una herramienta con sus argumentos y que hasta ahora no leía nadie. Ahí está lo
+que `tasks` no puede contar: `updated_at` no distingue mover una fecha de corregir un
+título. Así que la fase no añade ni una columna ni una escritura por mensaje.
+
+Qué cuenta y qué no, que es donde está el criterio:
+
+- Un `update_task` solo cuenta si tocó una fecha. Cambiar el título, las notas o la
+  prioridad no es aplazar, y contarlo sería la manera más rápida de que dejaras de
+  creerte el mensaje.
+- **El botón de posponer ahora deja rastro.** Nunca fue una llamada a una herramienta —sale
+  del teclado del aviso y no pasa por el modelo— y es la forma más usada de aplazar que
+  hay. Desde esta fase se registra en `tool_call_logs` como `snooze`.
+- Los aplazamientos se cuentan sobre cuatro semanas, no sobre la semana: "llevas
+  aplazando esto" no pasa en siete días. Hacen falta dos veces para que algo se nombre, y
+  solo si sigue pendiente — algo aplazado tres veces y terminado es una historia con
+  final.
+- Lo cerrado sale del log y no de `completed_at`, porque lo que se repite no se cierra: se
+  mueve a la siguiente vez. Una semana de basura contada desde `tasks` daría cero.
+
+El texto se compone en código, sin pasar por el modelo, igual que el briefing: aquí lo
+incómodo son los datos, no la redacción.
+
+**Sin pasos manuales.** Ni tabla nueva ni secreto nuevo. Dos vars opcionales en
+`wrangler.toml`, `REVIEW_DAY = "0"` (0 es domingo) y `REVIEW_HOUR = "19"`, con una ventana
+de 4 horas por si el cron se salta su tick. El día es una var para poder probarlo un
+martes: un mensaje semanal que solo se depura los domingos no se depura nunca.
 
 ## What phase 24 does: it keeps track of what you read
 

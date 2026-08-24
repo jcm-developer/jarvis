@@ -92,6 +92,12 @@ MAX_AGENT_ITERATIONS = "3"
 # 10): if the cron misses its tick, the next one recovers it.
 BRIEFING_HOUR = "8"
 
+# Weekly review (phase 13): LOCAL day and hour. 0 = Sunday, so this is Sunday at 19:00,
+# with a 4 h window. The day is a var and not a constant so the job can be tried out on
+# any day: a weekly message debugged once a week never gets debugged.
+REVIEW_DAY = "0"
+REVIEW_HOUR = "19"
+
 # Minutes of notice for the heads-up before an appointment. 0 turns it off.
 # Google Calendar sends its own notification wherever it is installed; this one arrives
 # where the tasks and the chat are, which is where the answer gets written.

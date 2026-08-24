@@ -317,6 +317,7 @@ export async function snoozeReminder(
   return applySnooze({
     db,
     userId: identity.userId,
+    conversationId: identity.conversationId,
     taskId: input.taskId,
     code: input.code,
     now: new Date(),

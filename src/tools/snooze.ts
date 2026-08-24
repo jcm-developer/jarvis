@@ -1,4 +1,5 @@
 import type { Db } from '../db/client';
+import { logToolCall } from '../db/logs';
 import type { TaskRow } from '../db/types';
 import { formatTime, localNow, localTomorrow, zonedInstant } from '../lib/localtime';
 
@@ -64,6 +65,11 @@ export function parseSnooze(data: string): { taskId: string; code: string } | nu
 export interface SnoozeDeps {
   db: Db;
   userId: string;
+  /**
+   * Where the postponement gets recorded. Arrived with phase 13: the weekly review counts
+   * postponements out of `tool_call_logs`, and that table is keyed by conversation.
+   */
+  conversationId: string;
   taskId: string;
   code: string;
   now: Date;
@@ -85,7 +91,8 @@ export interface SnoozeDeps {
  * two alerts.
  */
 export async function applySnooze(deps: SnoozeDeps): Promise<string> {
-  const { db, userId, taskId, code, now, timezone } = deps;
+  const { db, userId, conversationId, taskId, code, now, timezone } = deps;
+  const startedAt = Date.now();
 
   const [task] = await db.select<TaskRow>('tasks', {
     filters: { id: `eq.${taskId}`, user_id: `eq.${userId}` },
@@ -120,6 +127,19 @@ export async function applySnooze(deps: SnoozeDeps): Promise<string> {
       completed_at: null,
     },
   );
+
+  // Written down as if it were a tool call, because for the review it is one. This is the
+  // most used way of postponing there is —that is the entire premise of phase 15— so a
+  // weekly count built only on `update_task` would report what was said out loud and miss
+  // what was actually pressed. One Supabase insert, no KV: it is not on the write budget.
+  await logToolCall(db, {
+    conversationId,
+    toolName: 'snooze',
+    args: { task_id: taskId, code },
+    result: { id: task.id, title: task.title, remind_at: target.toISOString() },
+    success: true,
+    durationMs: Date.now() - startedAt,
+  });
 
   const tomorrow = localNow(target, timezone).date !== localNow(now, timezone).date;
   const when = tomorrow
