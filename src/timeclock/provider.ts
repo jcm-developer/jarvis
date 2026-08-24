@@ -105,6 +105,15 @@ export interface PunchState {
   /** The actions the page is offering, i.e. what could be punched right now. */
   available: PunchAction[];
   /**
+   * Actions whose turn it is and that we still cannot register.
+   *
+   * The one that happens is a reason demanding a written comment. Separate from `available`
+   * because the difference is not academic: this list is the honest answer to "why did it not
+   * punch", and while these two were merged the report cheerfully announced a stage that
+   * `punch()` was refusing.
+   */
+  blocked: PunchAction[];
+  /**
    * Every button label the page showed, normalised.
    *
    * Kept for the case that matters on the first run against a reworded portal: no
@@ -206,6 +215,16 @@ export type TimeclockErrorKind =
    * its own kind and never a retry.
    */
   | 'not_available'
+  /**
+   * The stage's turn HAS come and we still will not punch it.
+   *
+   * Split from `not_available` because they deserve opposite treatment and sharing one kind
+   * cost a working day. "Another stage's turn" is a normal state and staying quiet about it
+   * is right. This one —a reason that demands a written justification, or a reason that is no
+   * longer on the page— will refuse identically on the next tick and on tomorrow's, so
+   * silence just means the day ends with a hole in it and nobody warned.
+   */
+  | 'refused'
   /** The row asked for is not in the day's table. */
   | 'unknown_project'
   /** The HTML did not look like what the adapter expects. The site changed. */
@@ -253,6 +272,8 @@ export class TimeclockError extends Error {
         return 'Ficharweb rechaza el usuario o la contraseña. Habrá que actualizarlos.';
       case 'not_available':
         return 'Ficharweb no ofrece ahora esa acción: revisa cuál fue el último fichaje.';
+      case 'refused':
+        return 'Le toca a ese fichaje pero no puedo hacerlo yo: el motivo exige escribir un comentario. Fíchalo tú.';
       case 'unknown_project':
         return 'Ese proyecto no está en la tabla de hoy.';
       case 'parse':

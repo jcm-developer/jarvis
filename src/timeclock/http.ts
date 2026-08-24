@@ -4,6 +4,7 @@ import {
   findRadio,
   formState,
   parseForm,
+  scriptAssignedText,
   textOf,
   type ParsedForm,
 } from './html';
@@ -160,8 +161,11 @@ export class HttpPunchClient implements PunchClient {
 
     const radio = findRadio(page.form.radios, REASON_RADIO[action]);
     if (!radio && !ORDINARY.has(action)) {
+      // 'refused' and not 'not_available': the phase button IS on screen, so this is not
+      // "another stage's turn" —which is worth waiting for— but a reason we cannot find on
+      // a page that is otherwise the right one. Tomorrow it will be missing too.
       throw new TimeclockError(
-        'not_available',
+        'refused',
         `no encuentro el motivo "${REASON_RADIO[action][0]}" entre ` +
           `${page.form.radios.map((option) => option.label).join(' / ') || 'ninguna opción'}`,
       );
@@ -169,16 +173,22 @@ export class HttpPunchClient implements PunchClient {
 
     // A reason that demands a written justification is not one this can register: there is
     // nobody here to write it, and an empty justification on an attendance record is worse
-    // than a missing punch.
+    // than a missing punch. Its own kind, because unlike "the page does not offer this
+    // stage" there is nothing to wait for: it will refuse the same way tomorrow.
     if (radio?.requiresComment) {
       throw new TimeclockError(
-        'not_available',
-        `"${radio.label}" pide un comentario y yo no tengo ninguno que dar`,
+        'refused',
+        `"${radio.label}" pide un comentario escrito y yo no tengo ninguno que dar`,
       );
     }
 
     const before = state.lastMovement;
-    const after = await this.submit(page, { ...reasonFields(radio), ...button.fields }, jar, clock);
+    const after = await this.submit(
+      page,
+      { ...reasonFields(radio), ...phaseFields(action, button), ...button.fields },
+      jar,
+      clock,
+    );
 
     return { action, registeredAt: confirm(action, stateOf(after), before) };
   }
@@ -456,16 +466,36 @@ function isRegisterPage(form: ParsedForm): boolean {
  */
 function stateOf(page: Page): PunchState {
   const { form } = page;
-  const available = PUNCH_ACTIONS.filter((action) => {
-    if (!findControl(form, [PHASE_BUTTON[action]])) return false;
-    if (ORDINARY.has(action)) return true;
-    return findRadio(form.radios, REASON_RADIO[action]) !== null;
-  });
+
+  // Exactly the checks `punch()` makes, in the same order, and that is the point: this list
+  // is what the report and the model are told they can do, and it once said "I can punch the
+  // break" about a stage `punch()` went on to refuse. A diagnosis that promises more than the
+  // action delivers is worse than no diagnosis.
+  const reachable = PUNCH_ACTIONS.filter((action) => Boolean(findControl(form, [PHASE_BUTTON[action]])));
+  const available: PunchAction[] = [];
+  const blocked: PunchAction[] = [];
+  for (const action of reachable) {
+    const radio = findRadio(form.radios, REASON_RADIO[action]);
+    if (!radio) {
+      if (ORDINARY.has(action)) available.push(action);
+      else blocked.push(action);
+      continue;
+    }
+    if (radio.requiresComment) blocked.push(action);
+    else available.push(action);
+  }
 
   return {
     available,
+    blocked,
     labels: form.controls.map((control) => control.label).filter((label) => label.length > 2),
-    reasons: form.radios.map((radio) => radio.label).filter((label) => label.length > 2),
+    reasons: form.radios
+      .filter((radio) => radio.label.length > 2)
+      .map(
+        (radio) =>
+          `${radio.label}${radio.requiresComment ? ' [pide comentario]' : ''}` +
+          `${radio.showsComment ? ' [con caja de texto]' : ''}`,
+      ),
     lastMovement: lastMovement(page.html),
     diagnosis: {
       url: page.url,
@@ -493,12 +523,25 @@ function describe(state: PunchState): string {
  * could infer: it is both the confirmation that a punch landed and the answer to what time
  * it landed at, to the second.
  */
+const MOVEMENT_LINE =
+  /(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*([a-z][a-z ]{4,40})/;
+
 function lastMovement(html: string): LastMovement | null {
-  const match = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*([a-z][a-z ]{4,40})/.exec(
-    textOf(html),
-  );
-  if (!match) return null;
-  return { date: match[1]!, time: match[2]!, label: match[3]!.trim() };
+  // The visible text first, for the day the portal decides to render this server-side, and
+  // the script second, which is where it actually lives today:
+  //
+  //     function fVerResultado(){
+  //       $("#presultado .panel-body").html("24/08/2026 14:07:08 - Salida al descanso");
+  //     }
+  //
+  // For five deploys this was reported as "the portal paints it with JavaScript, so we
+  // cannot read it". The string was in the html the whole time; what dropped it was our own
+  // script stripping.
+  for (const text of [textOf(html), ...scriptAssignedText(html)]) {
+    const match = MOVEMENT_LINE.exec(text);
+    if (match) return { date: match[1]!, time: match[2]!, label: match[3]!.trim() };
+  }
+  return null;
 }
 
 /**
@@ -543,13 +586,16 @@ function confirm(
 }
 
 /**
- * What the page's own script fills in before posting.
+ * The chosen reason, in the two places the page puts it.
  *
  * The visible radio group is the interface; what the server reads are the hidden fields,
  * and `fEnviar()` is what copies one into the other. With no JavaScript to run, that copy
- * is done here: the chosen reason goes into `tipo` as well as into the radio, `subtipo`
- * stays empty because these reasons declare `consubmotivo="False"`, and `comentario` is
- * cleared because the automation never writes one.
+ * is done here: the reason travels in the radio's own field, `subtipo` stays empty because
+ * only a sub-reason fills it, and `comentario` is cleared because the automation never
+ * writes one.
+ *
+ * `tipo` is NOT here, and that was the bug that made every punch vanish without a trace:
+ * see `phaseFields`.
  *
  * The names are the page's own, so a portal that renames them stops being understood rather
  * than being written to wrongly — which is the right way round.
@@ -558,10 +604,37 @@ function reasonFields(radio: { name: string; value: string } | null): Record<str
   if (!radio) return {};
   return {
     [radio.name]: radio.value,
-    tipo: radio.value,
     subtipo: '',
     comentario: '',
   };
+}
+
+/**
+ * The hidden `tipo` field: "S" for a salida, "E" for an entrada.
+ *
+ * This is the whole reason no punch of ours ever landed. `tipo` looks like it names the kind
+ * of punch and it does not — it names the **phase**, and the page's own script sets it from
+ * the button that was pressed:
+ *
+ *     if (tipo == "send"){ $("#tipo").val("S"); } else { $("#tipo").val("E"); }
+ *
+ * We were writing the reason's code into it instead, so every POST told the server a phase
+ * that did not exist. The server answered a page, wrote nothing, and there was no error to
+ * find anywhere: the punch simply did not happen.
+ *
+ * Taken from the control's own `onclick` when the page offers one, because the button on
+ * screen already IS the phase. The map is only the fallback for a page that renders its
+ * buttons some other way, and it agrees with `PHASE_BUTTON` by construction.
+ */
+const PHASE_CODE: Record<PunchAction, 'S' | 'E'> = {
+  clock_in: 'E',
+  break_end: 'E',
+  break_start: 'S',
+  clock_out: 'S',
+};
+
+function phaseFields(action: PunchAction, button: { phase?: 'S' | 'E' }): Record<string, string> {
+  return { tipo: button.phase ?? PHASE_CODE[action] };
 }
 
 /** The caller's budget, spent across the requests one operation needs. */

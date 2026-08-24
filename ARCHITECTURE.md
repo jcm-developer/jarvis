@@ -1830,22 +1830,51 @@ why there is no "have I punched today?" flag anywhere in the schema:
 - **`punch_status`.** What the user reads is the portal's state and its own "Último
   movimiento", not our log. Our log answers the other half —what the automation did— which
   the portal cannot.
-- **Verification.** After submitting, the phase must have flipped: the button just pressed
-  is gone. "Último movimiento" would be the better signal —it names the reason and the time
-  to the second— but the portal paints that panel with JavaScript, so it reaches this code
-  only sometimes. When it does and it disagrees with what was just sent, that is the one
-  outcome that must never be retried: it means the write may have landed.
+- **Verification.** "Último movimiento" is the signal, because it names the reason and the
+  time to the second. The portal paints that panel with JavaScript, which for five deploys
+  was reported as "so it does not reach this code" — wrongly. The string is in the html the
+  whole time, inside the script that writes it:
+  `$("#presultado .panel-body").html("24/08/2026 14:07:08 - Salida al descanso")`. What
+  dropped it was our own `textOf`, which strips script bodies for good reasons of its own, so
+  it is read from the script before that stripping (`scriptAssignedText`). The fallback, for
+  a page that stops printing it, is the phase flipping: the button just pressed must be gone.
+  When the line IS there and disagrees with what was just sent, that is the one outcome that
+  must never be retried: it means the write may have landed.
 
-### The four endings of one punch, and why they cannot share code
+**The bug that made all of this moot for a week.** None of the above ran even once, because
+every POST was rejected in silence. The hidden `tipo` field looks like it names the kind of
+punch and it does not — it names the **phase**, and the page's own script sets it from the
+button that was pressed: `if (tipo == "send"){ $("#tipo").val("S"); } else { ... "E" }`. We
+were writing the reason's code into it. The server answered a normal page, wrote nothing, and
+left no error anywhere: the punch simply did not happen. The reason travels on its own, in the
+radio's field. Two lessons, and the second is the expensive one: a form's field names are not
+documentation, and *nothing went wrong* is a failure mode a legal record cannot afford — which
+is why `refused` now exists as its own ending.
+
+The same reading of `fEnviar()` settled the other half. What blocks a submit is
+`consubmotivo == "True"` with an empty `#comentario`, **not** `conobservacion`, which only
+reveals the comment box. Reading the wrong attribute meant refusing reasons the page would
+have sent. And when the attribute is missing altogether the page's own function falls through
+and submits nothing at all, so a missing attribute is treated here as "needs a comment": the
+automation refuses exactly what a person clicking the button would fail to send.
+
+### The five endings of one punch, and why they cannot share code
 
 This is the whole design, and it is a table rather than a `catch`:
 
 | What happened | What it means | What is done |
 |---|---|---|
 | The phase button is not there | Already punched, or not this stage's turn | Nothing, quietly. Day closed |
+| Its turn, and the reason demands a comment | It will refuse tomorrow too | Day closed, **user told** |
 | Portal down, timeout | Nothing was written | Day **released**, next tick retries |
 | Wrong credentials, page not understood | A human has to look | Day closed, user told |
 | Answered, "Último movimiento" unchanged | **Unknown** whether it registered | Day closed, user told, **never retried** |
+
+Row two is new and it is there because it was row one for a while. Sharing a kind with
+"another stage's turn" bought its silence, and silence is right for that one and wrong for
+this one: the day gets claimed, no punch goes out, nobody is told, and the hole surfaces in a
+timesheet. Same shape as the row below it, opposite handling, and only the caller can tell
+them apart — hence `refused`.
 
 The last row is the one worth the section. A retry there is a coin flip on a duplicate
 punch, so the code refuses to take it: an unverified punch is reported and left alone. That

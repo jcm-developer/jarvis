@@ -24,13 +24,23 @@ export interface RadioOption {
   /** The visible text, normalised. What the user reads on the row. */
   label: string;
   /**
-   * Whether the page marks this option as needing a written reason.
+   * Whether the page's own submit refuses to send this option without a written comment.
    *
-   * On this portal it is the `conobservacion` attribute, and it is not decoration: two of
-   * the four reasons demand a comment, and the automation has none to give. Better to
-   * refuse than to submit an empty justification into an attendance record.
+   * `consubmotivo` and NOT `conobservacion`, and the difference cost a day of silent
+   * failures. `fEnviar()` submits only when `consubmotivo == "False"`, or when it is
+   * "True" and `#comentario` is not empty — and when the attribute is missing altogether
+   * it falls through and submits nothing, without so much as an alert. `conobservacion` is
+   * a different job: `fActivar()` reads it to reveal the comment box. Reading the second
+   * one to decide the first meant refusing options the page would have sent.
    */
   requiresComment: boolean;
+  /**
+   * `conobservacion`: the page offers a comment box for this option.
+   *
+   * Kept although nothing acts on it, because the two attributes were confused once and a
+   * diagnosis that prints both is what stops it happening again.
+   */
+  showsComment: boolean;
 }
 
 /** A control that submits the form: either a real submit input or a __doPostBack link. */
@@ -39,6 +49,15 @@ export interface FormControl {
   label: string;
   /** Fields to add to the POST to press this control. */
   fields: Record<string, string>;
+  /**
+   * The phase this control registers, for a page whose buttons call `fEnviar()`.
+   *
+   * The register page carries one hidden `tipo` field meaning entrada or salida, and it is
+   * the button —not the reason— that decides its value: `fEnviar('send')` writes "S" and
+   * any other argument writes "E". Taken from the control instead of mapped by hand
+   * because the button on screen is already the phase, so there is nothing left to guess.
+   */
+  phase?: 'S' | 'E';
 }
 
 export interface ParsedForm {
@@ -136,6 +155,21 @@ const MAX_LABEL_CHARS = 80;
 const DO_POSTBACK =
   /__doPostBack\(\s*(?:&#39;|&apos;|['"])([^'"&]+)(?:&#39;|&apos;|['"])\s*,\s*(?:&#39;|&apos;|['"])([^'"&]*)/i;
 
+/**
+ * `fEnviar('send')` in an onclick, which is how the register page's own buttons submit.
+ *
+ * The argument is not the reason and not the button: it is the phase, and the function
+ * turns it into the hidden `tipo` field —"S" for 'send', "E" for anything else— before
+ * submitting. Reading it here is what keeps that mapping out of the caller.
+ */
+const F_ENVIAR = /fEnviar\(\s*(?:&#39;|&apos;|['"])([^'"&)]*)/i;
+
+function phaseOf(attrs: Record<string, string>): { phase?: 'S' | 'E' } {
+  const call = F_ENVIAR.exec(attrs['onclick'] ?? '');
+  if (!call) return {};
+  return { phase: call[1]!.trim().toLowerCase() === 'send' ? 'S' : 'E' };
+}
+
 export function parseForm(html: string): ParsedForm {
   const formTag = /<form\b[^>]*>/i.exec(html);
   const action = formTag ? (attributes(formTag[0])['action'] ?? null) : null;
@@ -152,7 +186,13 @@ export function parseForm(html: string): ParsedForm {
     if (type === 'submit' || type === 'button' || type === 'image') {
       // A submit control is pressed by sending its own name and value, which is also
       // how the server knows which button was clicked.
-      if (name) controls.push({ label: norm(value || attrs['alt'] || ''), fields: { [name]: value } });
+      if (name) {
+        controls.push({
+          label: norm(value || attrs['alt'] || ''),
+          fields: { [name]: value },
+          ...phaseOf(attrs),
+        });
+      }
       continue;
     }
 
@@ -203,6 +243,7 @@ export function parseForm(html: string): ParsedForm {
     controls.push({
       label,
       fields: type === 'submit' && attrs['name'] ? { [attrs['name']]: attrs['value'] ?? '' } : {},
+      ...phaseOf(attrs),
     });
   }
 
@@ -223,6 +264,7 @@ export function parseRadios(html: string): RadioOption[] {
     value: string;
     id: string;
     requiresComment: boolean;
+    showsComment: boolean;
     end: number;
   }[] = [];
   for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
@@ -233,7 +275,11 @@ export function parseRadios(html: string): RadioOption[] {
       name: attrs['name'],
       value: attrs['value'] ?? '',
       id: attrs['id'] ?? '',
-      requiresComment: (attrs['conobservacion'] ?? '').toLowerCase() === 'true',
+      // Not `!== 'false'`: an option whose attribute is missing is one the page's own
+      // submit silently declines to send, so treating it as "needs a comment" refuses it
+      // here instead of posting something the browser never would.
+      requiresComment: (attrs['consubmotivo'] ?? '').toLowerCase() !== 'false',
+      showsComment: (attrs['conobservacion'] ?? '').toLowerCase() === 'true',
       end: (match.index ?? 0) + match[0].length,
     });
   }
@@ -250,6 +296,7 @@ export function parseRadios(html: string): RadioOption[] {
       name: radio.name,
       value: radio.value,
       requiresComment: radio.requiresComment,
+      showsComment: radio.showsComment,
       // Three ways of naming an option, in order of how much they can be trusted. The
       // middle one is the one this page actually uses and the one no amount of staring at
       // a failed parse would have suggested: the reason is not text next to the radio, it
@@ -299,6 +346,25 @@ export function findControl(form: ParsedForm, phrases: string[]): FormControl | 
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * What a `.html("…")` call in the page's own script writes into the document.
+ *
+ * It exists for one line of this portal: "Último movimiento" is not served as markup, it is
+ * assigned by `fVerResultado()` on load. `textOf` drops script bodies —deliberately, and it
+ * has earned that twice— so the only way to read the time the portal recorded is to fetch
+ * it out of the script before the stripping happens. Without this, confirming a punch falls
+ * back to "the button changed phase" and the hour reported to the user is our clock instead
+ * of theirs, on a record where theirs is the one that counts.
+ */
+export function scriptAssignedText(html: string): string[] {
+  const found: string[] = [];
+  for (const match of html.matchAll(/\.html\(\s*(['"])([\s\S]{0,300}?)\1\s*\)/g)) {
+    const text = textOf(match[2] ?? '');
+    if (text) found.push(text);
+  }
+  return found;
 }
 
 /**

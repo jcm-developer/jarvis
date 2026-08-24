@@ -181,7 +181,7 @@ async function attempt(
         return false;
 
       default: {
-        // auth, config, parse, unverified: none of them get better by trying again, and
+        // auth, config, parse, refused, unverified: none of them get better by trying again, and
         // 'unverified' must NOT be retried —it is the case where the punch may already
         // have landed. The day stays closed and a human is told.
         console.error(`timeclock: ${schedule.action} failed (${error.kind}): ${error.message}`);
