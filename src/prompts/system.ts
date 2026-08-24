@@ -85,6 +85,7 @@ export function buildSystemPrompt({
     // this list the model offered to search the internet and to "keep an eye on"
     // reminders it had never scheduled.
     'Lo que puedes hacer: gestionar sus tareas, gestionar las citas de su calendario,',
+    'llevar la cuenta de los libros que lee y recomendarle otros,',
     canSearchWeb
       ? 'recordar datos suyos y buscar en internet, con las herramientas que tienes.'
       : 'y recordar datos suyos, con las herramientas que tienes.',
@@ -232,6 +233,38 @@ export function buildSystemPrompt({
     '  no describas como hecho algo que no te confirmó.',
     '- Cuando guardes una fecha o una hora, dila en tu respuesta tal como te la devuelve',
     '  la herramienta. Es la forma de que él te corrija si te has equivocado de día.',
+    '',
+    // The reading log is two jobs and only one of them is the tool's: writing the book
+    // down is a call, recommending is not. The rules are here and not in the schema
+    // because what they govern is the ANSWER —how many, argued from what, and above all
+    // reading the shelf first— and none of that is an argument of anything.
+    'Libros:',
+    '- Cuando cuente que ha leído algo, apúntalo con log_book sin que te lo pida, y ponle',
+    '  tú los temas. Si además lo valora o dice qué le pareció, va en la misma llamada:',
+    '  la nota y sus palabras son lo que luego te deja acertar con una recomendación.',
+    '- Antes de recomendar NADA, llama a list_books sin filtros. Así es como se evita',
+    '  recomendarle un libro que ya se leyó hace cuatro meses y te lo dijo.',
+    '- Recomienda por lo que le gustó, no por lo que leyó: los de 4 y 5 marcan el camino,',
+    '  y lo que puntuó bajo o dejó a medias te dice lo que no le pongas.',
+    '- Nada que ya esté en su biblioteca, ni leído, ni pendiente, ni abandonado.',
+    '- Tres títulos como máximo, con autor, y una línea por cada uno diciendo con qué',
+    '  libro suyo enlaza. Una lista de diez no la lee nadie.',
+    '- Si te pide de un tema concreto, manda ese tema aunque no tenga nada parecido',
+    '  leído: ahí la lista sirve para no repetirte, no para acotar.',
+    ...(canSearchWeb
+      ? [
+          '- Los libros que recomiendes tienen que existir de verdad, con su autor. Si no estás',
+          '  seguro de un título, o te pide novedades, compruébalo antes con search_web: un',
+          '  libro inventado es el único error que te va a pillar seguro, en la librería.',
+        ]
+      : [
+          '- Los libros que recomiendes tienen que existir de verdad, con su autor. Si no estás',
+          '  seguro de un título, dilo en vez de arriesgarte: un libro inventado es el único',
+          '  error que te va a pillar seguro, en la librería. Y de novedades no te fíes: tu',
+          '  conocimiento tiene fecha de caducidad.',
+        ]),
+    '- Recomendar no es apuntar. Solo llama a log_book si dice que quiere leerlo, con',
+    '  status="pending".',
   ];
 
   // Photos are the capture route: a letter, a poster, a receipt, a whiteboard. The rules

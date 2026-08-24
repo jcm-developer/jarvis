@@ -1,6 +1,7 @@
 import type { ToolSchema } from '../llm/provider';
 import type { Env } from '../types';
 import { findFreeSlots, whatNow } from './agenda';
+import { deleteBook, listBooks, logBook } from './books';
 import { createEvent, deleteEvent, listEvents, updateEvent } from './calendar';
 import { recall, remember } from './memory';
 import { readUrl, searchWeb } from './search';
@@ -31,6 +32,9 @@ export const TOOLS: ToolDefinition[] = [
   recall,
   searchWeb,
   readUrl,
+  logBook,
+  listBooks,
+  deleteBook,
   punchNow,
   punchStatus,
 ];

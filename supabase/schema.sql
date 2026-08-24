@@ -262,6 +262,35 @@ create table if not exists project_cache (
   primary key (user_id, day)
 );
 
+-- Domain: books (phase 24) ---------------------------------------------------
+-- What the user has read, with a mark and what it was about. It is not a library
+-- catalogue: it exists so the model can recommend from a real taste instead of from a
+-- guess, so what is stored is the judgement (`rating`, `notes`) and the subject
+-- (`topics`), not the metadata anybody can look up (ISBN, pages, publisher).
+--
+-- `topics` is a comma-separated string and not text[]: it is written by the model and
+-- read back with ilike, the same as `memories`, and an array would buy a containment
+-- operator nothing here queries by.
+--
+-- No `finished_on`. The model does not calculate dates (§7) and "hace un par de años"
+-- would land wrong on a column that reads as fact; `created_at` says when it was logged,
+-- which is the honest version of the same thing.
+create table if not exists books (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references users(id) on delete cascade,
+  title        text not null,
+  author       text,
+  status       text not null default 'read'
+                 check (status in ('read','reading','pending','abandoned')),
+  rating       smallint check (rating between 1 and 5),
+  topics       text,          -- 'ciencia ficción, distopía'
+  notes        text,          -- what the user said about it, in their words
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+create index if not exists books_user_status_idx
+  on books (user_id, status, rating desc nulls last);
+
 -- Observability --------------------------------------------------------------
 -- Without this, understanding why the agent did something odd is impossible.
 create table if not exists tool_call_logs (
@@ -298,6 +327,10 @@ drop trigger if exists tasks_touch on tasks;
 create trigger tasks_touch before update on tasks
   for each row execute function touch_updated_at();
 
+drop trigger if exists books_touch on books;
+create trigger books_touch before update on books
+  for each row execute function touch_updated_at();
+
 drop trigger if exists punch_schedules_touch on punch_schedules;
 create trigger punch_schedules_touch before update on punch_schedules
   for each row execute function touch_updated_at();
@@ -314,5 +347,6 @@ alter table conversations  enable row level security;
 alter table messages       enable row level security;
 alter table memories       enable row level security;
 alter table tasks          enable row level security;
+alter table books          enable row level security;
 alter table jobs           enable row level security;
 alter table tool_call_logs enable row level security;

@@ -1,7 +1,7 @@
 # Jarvis — a personal assistant over Telegram
 
 Architecture document. The source of truth for technical decisions.
-Last revised: 2026-08-20.
+Last revised: 2026-08-24.
 
 ---
 
@@ -114,6 +114,7 @@ jarvis/
 │  │  ├─ calendar.ts           # create/list/update/delete_event + overlap check
 │  │  ├─ agenda.ts             # find_free_slots, what_now
 │  │  ├─ memory.ts             # remember, recall
+│  │  ├─ books.ts              # log_book, list_books, delete_book
 │  │  ├─ search.ts             # search_web (in the turn), read_url (queued)
 │  │  ├─ snooze.ts             # postponing straight from the alert's buttons
 │  │  └─ pending.ts            # actions awaiting confirmation (KV)
@@ -240,6 +241,24 @@ create table tasks (
 create index on tasks (user_id, status, due_at);
 create index on tasks (user_id, status, remind_at);
 
+-- Domain: books (phase 24). The reading log: what it stores is the judgement and the
+-- subject, because that is what a recommendation is argued from. No ISBN, no pages, no
+-- publisher: metadata anybody can look up is not worth a column here.
+create table books (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references users(id) on delete cascade,
+  title           text not null,
+  author          text,
+  status          text not null default 'read'
+                    check (status in ('read','reading','pending','abandoned')),
+  rating          smallint check (rating between 1 and 5),
+  topics          text,                    -- 'ciencia ficción, distopía', written by the model
+  notes           text,                    -- what the user said about it, in their words
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index on books (user_id, status, rating desc nulls last);
+
 -- Observability
 create table tool_call_logs (
   id              uuid primary key default gen_random_uuid(),
@@ -280,6 +299,7 @@ alter table conversations    enable row level security;
 alter table messages         enable row level security;
 alter table memories         enable row level security;
 alter table tasks            enable row level security;
+alter table books            enable row level security;
 alter table jobs             enable row level security;
 alter table tool_call_logs   enable row level security;
 ```
@@ -1918,7 +1938,61 @@ What it cannot know is holidays: nobody told us the calendar of somebody else's 
 a holiday the portal simply does not offer the button, which lands on the first row of the
 table above and is the safe direction.
 
-## 19. Roadmap
+## 19. The reading log: taste, not a catalogue
+
+Phase 24, and it is the first domain added since the tasks one that is not about time.
+"Me he leído tal" goes in as a row; "recomiéndame algo" reads those rows back. Nothing
+here talks to anybody outside, so it is one of the cheapest phases in the document —
+and precisely because it was cheap, the interesting decisions are the ones about what
+NOT to build.
+
+**Three columns are the whole feature: `rating`, `notes`, `topics`.** The rest of what a
+book has —ISBN, pages, publisher, edition— is metadata anybody can look up in ten
+seconds, and none of it makes the next recommendation better. What does is the mark,
+what the user said about it in their own words, and what it was about. A book logged
+without an opinion is a title on a list; with one it is an argument.
+
+**There is no `recommend_books` tool, and that is the design.** Recommending is not an
+operation on the database: it is the model reading the shelf and arguing from it. A tool
+would have had to return exactly the rows `list_books` already returns and the
+recommendation would still have been the model's. What the feature actually needed was
+not a tool but a rule —read the shelf BEFORE recommending— because that is the part that
+fails: asked cold, the model recommends from the conversation, and the conversation does
+not contain the book he told us about in April. So the rules live in the prompt and the
+catalogue keeps three plain tools.
+
+**`log_book` updates instead of duplicating, and it does the matching itself.** Titles are
+compared with accents and punctuation stripped, not with an `ilike` filter: the second
+mention of a book is rarely typed like the first, and "Los pilares de la tierra" without
+the accent does not match an `ilike` at all. Containment counts from six characters up,
+which is what separates "El nombre del viento" from "El nombre del viento (Crónica del
+asesino de reyes 1)" —the same book— without letting "It" swallow every title that
+contains those two letters.
+
+**A mark implies it was read.** The model sends `rating` and leaves `status` alone, so
+"le doy un 5 a Dune" would leave Dune sitting in the wants-to-read pile and coming back
+as a recommendation weeks later. The handler corrects it; the prompt does not have to.
+
+**No `finished_on`.** The model does not calculate dates (§7) and "hace un par de años"
+would land wrong on a column that reads as a fact. `created_at` says when it was logged,
+which is the honest version of the same thing, and nothing in the feature asks when the
+book was finished.
+
+Two things it deliberately does not do. It does not store what it recommends: that would
+be a write per suggestion and a second list to keep clean, when the same job is done by
+the user saying "apúntamelo" and getting a row with `status='pending'`. And it does not
+inject the shelf into the system prompt the way memories are injected — thirty books on
+every message, for the two conversations a month that are about books, is exactly the
+kind of token that §11 is about.
+
+The one dependency worth naming is between this and web search: with a search provider
+configured, the rule tells the model to check a title it is unsure of before saying it
+out loud, and without one, to keep quiet instead. An invented book is the only error in
+this domain that gets caught for certain — at the bookshop.
+
+---
+
+## 20. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1946,6 +2020,7 @@ table above and is the safe direction.
 | **21** | Expenses in a spreadsheet | ⬜ Pending |
 | **22** | Fichaje: scheduled punches and the state of the day | ✅ Done |
 | **23** | Imputación de horas into the day's projects | ⬜ Pending |
+| **24** | The reading log: books read and recommendations | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -2000,6 +2075,13 @@ is the phase that proves 17. Half of it —snippets— runs in the turn, and the
 would have meant either a search that cannot open a link or a table with nothing in it.
 17 is told in §16, 20 in §17 and 22 in §18. Between them they cost the cron its oldest rule, that no
 proactive message goes through the model, and the tool contract one new optional field.
+
+**Phase 24 broke the order of this list and it is worth saying why.** It is not the next
+number, it is not blocked on anything and it was asked for out loud, which is the only
+reason a phase jumps the queue here: the list is a plan, not a contract. It also cost
+nothing that was competing with anything else —no provider, no cron job, no external
+call, three tools and a table— so nothing it might have delayed was delayed. It is told
+in §19.
 
 ### Phase 11 — Audio replies (TTS)
 

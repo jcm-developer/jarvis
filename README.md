@@ -4,11 +4,12 @@ A personal assistant over Telegram, running on Cloudflare Workers with Supabase 
 
 Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Status: phase 20** — tasks, memory, voice notes, photos with vision, history in
+**Status: phase 24** — tasks, memory, voice notes, photos with vision, history in
 Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
 "what should I do now?" that crosses the agenda with the task list, things that repeat,
-and web search: it looks things up in the conversation and reads the links you send it in
-a message of its own.
+web search that looks things up in the conversation and reads the links you send it in a
+message of its own, the workday's punches on their own schedule, and a reading log that
+recommends from what you have actually read.
 
 The bot talks Spanish: everything it says in the chat, the system prompt and the tool
 descriptions are written in Spanish on purpose. The code and the docs are in English.
@@ -1027,6 +1028,64 @@ morning. It reads the page and never presses anything.
 
 It costs two model calls, so it is not free — but it is on demand, and cheaper than reading
 `wrangler tail` with a token counter in the other hand.
+
+## What phase 24 does: it keeps track of what you read
+
+Tell it you have read something and it goes on the shelf:
+
+```
+Me acabo de terminar Sapiens, un 5. Muy bueno el principio.
+```
+
+```
+Apuntado: Sapiens, de Yuval Noah Harari, 5/5.
+```
+
+You do not have to ask it to save anything, and you do not have to give it the topics: it
+puts those in itself (*historia, antropología*), which is what makes the next part work.
+
+**Recommending is the point of the whole thing.** Ask for something to read and it looks
+at the shelf first — everything you rated, everything you left half-finished, everything
+already on the wishlist — and argues from that:
+
+```
+Recomiéndame algo
+```
+
+```
+Tres, por lo que te ha gustado:
+- Armas, gérmenes y acero, de Jared Diamond. Historia a la escala de Sapiens, que le
+  pusiste un 5.
+- El infinito en un junco, de Irene Vallejo. Misma vena divulgativa, más literaria.
+- Los orígenes del totalitarismo, de Hannah Arendt. Más denso; va con el 1984 que te
+  gustó.
+```
+
+It will not repeat a book that is already on your shelf, whatever state it is in, and
+what you rated low or abandoned counts as much as what you liked — it is the half that
+says what *not* to send you. You can also ask by topic (*"algo de divulgación
+científica"*), and there the shelf is only used to avoid repeating itself.
+
+Three tools and no new provider: `log_book`, `list_books` and `delete_book`. Marking a
+book, changing its state (*"lo he dejado"*) and putting a rating on it later all go
+through the same call, and a book mentioned twice is updated, never duplicated — the
+titles are matched without accents or punctuation, so *"los pilares de la tierra"* finds
+the one you wrote with capitals in March.
+
+What it deliberately does not do: it does not store the books it recommends to you (say
+*"apúntame ese"* and it goes on the wishlist, otherwise it evaporates like any other
+answer), and the shelf is not sent to the model on every message — it is read when the
+conversation is about books, which is the only way thirty books' worth of tokens is not
+paid for on the other three hundred messages of the month.
+
+If the search provider is configured it checks a title it is unsure of before saying it;
+without one it is told to keep quiet instead. An invented book is the only mistake here
+that gets caught for certain, at the bookshop.
+
+**One manual step on an existing deploy:** re-run
+[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds the `books` table;
+the script is idempotent, so re-running the whole thing is safe. No new secrets and no new
+vars.
 
 ## Several things in one message
 

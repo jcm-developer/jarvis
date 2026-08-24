@@ -68,6 +68,27 @@ export interface MemoryRow {
 }
 
 /**
+ * A book the user has read, is reading, or wants to read (phase 24).
+ *
+ * The row is the taste, not the edition: what makes it worth storing is `rating`,
+ * `notes` and `topics`, which are what a recommendation is argued from.
+ */
+export interface BookRow {
+  id: string;
+  user_id: string;
+  title: string;
+  author: string | null;
+  status: 'read' | 'reading' | 'pending' | 'abandoned';
+  /** 1 to 5, or null when the user logged the book without judging it. */
+  rating: number | null;
+  /** Comma-separated, written by the model: 'ciencia ficción, distopía'. */
+  topics: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
  * A history row. `tool_calls` stores the provider's structure verbatim, so the model's
  * context can be rebuilt without transforming it.
  */
