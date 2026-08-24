@@ -1796,10 +1796,10 @@ This is the whole design, and it is a table rather than a `catch`:
 
 | What happened | What it means | What is done |
 |---|---|---|
-| Control missing | Already punched, or not this stage's turn | Nothing, quietly. Day closed |
+| The phase button is not there | Already punched, or not this stage's turn | Nothing, quietly. Day closed |
 | Portal down, timeout | Nothing was written | Day **released**, next tick retries |
 | Wrong credentials, page not understood | A human has to look | Day closed, user told |
-| Answered, but the button is still there | **Unknown** whether it registered | Day closed, user told, **never retried** |
+| Answered, "Último movimiento" unchanged | **Unknown** whether it registered | Day closed, user told, **never retried** |
 
 The last row is the one worth the section. A retry there is a coin flip on a duplicate
 punch, so the code refuses to take it: an unverified punch is reported and left alone. That

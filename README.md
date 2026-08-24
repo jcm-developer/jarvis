@@ -911,10 +911,13 @@ You can ask about it, and ask for it by hand:
 ### If you punched yourself, it does not touch anything
 
 This is the part worth understanding, because it is where the whole design comes from. The
-portal only ever shows the action that comes **next**: if the entry is registered, the entry
-button is not on the page. So there is no need to keep track of what you have done — if you
-clocked in from the web at 09:20, the automation finds no button and simply waits for the
-next stage. Quietly: there is nothing to tell you.
+portal has a single button and its wording is the phase: "Registrar entrada" while you are
+out, "Registrar salida" while you are in. So there is no need to keep track of what you have
+done — if you clocked in from the web at 09:20, the automation finds no "Registrar entrada"
+and simply waits for the next stage. Quietly: there is nothing to tell you.
+
+Below the button the portal prints "Último movimiento" with the reason and the time to the
+second, and that is what gets read back to you and what a punch is confirmed against.
 
 The same property answers *"have I clocked in?"* honestly. What you get back is the
 **portal's** state, not our log, so a punch you did yourself from the web counts.
@@ -923,9 +926,9 @@ The same property answers *"have I clocked in?"* honestly. What you get back is 
 
 - **Punch twice.** The day is claimed in the database before the request goes out, so two
   overlapping ticks cannot both fire.
-- **Retry when it does not know what happened.** If the portal answers but keeps the button
-  on screen, the punch may or may not have registered. It tells you and stops. A retry
-  there is a coin flip on a duplicate line in an attendance record.
+- **Retry when it does not know what happened.** If the portal answers and "Último
+  movimiento" is not the punch we just sent, it may or may not have registered. It tells you
+  and stops. A retry there is a coin flip on a duplicate line in an attendance record.
 - **Punch on the model's initiative.** The assistant only clocks in when you ask for it in
   that message; the four scheduled ones are the system's, not the model's.
 

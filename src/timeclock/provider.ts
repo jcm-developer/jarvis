@@ -112,8 +112,15 @@ export interface PunchState {
    * mystery.
    */
   labels: string[];
-  /** Times the page shows for today, in the order they appear. Best effort. */
-  times: string[];
+  /**
+   * The reasons the "Motivo registro" group offers, as printed.
+   *
+   * Kept for the same reason as `labels`: when nothing is recognised, what the page did
+   * offer is the diagnosis.
+   */
+  reasons: string[];
+  /** What the portal says it last recorded, which is the truth about today. */
+  lastMovement: LastMovement | null;
   /**
    * Where it ended up and what it saw there.
    *
@@ -134,6 +141,21 @@ export interface PunchState {
     /** The page's visible text, cut short. What a human needs to recognise the page. */
     snippet: string;
   };
+}
+
+/**
+ * The "Último movimiento" line of the register page.
+ *
+ * Its own type because it does two jobs: it confirms that a punch landed, and it is the
+ * only place the portal states a time —to the second— which is what gets reported back
+ * instead of our own clock.
+ */
+export interface LastMovement {
+  /** As printed, dd/mm/yyyy. Not parsed: it goes back out the way it came in. */
+  date: string;
+  time: string;
+  /** The reason, normalised: "entrada ordinaria", "salida al descanso". */
+  label: string;
 }
 
 /** Clocking in and out. Credentials: TIMECLOCK_USER / TIMECLOCK_PASS. */

@@ -17,6 +17,14 @@ export interface FormInput {
   value: string;
 }
 
+/** One option of a radio group, with the text printed next to it. */
+export interface RadioOption {
+  name: string;
+  value: string;
+  /** The visible text, normalised. What the user reads on the row. */
+  label: string;
+}
+
 /** A control that submits the form: either a real submit input or a __doPostBack link. */
 export interface FormControl {
   /** What the user reads on it, normalised. */
@@ -28,6 +36,8 @@ export interface FormControl {
 export interface ParsedForm {
   /** The form's action, as written in the HTML. Relative more often than not. */
   action: string | null;
+  /** The radio options, with the text printed beside each one. */
+  radios: RadioOption[];
   /**
    * Every input on the page, in document order.
    *
@@ -134,7 +144,54 @@ export function parseForm(html: string): ParsedForm {
     });
   }
 
-  return { action, inputs, controls };
+  return { action, inputs, controls, radios: parseRadios(html) };
+}
+
+/**
+ * The radio group and the text next to each option.
+ *
+ * The label is not inside the input —it never is— so it is taken as the visible text
+ * between one radio and the next. That is a heuristic and it is the right one here: the
+ * page lays the options out as rows, so whatever text follows a radio belongs to it until
+ * the following radio starts. A `<label for>` is preferred when the page provides one.
+ */
+export function parseRadios(html: string): RadioOption[] {
+  const radios: { name: string; value: string; id: string; end: number }[] = [];
+  for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
+    const attrs = attributes(match[0]);
+    if ((attrs['type'] ?? '').toLowerCase() !== 'radio') continue;
+    if (!attrs['name']) continue;
+    radios.push({
+      name: attrs['name'],
+      value: attrs['value'] ?? '',
+      id: attrs['id'] ?? '',
+      end: (match.index ?? 0) + match[0].length,
+    });
+  }
+
+  const labelFor = new Map<string, string>();
+  for (const match of html.matchAll(/<label([^>]*)>([\s\S]*?)<\/label>/gi)) {
+    const target = attributes(match[1] ?? '')['for'];
+    if (target) labelFor.set(target, textOf(match[2] ?? ''));
+  }
+
+  return radios.map((radio, index) => ({
+    name: radio.name,
+    value: radio.value,
+    label:
+      labelFor.get(radio.id) ||
+      textOf(html.slice(radio.end, radios[index + 1]?.end ?? radio.end + 300)),
+  }));
+}
+
+/** The first radio whose visible text contains one of the given phrases. */
+export function findRadio(radios: RadioOption[], phrases: string[]): RadioOption | null {
+  for (const phrase of phrases) {
+    const wanted = norm(phrase);
+    const found = radios.find((radio) => radio.label.includes(wanted));
+    if (found) return found;
+  }
+  return null;
 }
 
 /** The first control whose label contains one of the given phrases. */

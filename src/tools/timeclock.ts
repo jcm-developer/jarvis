@@ -164,7 +164,11 @@ export const punchStatus: ToolDefinition = {
       data: {
         date: today,
         portal_offers: state.available.map((action) => ({ action, what: ACTION_NAMES[action] })),
-        times_shown_by_portal: state.times,
+        // The portal stating what it last recorded, which covers the punches the user made
+        // from the web himself. Ours is the other half, below.
+        last_movement: state.lastMovement
+          ? `${state.lastMovement.time} — ${state.lastMovement.label}`
+          : null,
         punched_by_jarvis: mine.map((punch) => ({
           action: punch.action,
           what: ACTION_NAMES[punch.action],
@@ -180,9 +184,9 @@ export const punchStatus: ToolDefinition = {
             hecho_hoy: schedule.fired_on === today,
           })),
         note:
-          'portal_offers es la verdad: el sitio solo muestra la acción que toca. Si no ' +
-          'aparece la entrada, está fichada. punched_by_jarvis son solo los fichajes que ' +
-          'he hecho yo; los que haya hecho él a mano no salen ahí.',
+          'portal_offers y last_movement son la verdad: el sitio solo ofrece la fase que ' +
+          'toca y dice a qué hora registró lo último, lo haya fichado él a mano o yo. ' +
+          'punched_by_jarvis son solo los míos.',
       },
     };
   },

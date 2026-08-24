@@ -1,29 +1,57 @@
-import { findControl, formState, parseForm, textOf, type ParsedForm } from './html';
 import {
-  TimeclockError,
+  findControl,
+  findRadio,
+  formState,
+  parseForm,
+  textOf,
+  type ParsedForm,
+} from './html';
+import {
   PUNCH_ACTIONS,
-  type TimeclockOptions,
+  TimeclockError,
+  type LastMovement,
   type PunchAction,
   type PunchClient,
   type PunchResult,
   type PunchState,
+  type TimeclockOptions,
 } from './provider';
 
 /**
  * ficharweb over plain HTTP, from the Worker (phase 22).
  *
  * There is no browser in this runtime and Browser Rendering is on the paid plan, so the
- * three requests a punch actually needs are made by hand: load the page, log in, press
- * the button. Two things make that viable without knowing the site's internals — the
- * form's hidden fields are copied verbatim, so `__VIEWSTATE` and friends travel through
- * without this code knowing they exist, and the button is found by the words on it.
+ * three requests a punch needs are made by hand: load the page, log in, submit the form.
  *
- * Everything site-specific is ACTION_LABELS and the two paths below. If the portal is
- * reworded that is the block to fix, and the error says so with the labels it did find.
+ * The page is `registro.asp` and it works like this, which is what everything below is
+ * shaped around:
+ *
+ * - There is **one submit button**, and its wording is the phase: "Registrar entrada"
+ *   while you are out, "Registrar salida" while you are in. Never both.
+ * - Above it, a radio group ("Motivo registro") holds the reasons for that phase, with
+ *   the ordinary one already selected.
+ * - Below it, "Último movimiento" states what the portal last recorded and at what time,
+ *   to the second.
+ *
+ * So a punch is: check the button says the right phase, pick the radio when the action
+ * needs one, submit, and confirm against "Último movimiento". That last step is why this
+ * can report honestly: the portal itself says what it wrote down.
  */
 
 const DEFAULT_BASE_URL = 'https://ficharweb.ccbosco.org';
-const HOME_PATH = '/CCB/Home';
+
+/**
+ * The login form.
+ *
+ * The trailing slash is not cosmetic. The login form's `action` is relative, and a relative
+ * URL resolved against `/CCB` resolves against the ROOT —`/default.asp`, not
+ * `/CCB/default.asp`— because without the slash `/CCB` is a file as far as URL resolution
+ * is concerned. With it, everything relative on the page lands inside the application.
+ */
+const LOGIN_PATH = '/CCB/';
+
+/** Where the punching happens, once logged in. */
+const REGISTER_PATH = '/CCB/registro.asp';
 
 /** Cap per request. The caller's budget is split across three of them at most. */
 const PER_REQUEST_MAX_MS = 8_000;
@@ -34,19 +62,46 @@ const MIN_REQUEST_MS = 1_500;
 const MAX_REDIRECTS = 5;
 
 /**
- * How each action is worded on the page.
+ * Which button each action needs on screen.
  *
- * Only full wordings, with no loose fallback: "entrada" on its own would also match
- * "Entrada del descanso" and clock the wrong thing, and on a legal record a wrong punch
- * is worse than no punch. Both prepositions are listed for the break because neither
- * collides with the other action, and which one the portal uses is not worth a redeploy.
+ * This is the phase check and the idempotence in one: if the entry button is not there,
+ * the entry is already registered, whoever registered it.
  */
-const ACTION_LABELS: Record<PunchAction, string[]> = {
+const PHASE_BUTTON: Record<PunchAction, string> = {
+  clock_in: 'registrar entrada',
+  break_end: 'registrar entrada',
+  break_start: 'registrar salida',
+  clock_out: 'registrar salida',
+};
+
+/**
+ * The reason to select in "Motivo registro" for each action.
+ *
+ * Full wordings only, with no loose fallback: "entrada" on its own would also match
+ * "Entrada del descanso" and register the wrong reason, and on an attendance record a
+ * wrong punch is worse than no punch. Both prepositions are listed for the break because
+ * neither collides with anything else, and which one the portal uses is not worth a
+ * redeploy to find out.
+ */
+const REASON_RADIO: Record<PunchAction, string[]> = {
   clock_in: ['entrada ordinaria'],
   clock_out: ['salida ordinaria'],
   break_start: ['salida al descanso', 'salida del descanso'],
   break_end: ['entrada del descanso', 'entrada al descanso'],
 };
+
+/**
+ * The actions that go through without touching the radio group.
+ *
+ * Manually, starting and ending the day is just pressing the button: the ordinary reason
+ * is the one already selected. So if the radio cannot be found for these two, the punch
+ * still goes ahead with whatever the page had selected — which is exactly what a person
+ * does. For the two break actions the opposite holds: no radio, no punch.
+ */
+const ORDINARY: ReadonlySet<PunchAction> = new Set<PunchAction>(['clock_in', 'clock_out']);
+
+/** What "Último movimiento" says after each action landed. The confirmation to look for. */
+const MOVEMENT_LABEL: Record<PunchAction, string[]> = REASON_RADIO;
 
 /** Words on the login button, in the order they are worth trying. */
 const LOGIN_LABELS = ['entrar', 'acceder', 'iniciar sesion', 'login', 'enviar'];
@@ -63,7 +118,7 @@ export class HttpPunchClient implements PunchClient {
   /**
    * What the portal offers right now. One read, and it writes nothing.
    *
-   * The automation calls it for free —`punch()` does the same read on its way in— but the
+   * The automation gets this for free —`punch()` does the same read on its way in— but a
    * user asking "have I clocked in?" gets only this, so nothing can be submitted by
    * accident on a path that was only ever a question.
    */
@@ -74,57 +129,63 @@ export class HttpPunchClient implements PunchClient {
 
   async punch(action: PunchAction, options: TimeclockOptions = {}): Promise<PunchResult> {
     const { page, jar, clock } = await this.open(options);
+    const state = stateOf(page);
 
-    const control = findControl(page.form, ACTION_LABELS[action]);
-    if (!control) {
-      const state = stateOf(page);
-      // Two very different situations, and telling them apart is the whole point of
-      // collecting the labels. Some action recognised means the site is simply on another
-      // stage —already punched, or this one's turn has not come— which is a legitimate
-      // state and never an error worth retrying. NO action recognised means our wording
-      // is wrong and the automation would sit there doing nothing all day believing the
-      // day was already handled, which is the silent failure to avoid at all costs.
+    const button = findControl(page.form, [PHASE_BUTTON[action]]);
+    if (!button) {
+      // Not a failure of ours. The page shows one phase at a time, so a missing "Registrar
+      // entrada" means the entry is already in — whether the automation or the user put it
+      // there. The only worrying case is a page we do not understand at all, and that is
+      // told apart by whether anything was recognised.
       if (state.available.length === 0) {
-        throw new TimeclockError(
-          'parse',
-          `no reconozco ningún botón de fichaje. ${describeDiagnosis(state)}`,
-        );
+        throw new TimeclockError('parse', `no encuentro los botones de fichaje. ${describe(state)}`);
       }
       throw new TimeclockError(
         'not_available',
-        `la página no ofrece "${ACTION_LABELS[action][0]}" sino ${state.available.join(', ')}`,
+        `la página no ofrece "${PHASE_BUTTON[action]}" sino ${state.available.join(', ')}`,
       );
     }
 
-    const after = await this.submit(page, control.fields, jar, clock);
-
-    // The site showing one form at a time is what makes this checkable: if the control we
-    // just pressed is still there, the punch did not land. Reported as unverified and NOT
-    // as retryable, because the only thing worse than not clocking in is clocking in
-    // twice because we assumed the write had failed.
-    if (findControl(after.form, ACTION_LABELS[action])) {
-      console.warn(`timeclock: after ${action} the page still offers the same control`);
+    const radio = findRadio(page.form.radios, REASON_RADIO[action]);
+    if (!radio && !ORDINARY.has(action)) {
       throw new TimeclockError(
-        'unverified',
-        `el portal ha respondido pero sigue ofreciendo "${ACTION_LABELS[action][0]}"`,
+        'not_available',
+        `no encuentro el motivo "${REASON_RADIO[action][0]}" entre ` +
+          `${page.form.radios.map((option) => option.label).join(' / ') || 'ninguna opción'}`,
       );
     }
 
-    return { action, registeredAt: extractTime(after.html) };
-  }
-
-  /** Home page, logged in. The shared first half of both operations. */
-  private async open(options: TimeclockOptions): Promise<{ page: Page; jar: Jar; clock: Clock }> {
-    const clock = new Clock(options.timeoutMs ?? 20_000);
-    const jar = new Jar();
-
-    let page = await this.request(
-      new URL(HOME_PATH, this.baseUrl).toString(),
-      { method: 'GET' },
+    const before = state.lastMovement;
+    const after = await this.submit(
+      page,
+      { ...(radio ? { [radio.name]: radio.value } : {}), ...button.fields },
       jar,
       clock,
     );
+
+    return { action, registeredAt: confirm(action, stateOf(after), before) };
+  }
+
+  /**
+   * The register page, logged in. The shared first half of both operations.
+   *
+   * The login page is asked for first rather than the register page: it is the entry point
+   * of the site and it is what a browser is given, so following the site's own redirect is
+   * more robust than guessing that an unauthenticated hit on `registro.asp` bounces.
+   */
+  private async open(
+    options: TimeclockOptions,
+  ): Promise<{ page: Page; jar: Jar; clock: Clock }> {
+    const clock = new Clock(options.timeoutMs ?? 20_000);
+    const jar = new Jar();
+
+    let page = await this.request(this.url(LOGIN_PATH), { method: 'GET' }, jar, clock);
     if (hasPassword(page.form)) page = await this.login(page, jar, clock);
+
+    // The login may land anywhere; the punching happens on one page only.
+    if (!isRegisterPage(page.form)) {
+      page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
+    }
     return { page, jar, clock };
   }
 
@@ -149,6 +210,8 @@ export class HttpPunchClient implements PunchClient {
       );
     }
 
+    // "Entrar" and not "Cambiar Contraseña": the labels are tried in order and the first
+    // one is the orange button. Pressing the other would land on a password change form.
     const control = findControl(page.form, LOGIN_LABELS);
     const after = await this.submit(
       page,
@@ -170,7 +233,7 @@ export class HttpPunchClient implements PunchClient {
     return after;
   }
 
-  /** Posts the form back with its own state plus whichever control is being pressed. */
+  /** Posts the form back with its own state plus whatever is being pressed or picked. */
   private async submit(
     page: Page,
     fields: Record<string, string>,
@@ -189,6 +252,10 @@ export class HttpPunchClient implements PunchClient {
       jar,
       clock,
     );
+  }
+
+  private url(path: string): string {
+    return new URL(path, this.baseUrl).toString();
   }
 
   /**
@@ -255,13 +322,32 @@ function hasPassword(form: ParsedForm): boolean {
   return form.inputs.some((input) => input.type === 'password');
 }
 
-/** Which of the four actions the page is offering, plus enough to diagnose it when none is. */
+/** Whether this is the page that can punch, i.e. it carries one of the two buttons. */
+function isRegisterPage(form: ParsedForm): boolean {
+  return findControl(form, ['registrar entrada']) !== null || findControl(form, ['registrar salida']) !== null;
+}
+
+/**
+ * What can be punched right now, read off the page.
+ *
+ * The button decides the phase and the radios decide which reasons that phase accepts, so
+ * the two together are the answer to "have I clocked in?" without keeping any state of our
+ * own. The ordinary actions do not require their radio to be found: pressing the button is
+ * how a person does it.
+ */
 function stateOf(page: Page): PunchState {
   const { form } = page;
+  const available = PUNCH_ACTIONS.filter((action) => {
+    if (!findControl(form, [PHASE_BUTTON[action]])) return false;
+    if (ORDINARY.has(action)) return true;
+    return findRadio(form.radios, REASON_RADIO[action]) !== null;
+  });
+
   return {
-    available: PUNCH_ACTIONS.filter((action) => findControl(form, ACTION_LABELS[action]) !== null),
+    available,
     labels: form.controls.map((control) => control.label).filter((label) => label.length > 2),
-    times: extractTimes(form),
+    reasons: form.radios.map((radio) => radio.label).filter((label) => label.length > 2),
+    lastMovement: lastMovement(page.html),
     diagnosis: {
       url: page.url,
       sawLoginForm: hasPassword(form),
@@ -272,53 +358,63 @@ function stateOf(page: Page): PunchState {
   };
 }
 
-/**
- * The empty-handed case, in one line a person can act on.
- *
- * Each of the three shapes points somewhere different: a login form still on screen means
- * the credentials or the fill failed, a page with nothing on it means we are not even on
- * the app, and buttons we do not recognise means the wording changed.
- */
-function describeDiagnosis(state: PunchState): string {
-  const { url, sawLoginForm, inputs, controls, snippet } = state.diagnosis;
+/** The empty-handed case in one line, for the error the model reads. */
+function describe(state: PunchState): string {
+  const { url, sawLoginForm, inputs, controls } = state.diagnosis;
   if (sawLoginForm) return `sigue en el login (${url})`;
-  if (inputs === 0 && controls === 0) {
-    return `esa página no parece la aplicación: ${url} — "${snippet || 'sin texto'}"`;
-  }
-  return `botones sin reconocer en ${url}: ${state.labels.slice(0, 6).join(' / ') || 'ninguno con texto'}`;
+  if (inputs === 0 && controls === 0) return `${url} no parece la aplicación`;
+  return `en ${url} veo ${controls} botones: ${state.labels.slice(0, 6).join(' / ') || 'ninguno'}`;
 }
 
 /**
- * The times the page shows, which on this portal is the list of today's punches.
+ * "Último movimiento": `24/08/2026 9:20:03 - Entrada ordinaria`.
  *
- * Best effort and clearly labelled as such: they are read from the page's text, so if the
- * layout changes this returns nothing rather than something wrong. Anything the user is
- * told out of here is prefixed by what the portal says, never presented as our record.
+ * This is the portal stating what it recorded, which makes it worth more than anything we
+ * could infer: it is both the confirmation that a punch landed and the answer to what time
+ * it landed at, to the second.
  */
-function extractTimes(form: ParsedForm): string[] {
-  const seen = new Set<string>();
-  for (const control of form.controls) {
-    for (const match of control.label.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)) {
-      seen.add(`${match[1]!.padStart(2, '0')}:${match[2]}`);
-    }
-  }
-  return [...seen];
-}
-
-/**
- * The time the site says it registered.
- *
- * Anchored on a nearby word instead of taking the first time on the page, because a
- * footer with the office timetable in it would otherwise become "your punch". When
- * nothing matches it returns null and the caller reports the hour it asked at, hedged.
- */
-function extractTime(html: string): string | null {
-  const match = /(?:registrad\w*|fichaj\w*|hora)[^0-9]{0,40}(\d{1,2}):(\d{2})/.exec(textOf(html));
+function lastMovement(html: string): LastMovement | null {
+  const match = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*([a-z][a-z ]{4,40})/.exec(
+    textOf(html),
+  );
   if (!match) return null;
-  const hour = Number.parseInt(match[1]!, 10);
-  const minute = Number.parseInt(match[2]!, 10);
-  if (hour > 23 || minute > 59) return null;
-  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  return { date: match[1]!, time: match[2]!, label: match[3]!.trim() };
+}
+
+/**
+ * Whether the punch landed, according to the portal.
+ *
+ * Three outcomes and only one of them is success. The important one is the middle: if the
+ * last movement did not change to what we just asked for, we do NOT know whether it was
+ * written, and the caller must never retry on that — clocking in twice on an attendance
+ * record is worse than not clocking in.
+ */
+function confirm(
+  action: PunchAction,
+  after: PunchState,
+  before: LastMovement | null,
+): string | null {
+  const movement = after.lastMovement;
+  const expected = MOVEMENT_LABEL[action].map((label) => label);
+  const matches = movement ? expected.some((label) => movement.label.includes(label)) : false;
+
+  if (matches && (!before || before.time !== movement!.time)) return movement!.time;
+
+  // No "Último movimiento" on the page at all: fall back to the phase flipping, which is
+  // weaker but still real evidence — the button we pressed must be gone.
+  if (!movement && !after.available.includes(action)) return null;
+
+  console.warn(
+    `timeclock: unconfirmed ${action}; last movement: ${
+      movement ? `${movement.time} ${movement.label}` : 'none'
+    }`,
+  );
+  throw new TimeclockError(
+    'unverified',
+    movement
+      ? `el portal sigue diciendo que lo último fue "${movement.label}" a las ${movement.time}`
+      : 'el portal no dice cuál fue el último movimiento',
+  );
 }
 
 /** The caller's budget, spent across the requests one operation needs. */

@@ -202,7 +202,12 @@ async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
 
   if (state.available.length > 0) {
     const names = state.available.map((action) => ACTION_NAMES[action]).join(', ');
-    return { details: [`Ahora mismo puedo fichar: ${names}.`] };
+    const details = [`Ahora mismo puedo fichar: ${names}.`];
+    if (state.lastMovement) {
+      const { time, label } = state.lastMovement;
+      details.push(`Lo último que registró el portal: ${label}, a las ${time}.`);
+    }
+    return { details };
   }
 
   // The empty-handed case, over several lines because each shape points somewhere
@@ -221,6 +226,7 @@ async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
         'ninguno con el texto que espero.',
     );
     if (state.labels.length > 0) lines.push(`Botones: ${state.labels.slice(0, 6).join(' / ')}`);
+    if (state.reasons.length > 0) lines.push(`Motivos: ${state.reasons.slice(0, 6).join(' / ')}`);
   }
   return { verdict: 'NO LA ENTIENDO', details: lines };
 }
