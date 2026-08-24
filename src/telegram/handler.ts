@@ -456,7 +456,9 @@ async function handleCommand(
     case 'test': {
       // `/test html` dumps the timeclock page instead of measuring: when the parsing is
       // what is broken, the page itself is the only useful answer.
-      if (/\bhtml\b/i.test(text)) {
+      const html = /\bhtml\b[ ]*(.*)$/i.exec(text.trim());
+      if (html) {
+        const at = html[1]!.trim();
         return withTyping(ctx, () =>
           runPageDump({
             env: ctx.env,
@@ -464,7 +466,7 @@ async function handleCommand(
             db: createDb(ctx.env),
             deadline: ctx.deadline,
             timezone: ctx.config.defaultTimezone,
-          }),
+          }, at || undefined),
         );
       }
       return withTyping(ctx, () =>

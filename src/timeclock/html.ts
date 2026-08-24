@@ -227,14 +227,40 @@ export function parseRadios(html: string): RadioOption[] {
     if (target) labelFor.set(target, textOf(match[2] ?? ''));
   }
 
-  return radios.map((radio, index) => ({
-    name: radio.name,
-    value: radio.value,
-    label: (
-      labelFor.get(radio.id) ||
-      textOf(html.slice(radio.end, radios[index + 1]?.end ?? radio.end + 300))
-    ).slice(0, MAX_LABEL_CHARS),
-  }));
+  return radios.map((radio, index) => {
+    const following = html.slice(radio.end, radios[index + 1]?.end ?? radio.end + 500);
+    return {
+      name: radio.name,
+      value: radio.value,
+      // Three ways of naming an option, in order of how much they can be trusted. The
+      // middle one is the one this page actually uses and the one no amount of staring at
+      // a failed parse would have suggested: the reason is not text next to the radio, it
+      // is the `value` of a text input beside it, printed as an editable field.
+      label: (
+        labelFor.get(radio.id) ||
+        valueOfNeighbour(following) ||
+        textOf(following)
+      ).slice(0, MAX_LABEL_CHARS),
+    };
+  });
+}
+
+/**
+ * The value of the first text input that follows a radio, which is how this page prints the
+ * name of each option.
+ *
+ * Inputs with no value are skipped, which is what keeps the neighbouring comment box —
+ * `placeholder="Escriba un comentario"`, no value— from being taken for a label.
+ */
+function valueOfNeighbour(html: string): string {
+  for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
+    const attrs = attributes(match[0]);
+    const type = (attrs['type'] ?? 'text').toLowerCase();
+    if (type !== 'text' && type !== 'hidden') continue;
+    const value = (attrs['value'] ?? '').trim();
+    if (value) return norm(value);
+  }
+  return '';
 }
 
 /** The first radio whose visible text contains one of the given phrases. */

@@ -71,7 +71,7 @@ export interface SelfTestDeps {
  * radio, because what has been impossible to guess from outside is how the page ties each
  * option to its text.
  */
-export async function runPageDump(deps: SelfTestDeps): Promise<string> {
+export async function runPageDump(deps: SelfTestDeps, at?: string): Promise<string> {
   if (!punchConfigured(deps.env)) return 'No hay credenciales de ficharweb configuradas.';
 
   let page: { url: string; html: string };
@@ -83,20 +83,38 @@ export async function runPageDump(deps: SelfTestDeps): Promise<string> {
     return `No he podido llegar a la página: ${describe(error)}`;
   }
 
-  const anchor = anchorIndex(page.html);
+  const anchor = anchorIndex(page.html, at);
+  if (anchor < 0) return `No encuentro "${at}" en la página (${page.html.length} caracteres).`;
+
   const from = Math.max(0, anchor - HTML_BEFORE);
   const window = page.html.slice(from, from + HTML_WINDOW);
 
   return [
     page.url,
     `${page.html.length} caracteres en total; te enseño ${window.length} desde el ${from}.`,
+    `Para seguir: /test html ${from + window.length}`,
     '',
     window,
   ].join('\n');
 }
 
-/** Where to centre the window: the first radio, or the reason panel, or the top. */
-function anchorIndex(html: string): number {
+/**
+ * Where to centre the window.
+ *
+ * With an argument it is a character offset or a word to look for — walking a 25 KB page
+ * 1.400 characters at a time is the difference between one deploy and five. Without one,
+ * the first radio, then the reason panel, then the top.
+ */
+function anchorIndex(html: string, at?: string): number {
+  if (at) {
+    const offset = Number.parseInt(at, 10);
+    if (Number.isSafeInteger(offset) && String(offset) === at.trim()) {
+      return Math.min(Math.max(0, offset), Math.max(0, html.length - 1)) + HTML_BEFORE;
+    }
+    const found = html.toLowerCase().indexOf(at.trim().toLowerCase());
+    return found >= 0 ? found : -1;
+  }
+
   const radio = /<input\b[^>]*type=['"]?radio/i.exec(html);
   if (radio) return radio.index;
   const panel = html.toLowerCase().indexOf('motivo');
