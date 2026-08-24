@@ -44,8 +44,8 @@ export interface Env {
    * ficharweb, the clock-in portal (phase 22). Without them the punch tools are not
    * offered and the scheduled punches do nothing: the rest of the assistant is untouched.
    */
-  FICHA_USER?: string;
-  FICHA_PASS?: string;
+  TIMECLOCK_USER?: string;
+  TIMECLOCK_PASS?: string;
   /** cbGesPro, the imputation portal (phase 24). A different login from the punch one. */
   IMPUTE_USR?: string;
   IMPUTE_PASS?: string;
@@ -57,7 +57,7 @@ export interface Env {
    * time-tracking system this talks to. Defaults live in src/ficha/, so an install
    * without them still works.
    */
-  FICHA_BASE_URL?: string;
+  TIMECLOCK_BASE_URL?: string;
   IMPUTE_BASE_URL?: string;
 
   // --- Vars (wrangler.toml) ---

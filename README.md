@@ -892,6 +892,73 @@ and one search costs one. That is about 33 a day for a single user. The real lim
 tighter and is ours, not theirs — a message allows three model rounds and a search eats
 one, so there is room for one or two searches per message, not five.
 
+## What phase 22 does: it clocks you in
+
+Four times a day, on its own, it logs into ficharweb and presses the button: entry at
+**09:00**, out to lunch at **14:00**, back at **15:00**, out at **18:00**. Monday to Friday,
+each one at its time **plus a random offset of up to five minutes either side** so the
+record does not read like a cron job.
+
+You can ask about it, and ask for it by hand:
+
+> — ¿he fichado?
+> — Sí, la entrada está fichada. El portal ofrece ahora la salida a comer, y la salida de
+>   las 18:00 sigue pendiente.
+
+> — fíchame la salida
+> — Fichada la salida del trabajo. El portal lo ha registrado a las 18:03.
+
+### If you punched yourself, it does not touch anything
+
+This is the part worth understanding, because it is where the whole design comes from. The
+portal only ever shows the action that comes **next**: if the entry is registered, the entry
+button is not on the page. So there is no need to keep track of what you have done — if you
+clocked in from the web at 09:20, the automation finds no button and simply waits for the
+next stage. Quietly: there is nothing to tell you.
+
+The same property answers *"have I clocked in?"* honestly. What you get back is the
+**portal's** state, not our log, so a punch you did yourself from the web counts.
+
+### What it will never do
+
+- **Punch twice.** The day is claimed in the database before the request goes out, so two
+  overlapping ticks cannot both fire.
+- **Retry when it does not know what happened.** If the portal answers but keeps the button
+  on screen, the punch may or may not have registered. It tells you and stops. A retry
+  there is a coin flip on a duplicate line in an attendance record.
+- **Punch on the model's initiative.** The assistant only clocks in when you ask for it in
+  that message; the four scheduled ones are the system's, not the model's.
+
+It does retry the one case where nothing was written: if the portal is down, the day is
+released and the next tick tries again, up to **30 minutes** past the target. After that it
+gives up and says so, once.
+
+Holidays are the honest gap: nobody told it your company's calendar. On a holiday the
+portal does not offer the button, so nothing gets punched — which is the safe direction, but
+it is a coincidence and not a feature.
+
+### Setting it up
+
+| Secret | Value |
+|---|---|
+| `TIMECLOCK_USER` | your ficharweb user |
+| `TIMECLOCK_PASS` | your ficharweb password |
+| `TIMECLOCK_BASE_URL` | optional, the portal's address if it is not the default |
+
+```powershell
+npx wrangler secret put TIMECLOCK_USER
+npx wrangler secret put TIMECLOCK_PASS
+```
+
+Without them the two tools are not offered to the model and the scheduler does nothing:
+everything else works exactly as before.
+
+**One manual step on an existing deploy:** re-run
+[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds `punch_schedules` and
+`punches`; the script is idempotent. The four times seed themselves on the first tick, and
+from then on they live in `punch_schedules` — changing an hour, or turning one off with
+`enabled`, is a row in Supabase and not a deploy.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
@@ -900,7 +967,9 @@ comprar pan y revisar el podcast"* creates all three tasks at once.
 
 ## Next
 
-**Audio replies**: answering a voice note with a voice note. Behind it, a weekly review
+**Imputación de horas**: the other half of the same portal — hours and a mandatory comment
+against the day's projects, which needs a confirmation step because it is a choice and not
+a button. Then **audio replies**: answering a voice note with a voice note. Behind it, a weekly review
 that says what you have been postponing — and now that there is a queue for work nobody
 is waiting on, that review has somewhere to live. Then the weather and the travel time
 inside the appointment alerts. The full list is at the end of

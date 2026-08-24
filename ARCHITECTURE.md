@@ -1748,7 +1748,92 @@ call with its arguments, so that is measurable instead of assumed. Same move as 
 with postponements: read the logs before adding structure. A table, a TTL and a purge are
 cheap to add later and impossible to un-add.
 
-## 18. Roadmap
+## 18. Fichaje: the first thing that acts on its own outside
+
+Everything the cron did until here was a message. Phase 22 is different in kind: four times
+a day the tick logs into somebody else's portal and writes to an attendance record. Nothing
+about the mechanics is hard —three HTTP requests— and everything about the failure modes is,
+because the two ways of being wrong are not symmetrical. A punch that does not happen is a
+line missing from a timesheet. A punch that happens twice, or at the wrong time, or that we
+report as done when it never landed, is a record that lies.
+
+### There is no browser, and that turned out not to matter
+
+Playwright, which is how this normally gets done, cannot run on Workers, and Browser
+Rendering is on the paid plan. So [src/timeclock/http.ts](src/timeclock/http.ts) talks to
+the site the way the browser would: `GET` the page, fill the form, `POST` it back. Two
+decisions make that survivable against an ASP.NET WebForms app nobody documented for us:
+
+- **Every hidden input is copied back verbatim.** `__VIEWSTATE`, `__EVENTVALIDATION` and
+  whatever else the platform invents travel through without this code knowing they exist.
+  It is the difference between an adapter and a reverse engineering project.
+- **Buttons are found by the words on them**, and only by their full wording. "entrada" as a
+  loose fallback would also match *Entrada del descanso* and clock the wrong thing.
+  Anything unrecognised is an error that lists what the page **does** offer, so the first
+  run against the real portal is also the capture we never got.
+
+`__doPostBack` links are handled next to real submit inputs, because WebForms renders half
+its buttons as anchors and which half is not predictable from outside.
+
+### The portal is the source of truth, not our table
+
+The site only ever offers the action that comes next: if it shows *Salida al descanso*, the
+entry is already registered. That single property does three jobs at once, and it is why
+there is no "have I punched today?" flag anywhere in the schema:
+
+- **Idempotence.** The user can clock in from the web at 09:20 and the automation, arriving
+  at 09:00 or at 09:04, finds no button and does nothing. Silently: there is nothing to
+  report, and a message per skipped stage is how a bot gets muted.
+- **`punch_status`.** What the user reads is the portal's state, not our log. Our log
+  answers the other half —what the automation did, and at what time— which the portal
+  cannot.
+- **Verification.** After pressing, the control must be gone. If it is still there the
+  punch did not land.
+
+### The four endings of one punch, and why they cannot share code
+
+This is the whole design, and it is a table rather than a `catch`:
+
+| What happened | What it means | What is done |
+|---|---|---|
+| Control missing | Already punched, or not this stage's turn | Nothing, quietly. Day closed |
+| Portal down, timeout | Nothing was written | Day **released**, next tick retries |
+| Wrong credentials, page not understood | A human has to look | Day closed, user told |
+| Answered, but the button is still there | **Unknown** whether it registered | Day closed, user told, **never retried** |
+
+The last row is the one worth the section. A retry there is a coin flip on a duplicate
+punch, so the code refuses to take it: an unverified punch is reported and left alone. That
+asymmetry —silence is cheap, duplication is not— decides every branch above.
+
+### The day is claimed before it is punched
+
+`fired_on` is stamped with a conditional `UPDATE ... RETURNING`, the same trick the job
+queue claims rows with (§16). Two overlapping ticks cannot both win, which matters here more
+than it does for a page summary: the loser would clock in a second time. The price is that a
+failure has already spent the day, which is why the "nothing was written" case explicitly
+gives it back.
+
+### The random offset is drawn once a day and written down
+
+The requested behaviour is a window of five minutes either side of each time. The obvious
+implementation —jitter on each tick— does not produce that: the tick runs every five
+minutes and the rule is `now >= at_time + offset`, so re-rolling fires on the first tick
+whose draw happens to pass, pinning every day to the earliest edge. `offset_minutes` and
+`offset_for` exist so the number survives to the next tick.
+
+### And it runs first in the tick, not last
+
+The opposite of the jobs of §16, and for the opposite reason. A job is the one thing nobody
+is waiting on; a punch has to land at the time it was told, so it does not queue behind a
+calendar read that might eat the budget. It also never becomes a job for the same reason —
+that was a real change of mind mid-implementation, recorded in `db/types.ts` where the
+`JobKind` union no longer has a punch in it.
+
+What it cannot know is holidays: nobody told us the calendar of somebody else's company. On
+a holiday the portal simply does not offer the button, which lands on the first row of the
+table above and is the safe direction.
+
+## 19. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1774,6 +1859,8 @@ cheap to add later and impossible to un-add.
 | **19** | Markets: a watchlist, not a ticker | ⬜ Pending |
 | **20** | Web search, split in two | ✅ Done |
 | **21** | Expenses in a spreadsheet | ⬜ Pending |
+| **22** | Fichaje: scheduled punches and the state of the day | ✅ Done |
+| **23** | Imputación de horas into the day's projects | ⬜ Pending |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -1826,7 +1913,7 @@ Phases 17 and 20 shipped together, and that pairing was not a matter of convenie
 is the phase that proves 17. Half of it —snippets— runs in the turn, and the other half
 —reading the page— is the first tenant of the queue, so shipping one without the other
 would have meant either a search that cannot open a link or a table with nothing in it.
-17 is told in §16 and 20 in §17. Between them they cost the cron its oldest rule, that no
+17 is told in §16, 20 in §17 and 22 in §18. Between them they cost the cron its oldest rule, that no
 proactive message goes through the model, and the tool contract one new optional field.
 
 ### Phase 11 — Audio replies (TTS)
@@ -1907,6 +1994,25 @@ Why a spreadsheet and not an `expenses` table: a table means also writing the
 categories, the queries and the reports, which is the `tasks` pattern again for no new
 lesson. The sheet **is** the report, and it is one the user can pivot without teaching
 Jarvis anything about pivots.
+
+### Phase 23 — Imputación de horas
+
+The other half of the same portal, and the reason the schema already carries `imputations`
+and `project_cache` with nothing reading them yet: they were written with phase 22 because
+the tables are the cheap part and a second migration is not.
+
+The shape is decided and it is not the shape of phase 22. Punching is one button; imputing
+is a project picked out of the day's table, a number of hours and a **mandatory** comment,
+which means the model has to choose a row and the user has to confirm before anything is
+written. So: the tick scrapes the day's table into `project_cache` —a login plus a scrape
+does not fit in a turn next to three model rounds— the turn reads the cache, the
+confirmation goes through `tools/pending.ts` like every other irreversible write, and the
+submit itself becomes a job (§16), because unlike a punch nobody is waiting for it to land
+on a particular minute.
+
+Two things it has to get right, both learned from phase 22: the date the row lands on is the
+one the **site** reports after submitting, not the one we asked for —a full day rolls over to
+the next— and hours go in as digits with a comma, never "3h".
 
 ### Ideas with no phase assigned
 

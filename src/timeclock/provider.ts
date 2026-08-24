@@ -19,14 +19,14 @@
  * Spanish because they are the site's own words and the model reads them: translating
  * them would add a mapping table whose only job is to be kept in sync.
  */
-export const PUNCH_ACTIONS = ['entrada', 'salida', 'salida_descanso', 'entrada_descanso'] as const;
+export const PUNCH_ACTIONS = ['clock_in', 'clock_out', 'break_start', 'break_end'] as const;
 export type PunchAction = (typeof PUNCH_ACTIONS)[number];
 
 export function isPunchAction(value: string): value is PunchAction {
   return (PUNCH_ACTIONS as readonly string[]).includes(value);
 }
 
-export interface FichaOptions {
+export interface TimeclockOptions {
   /** Cap for this call. Set by the message's or the tick's global budget, never here. */
   timeoutMs?: number;
 }
@@ -80,25 +80,50 @@ export interface ImputeResult {
   currentDate: string;
 }
 
-/** Clocking in and out. Credentials: FICHA_USER / FICHA_PASS. */
+/**
+ * What the portal is showing right now.
+ *
+ * This is the honest answer to "have I clocked in today?", and it comes from the site
+ * rather than from our own log because the user can always punch from the web themselves.
+ * The site only offers the action that comes next, so the set of available buttons IS the
+ * state of the day.
+ */
+export interface PunchState {
+  /** The actions the page is offering, i.e. what could be punched right now. */
+  available: PunchAction[];
+  /**
+   * Every button label the page showed, normalised.
+   *
+   * Kept for the case that matters on the first run against a reworded portal: no
+   * recognised action and a list of labels is a diagnosis, while an empty answer is a
+   * mystery.
+   */
+  labels: string[];
+  /** Times the page shows for today, in the order they appear. Best effort. */
+  times: string[];
+}
+
+/** Clocking in and out. Credentials: TIMECLOCK_USER / TIMECLOCK_PASS. */
 export interface PunchClient {
   readonly name: string;
-  punch(action: PunchAction, options?: FichaOptions): Promise<PunchResult>;
+  /** One read, no writes. What the automation checks before punching and what the user asks for. */
+  readState(options?: TimeclockOptions): Promise<PunchState>;
+  punch(action: PunchAction, options?: TimeclockOptions): Promise<PunchResult>;
 }
 
 /** Imputing hours against the day's projects. Credentials: IMPUTE_USR / IMPUTE_PASS. */
 export interface ImputeClient {
   readonly name: string;
-  listProjects(options?: FichaOptions): Promise<ProjectList>;
+  listProjects(options?: TimeclockOptions): Promise<ProjectList>;
   submitHours(
     projectIndex: number,
     hours: number,
     comment: string,
-    options?: FichaOptions,
+    options?: TimeclockOptions,
   ): Promise<ImputeResult>;
 }
 
-export type FichaErrorKind =
+export type TimeclockErrorKind =
   /** Credentials missing from the environment. Nothing was attempted. */
   | 'config'
   /** The portal rejected the login. */
@@ -116,15 +141,23 @@ export type FichaErrorKind =
   /** The HTML did not look like what the adapter expects. The site changed. */
   | 'parse'
   /** The portal answered with an error, or did not answer in time. */
-  | 'upstream';
+  | 'upstream'
+  /**
+   * The request went out and we cannot tell whether it registered.
+   *
+   * Its own kind because of what must NOT happen next: retrying. Clocking in twice on a
+   * legal record is worse than not clocking in, so this one closes the day and asks the
+   * user to check, instead of trying again on the following tick.
+   */
+  | 'unverified';
 
-export class FichaError extends Error {
+export class TimeclockError extends Error {
   constructor(
-    readonly kind: FichaErrorKind,
+    readonly kind: TimeclockErrorKind,
     message: string,
   ) {
     super(message);
-    this.name = 'FichaError';
+    this.name = 'TimeclockError';
   }
 
   /**
@@ -143,9 +176,11 @@ export class FichaError extends Error {
       case 'unknown_project':
         return 'Ese proyecto no está en la tabla de hoy.';
       case 'parse':
-        return 'Ficharweb ha cambiado y ya no entiendo su página. Hay que revisar el adaptador.';
+        return 'No encuentro los botones de fichaje en ficharweb: o la jornada ya está cerrada o la página ha cambiado.';
       case 'upstream':
         return 'Ficharweb no responde. Lo reintento luego.';
+      case 'unverified':
+        return 'He mandado el fichaje pero el portal no lo confirma. Míralo tú, no lo repito por si acaso.';
     }
   }
 

@@ -1,4 +1,4 @@
-import type { PunchAction, Project } from '../ficha/provider';
+import type { PunchAction } from '../timeclock/provider';
 import type { ToolCall } from '../llm/provider';
 
 export interface UserRow {
@@ -35,12 +35,15 @@ export interface TaskRow {
 /**
  * The kinds of work the queue knows how to do.
  *
- * `read_url` was the first tenant (phase 17); the punch and the imputation joined it in
- * phase 22 for the same reason and not by analogy: a login plus a form submit against
- * somebody else's ASP.NET site is seconds of their latency, and the turn has 27 s to
- * cover the model rounds as well.
+ * `read_url` was the first tenant (phase 17) and `impute_hours` joins it for the same
+ * reason: a login plus a form submit against somebody else's ASP.NET site is seconds of
+ * their latency, and the turn has 27 s to cover the model rounds as well.
+ *
+ * The punch is NOT here, and that was a change of mind worth recording: it has to land on
+ * a specific minute, while a job is by definition the one thing nobody is waiting for
+ * (§16). It runs inside the tick instead.
  */
-export type JobKind = 'read_url' | 'ficha_punch' | 'impute_hours';
+export type JobKind = 'read_url' | 'impute_hours';
 
 /** A deferred job (phase 17). `payload` shape depends on `kind`. */
 export interface JobRow {
@@ -113,40 +116,22 @@ export interface PunchScheduleRow {
   created_at: string;
 }
 
-/** A submitted imputation (phase 24). Replaces impute_log.json. */
-export interface ImputationRow {
+/**
+ * A punch that went out (phase 22).
+ *
+ * Append-only, and it is not the source of truth: the portal is. What this answers is the
+ * half the portal cannot —what the automation did and when— so that "did I clock in?" can
+ * be answered with a time and not just with a yes.
+ */
+export interface PunchRow {
   id: string;
   user_id: string;
-  project: string;
-  task: string | null;
-  hours: number;
-  /** Mandatory, and enforced in the database too: the site rejects an empty one anyway. */
-  comment: string;
-  /** The working day the hours landed on, as the site reported it after submitting. */
-  work_date: string;
-  /** True when the site rolled the day over on this submission. */
-  day_advanced: boolean;
-  source: 'voice' | 'text';
-  /**
-   * When it was submitted. The streak in the gamification count is computed from this and
-   * not from `work_date`, because what it rewards is the habit of logging, not the dates
-   * logged.
-   */
-  logged_at: string;
-}
-
-/**
- * The day's project table, cached whole (phase 24).
- *
- * A blob and one row per day rather than a row per project: it is a snapshot of somebody
- * else's table, it is never queried by field, and the index inside it is only meaningful
- * together with the day. Storing it decomposed would invite treating those indexes as
- * ours.
- */
-export interface ProjectCacheRow {
-  user_id: string;
-  /** The site's own working day (YYYY-MM-DD), not ours. */
-  day: string;
-  projects: Project[];
-  scraped_at: string;
+  action: PunchAction;
+  /** 'auto' when the scheduler did it, 'manual' when it was asked for in the chat. */
+  source: 'auto' | 'manual';
+  /** The time the portal reported, when it reported one. Its clock, not ours. */
+  registered_at: string | null;
+  /** The local day it belongs to. What "have I clocked in today?" filters on. */
+  local_day: string;
+  punched_at: string;
 }

@@ -10,6 +10,7 @@ import { createProvider } from './llm';
 import type { LLMMessage, ToolCall } from './llm/provider';
 import { LLMError } from './llm/provider';
 import { buildSystemPrompt } from './prompts/system';
+import { punchConfigured } from './timeclock';
 import { searchConfigured } from './search';
 import { loadMemories } from './tools/memory';
 import type { PendingAction } from './tools/pending';
@@ -121,6 +122,9 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // (`toolSchemas`), so the prompt has to go back to saying it cannot search.
         // Both readings come from the same place or they drift apart.
         canSearchWeb: searchConfigured(env),
+        // And once more for the timeclock: without the credentials the punch tools are not
+        // offered, so the prompt must not promise them either.
+        canPunch: punchConfigured(env),
       }),
     },
     ...toLLMMessages(history),

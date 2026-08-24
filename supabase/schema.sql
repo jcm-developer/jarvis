@@ -157,7 +157,7 @@ create table if not exists jobs (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
--- Phase 22 added two kinds. The check is replaced rather than added: there is no
+-- Phase 24 adds a kind. The check is replaced rather than added: there is no
 -- `add constraint if not exists`, and on a fresh table the inline check above is already
 -- named like this, so dropping it and putting back a wider one keeps the script re-runnable.
 do $$
@@ -166,7 +166,7 @@ begin
     alter table jobs drop constraint jobs_kind_check;
   end if;
   alter table jobs
-    add constraint jobs_kind_check check (kind in ('read_url','ficha_punch','impute_hours'));
+    add constraint jobs_kind_check check (kind in ('read_url','impute_hours'));
 end $$;
 
 -- The cron's only query: what is eligible, oldest first.
@@ -180,7 +180,7 @@ create table if not exists punch_schedules (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references users(id) on delete cascade,
   action         text not null
-                   check (action in ('entrada','salida','salida_descanso','entrada_descanso')),
+                   check (action in ('clock_in','clock_out','break_start','break_end')),
   -- Local time of day. Stored as text 'HH:MM' and not as `time`: everything that reads it
   -- compares against the local clock computed in lib/localtime.ts, and a `time` column
   -- invites doing the comparison in UTC in SQL, which is wrong twice a year.
@@ -188,7 +188,7 @@ create table if not exists punch_schedules (
   enabled        boolean not null default true,
   -- The window the daily offset is drawn from, in minutes. Columns and not constants so
   -- the jitter can be turned off (0/0) without a deploy.
-  offset_min     smallint not null default -2,
+  offset_min     smallint not null default -5,
   offset_max     smallint not null default 5,
   -- The offset drawn for `offset_for`, and the local day it was drawn for. It is written
   -- down because the cron ticks every five minutes and the rule is `now >= at_time +
@@ -205,6 +205,26 @@ create table if not exists punch_schedules (
 );
 create index if not exists punch_schedules_due_idx
   on punch_schedules (user_id, enabled, at_time);
+
+-- Fichaje: what actually went out (phase 22) --------------------------------
+-- Append-only, and NOT the source of truth: the portal is, because the user can always
+-- punch from the web themselves. What this table answers is the half the portal cannot —
+-- what the automation did and at what time— so "have I clocked in?" gets an hour and not
+-- just a yes.
+create table if not exists punches (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references users(id) on delete cascade,
+  action         text not null
+                   check (action in ('clock_in','clock_out','break_start','break_end')),
+  source         text not null check (source in ('auto','manual')),
+  -- The time the portal reported, when it reported one. Text and not `time`: it is
+  -- somebody else's clock and it goes back out exactly as it came in.
+  registered_at  text,
+  local_day      date not null,
+  punched_at     timestamptz not null default now()
+);
+create index if not exists punches_user_day_idx
+  on punches (user_id, local_day);
 
 -- Imputación: what was submitted (phase 24) ---------------------------------
 -- What used to be impute_log.json. Append-only: it is a record of what was sent to
@@ -234,7 +254,7 @@ create index if not exists imputations_user_work_date_idx
 -- So that no turn ever waits on a scrape: the tick refreshes this and the tool reads it.
 -- One row per day and a jsonb blob, because the row indexes inside it are the site's and
 -- only mean anything together with the day they were scraped on.
-create table if not exists ficha_projects (
+create table if not exists project_cache (
   user_id        uuid not null references users(id) on delete cascade,
   day            date not null,
   projects       jsonb not null,

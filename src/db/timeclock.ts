@@ -1,7 +1,6 @@
-import type { Project } from '../ficha/provider';
-import type { PunchAction } from '../ficha/provider';
+import type { PunchAction } from '../timeclock/provider';
 import type { Db } from './client';
-import type { ImputationRow, ProjectCacheRow, PunchScheduleRow } from './types';
+import type { PunchRow, PunchScheduleRow } from './types';
 
 /**
  * Persistence for the fichaje and imputación domains (phases 23-24).
@@ -17,14 +16,6 @@ import type { ImputationRow, ProjectCacheRow, PunchScheduleRow } from './types';
 export async function listSchedules(db: Db, userId: string): Promise<PunchScheduleRow[]> {
   return db.select<PunchScheduleRow>('punch_schedules', {
     filters: { user_id: `eq.${userId}` },
-    order: 'at_time.asc',
-  });
-}
-
-/** Only what the tick has to look at: disabled rows never reach the firing rule. */
-export async function listEnabledSchedules(db: Db, userId: string): Promise<PunchScheduleRow[]> {
-  return db.select<PunchScheduleRow>('punch_schedules', {
-    filters: { user_id: `eq.${userId}`, enabled: 'is.true' },
     order: 'at_time.asc',
   });
 }
@@ -57,27 +48,7 @@ export async function saveSchedule(db: Db, schedule: NewSchedule): Promise<Punch
   );
 }
 
-export async function setScheduleEnabled(
-  db: Db,
-  userId: string,
-  id: string,
-  enabled: boolean,
-): Promise<PunchScheduleRow | null> {
-  const rows = await db.update<PunchScheduleRow>(
-    'punch_schedules',
-    { id: `eq.${id}`, user_id: `eq.${userId}` },
-    { enabled },
-  );
-  return rows[0] ?? null;
-}
 
-export async function deleteSchedule(db: Db, userId: string, id: string): Promise<boolean> {
-  const rows = await db.delete<PunchScheduleRow>('punch_schedules', {
-    id: `eq.${id}`,
-    user_id: `eq.${userId}`,
-  });
-  return rows.length > 0;
-}
 
 /**
  * The "this column is not today" guard, as PostgREST needs it spelled.
@@ -134,77 +105,68 @@ export async function claimScheduleForDay(
   return rows.length > 0;
 }
 
-/* ------------------------------- Imputations ------------------------------- */
-
-export interface NewImputation {
-  userId: string;
-  project: string;
-  task?: string | null;
-  hours: number;
-  comment: string;
-  workDate: string;
-  dayAdvanced: boolean;
-  source: 'voice' | 'text';
+/**
+ * Gives the day back, so the next tick tries again.
+ *
+ * Only for failures that certainly happened BEFORE the portal was written to —it did not
+ * answer, the credentials are wrong— never for the ones where the outcome is unknown. A
+ * released claim is a second punch waiting to happen if the first one actually landed.
+ */
+export async function releaseSchedule(db: Db, id: string): Promise<void> {
+  await db.update<PunchScheduleRow>('punch_schedules', { id: `eq.${id}` }, { fired_on: null });
 }
-
-/** Append-only on purpose: this is a log of what was sent to somebody else's system. */
-export async function logImputation(db: Db, entry: NewImputation): Promise<ImputationRow> {
-  return db.insert<ImputationRow>('imputations', {
-    user_id: entry.userId,
-    project: entry.project,
-    task: entry.task ?? null,
-    hours: entry.hours,
-    comment: entry.comment,
-    work_date: entry.workDate,
-    day_advanced: entry.dayAdvanced,
-    source: entry.source,
-  });
-}
-
-/** For the day view and for the streak. Newest first, capped: nobody reads further back. */
-export async function listImputations(
-  db: Db,
-  userId: string,
-  sinceIso: string,
-  limit = 100,
-): Promise<ImputationRow[]> {
-  return db.select<ImputationRow>('imputations', {
-    filters: { user_id: `eq.${userId}`, logged_at: `gte.${sinceIso}` },
-    order: 'logged_at.desc',
-    limit,
-  });
-}
-
-/* ------------------------------ Project cache ------------------------------ */
 
 /**
- * The day's project table, as scraped by the tick.
+ * The working day, created the first time it is needed.
  *
- * The turn reads this and never the site: a login plus a scrape does not fit next to
- * three model rounds in 27 s (§11), and a project list that arrives after the answer is
- * the same as no project list.
+ * In code and not as a SQL seed because a seed runs before the user row exists —the users
+ * table is written on the first message— and would silently insert nothing. It only fires
+ * when there is not a single schedule for the user, so a row disabled on purpose is never
+ * resurrected.
  */
-export async function saveProjectCache(
+export async function seedSchedules(
   db: Db,
   userId: string,
-  day: string,
-  projects: Project[],
-): Promise<void> {
-  await db.upsert<ProjectCacheRow>(
-    'ficha_projects',
-    { user_id: userId, day, projects, scraped_at: new Date().toISOString() },
-    'user_id,day',
-  );
+  defaults: readonly { action: PunchAction; atTime: string }[],
+): Promise<PunchScheduleRow[]> {
+  const existing = await listSchedules(db, userId);
+  if (existing.length > 0) return existing;
+
+  for (const entry of defaults) {
+    await saveSchedule(db, { userId, action: entry.action, atTime: entry.atTime });
+  }
+  console.info(`timeclock: default schedule created for ${userId}`);
+  return listSchedules(db, userId);
 }
 
-export async function readProjectCache(
+/* --------------------------------- Punches --------------------------------- */
+
+export interface NewPunch {
+  userId: string;
+  action: PunchAction;
+  source: 'auto' | 'manual';
+  registeredAt: string | null;
+  localDay: string;
+}
+
+export async function logPunch(db: Db, punch: NewPunch): Promise<PunchRow> {
+  return db.insert<PunchRow>('punches', {
+    user_id: punch.userId,
+    action: punch.action,
+    source: punch.source,
+    registered_at: punch.registeredAt,
+    local_day: punch.localDay,
+  });
+}
+
+/** What we know we punched today. The portal knows the rest, including what the user did. */
+export async function listPunchesForDay(
   db: Db,
   userId: string,
-  day: string,
-): Promise<ProjectCacheRow | null> {
-  const rows = await db.select<ProjectCacheRow>('ficha_projects', {
-    filters: { user_id: `eq.${userId}`, day: `eq.${day}` },
-    limit: 1,
+  localDay: string,
+): Promise<PunchRow[]> {
+  return db.select<PunchRow>('punches', {
+    filters: { user_id: `eq.${userId}`, local_day: `eq.${localDay}` },
+    order: 'punched_at.asc',
   });
-  return rows[0] ?? null;
 }
