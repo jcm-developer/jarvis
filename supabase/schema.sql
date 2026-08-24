@@ -157,9 +157,90 @@ create table if not exists jobs (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
+-- Phase 22 added two kinds. The check is replaced rather than added: there is no
+-- `add constraint if not exists`, and on a fresh table the inline check above is already
+-- named like this, so dropping it and putting back a wider one keeps the script re-runnable.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'jobs_kind_check') then
+    alter table jobs drop constraint jobs_kind_check;
+  end if;
+  alter table jobs
+    add constraint jobs_kind_check check (kind in ('read_url','ficha_punch','impute_hours'));
+end $$;
+
 -- The cron's only query: what is eligible, oldest first.
 create index if not exists jobs_claimable_idx
   on jobs (state, run_after);
+
+-- Fichaje: scheduled punches (phase 23) -------------------------------------
+-- What used to be schedules.json. One row per action and time, rolled forward: the day's
+-- state lives in `offset_for` and `fired_on`, never in a row per day.
+create table if not exists punch_schedules (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references users(id) on delete cascade,
+  action         text not null
+                   check (action in ('entrada','salida','salida_descanso','entrada_descanso')),
+  -- Local time of day. Stored as text 'HH:MM' and not as `time`: everything that reads it
+  -- compares against the local clock computed in lib/localtime.ts, and a `time` column
+  -- invites doing the comparison in UTC in SQL, which is wrong twice a year.
+  at_time        text not null check (at_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+  enabled        boolean not null default true,
+  -- The window the daily offset is drawn from, in minutes. Columns and not constants so
+  -- the jitter can be turned off (0/0) without a deploy.
+  offset_min     smallint not null default -2,
+  offset_max     smallint not null default 5,
+  -- The offset drawn for `offset_for`, and the local day it was drawn for. It is written
+  -- down because the cron ticks every five minutes and the rule is `now >= at_time +
+  -- offset`: re-drawing on each tick would fire on the first tick whose draw happens to
+  -- pass, pinning every day to the earliest edge of the window.
+  offset_minutes smallint,
+  offset_for     date,
+  -- Last local day this row fired. Same job as tasks.reminded_at.
+  fired_on       date,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  -- The same action at the same time twice is a mistake, never an intention.
+  unique (user_id, action, at_time)
+);
+create index if not exists punch_schedules_due_idx
+  on punch_schedules (user_id, enabled, at_time);
+
+-- Imputación: what was submitted (phase 24) ---------------------------------
+-- What used to be impute_log.json. Append-only: it is a record of what was sent to
+-- somebody else's system, and a record that can be edited is not a record.
+create table if not exists imputations (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references users(id) on delete cascade,
+  project        text not null,
+  task           text,
+  hours          numeric(4,2) not null check (hours > 0 and hours <= 24),
+  -- Mandatory here too, and not only in the tool: the site refuses an empty one, so a
+  -- row without it could not have been submitted and must not be able to exist.
+  comment        text not null check (length(btrim(comment)) > 0),
+  -- The day the hours landed on, as the site reported it AFTER submitting, which is not
+  -- always the day we asked for: a full day rolls over to the next one.
+  work_date      date not null,
+  day_advanced   boolean not null default false,
+  source         text not null default 'text' check (source in ('voice','text')),
+  logged_at      timestamptz not null default now()
+);
+create index if not exists imputations_user_logged_idx
+  on imputations (user_id, logged_at desc);
+create index if not exists imputations_user_work_date_idx
+  on imputations (user_id, work_date);
+
+-- The day's project table, cached whole (phase 24) ---------------------------
+-- So that no turn ever waits on a scrape: the tick refreshes this and the tool reads it.
+-- One row per day and a jsonb blob, because the row indexes inside it are the site's and
+-- only mean anything together with the day they were scraped on.
+create table if not exists ficha_projects (
+  user_id        uuid not null references users(id) on delete cascade,
+  day            date not null,
+  projects       jsonb not null,
+  scraped_at     timestamptz not null default now(),
+  primary key (user_id, day)
+);
 
 -- Observability --------------------------------------------------------------
 -- Without this, understanding why the agent did something odd is impossible.
@@ -195,6 +276,10 @@ create trigger memories_touch before update on memories
 
 drop trigger if exists tasks_touch on tasks;
 create trigger tasks_touch before update on tasks
+  for each row execute function touch_updated_at();
+
+drop trigger if exists punch_schedules_touch on punch_schedules;
+create trigger punch_schedules_touch before update on punch_schedules
   for each row execute function touch_updated_at();
 
 drop trigger if exists jobs_touch on jobs;
