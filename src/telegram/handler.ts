@@ -7,6 +7,7 @@ import {
   snoozeReminder,
 } from '../agent';
 import type { Config } from '../config';
+import { runFicha } from '../ficha';
 import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
 import { DeadlineExceededError } from '../lib/deadline';
@@ -436,6 +437,8 @@ async function handleCommand(
         '/ping — estado y configuración',
         '/test — mide qué va lento: base de datos, ficharweb y el modelo',
         '/test html — enseña la página de ficharweb tal como llega',
+        '/ficha — cómo va el fichaje de hoy, sin fichar nada',
+        '/ficha entrada | comer | vuelta | salida — ficha eso ahora',
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
@@ -477,6 +480,23 @@ async function handleCommand(
           deadline: ctx.deadline,
           timezone: ctx.config.defaultTimezone,
         }),
+      );
+    }
+
+    case 'ficha': {
+      // Everything after the command word, so "/ficha vuelta de comer" arrives whole.
+      const arg = text.trim().slice(text.trim().indexOf(command) + command.length).trim();
+      return withTyping(ctx, () =>
+        runFicha(
+          {
+            env: ctx.env,
+            config: ctx.config,
+            deadline: ctx.deadline,
+            chatId: ctx.actor.chatId,
+            from: message.from,
+          },
+          arg || undefined,
+        ),
       );
     }
 

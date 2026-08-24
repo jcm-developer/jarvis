@@ -131,10 +131,16 @@ export async function runScheduledPunches(deps: PunchRunDeps): Promise<number> {
 }
 
 /**
- * One punch, with the four endings it can have.
+ * One punch, with the endings it can have.
  *
  * The branching is not defensive programming: each kind of failure has a different right
  * answer, and getting them wrong means either a silent day or a duplicate punch.
+ *
+ * The `catch` at the bottom is the one added after a full day was spent guessing. Anything
+ * that is not a `TimeclockError` used to propagate out of here, and the caller logged it and
+ * said nothing — with the day already claimed. So the whole feature could fail on every
+ * stage, four times, and look from the chat exactly like a day with nothing to do. A punch
+ * that writes to an attendance record does not get to fail invisibly.
  */
 async function attempt(
   schedule: PunchScheduleRow,
@@ -162,7 +168,23 @@ async function attempt(
     await announce(`Fichada ${`la ${ACTION_NAMES[schedule.action]}`} ${when}.`, deps);
     return true;
   } catch (error) {
-    if (!(error instanceof TimeclockError)) throw error;
+    if (!(error instanceof TimeclockError)) {
+      // A bug of ours, the database refusing the insert, anything unforeseen. The day is
+      // RELEASED, and that is safe for the same reason the whole design leans on: the portal
+      // only ever offers the phase that comes next. If the punch did land and it was
+      // `logPunch` that blew up, the retry finds the button gone and ends as 'not_available'.
+      // A lost log entry is recoverable; a lost punch is a hole in a legal record. And the
+      // user is told either way, because a claimed day failing in silence spends the only
+      // attempt there is and surfaces days later in a timesheet.
+      console.error(`timeclock: ${schedule.action} broke unexpectedly:`, error);
+      await releaseSchedule(db, schedule.id);
+      await announce(
+        `Algo se me ha roto por dentro fichando ${`la ${ACTION_NAMES[schedule.action]}`}. ` +
+          'Lo reintento en el siguiente tick, pero compruébalo tú por si acaso.',
+        deps,
+      );
+      return false;
+    }
 
     switch (error.kind) {
       case 'not_available':

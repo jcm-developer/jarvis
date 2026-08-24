@@ -1870,6 +1870,16 @@ This is the whole design, and it is a table rather than a `catch`:
 | Wrong credentials, page not understood | A human has to look | Day closed, user told |
 | Answered, "Último movimiento" unchanged | **Unknown** whether it registered | Day closed, user told, **never retried** |
 
+**And a sixth ending that was not in the table because nobody had written it down: the
+unforeseen one.** Anything thrown inside `attempt()` that was not a `TimeclockError` —a bug,
+Supabase refusing the insert— propagated to the caller, which logged it and said nothing,
+with the day already claimed. So the feature could fail on all four stages and look, from the
+chat, exactly like a day with nothing to do; that is precisely what happened on the first day
+it ran. It now releases the day and says so. Releasing is safe for the same reason the rest of
+this design leans on: the portal only offers the phase that comes next, so if the punch did
+land and it was the log that broke, the retry finds the button gone and ends quietly as
+`not_available`. A lost log row is recoverable, a lost punch is a hole in a legal record.
+
 Row two is new and it is there because it was row one for a while. Sharing a kind with
 "another stage's turn" bought its silence, and silence is right for that one and wrong for
 this one: the day gets claimed, no punch goes out, nobody is told, and the hole surfaces in a

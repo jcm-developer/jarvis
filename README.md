@@ -313,7 +313,7 @@ with a 7-day TTL as a stopgap; phase 4 moved it to Supabase.
 **Readable errors.** Exhausted quota, an invalid key or a timeout reach Telegram as a
 clear sentence, not as silence and not as a stack dump.
 
-Commands: `/ping`, `/test`, `/reset`, `/help`. Everything else goes to the model. `/ping`
+Commands: `/ping`, `/test`, `/ficha`, `/reset`, `/help`. Everything else goes to the model. `/ping`
 also reports the briefing's hour and the notice given before appointments.
 Audio is acknowledged but not transcribed until phase 3.
 
@@ -961,6 +961,27 @@ everything else works exactly as before.
 `punches`; the script is idempotent. The four times seed themselves on the first tick, and
 from then on they live in `punch_schedules` — changing an hour, or turning one off with
 `enabled`, is a row in Supabase and not a deploy.
+
+### `/ficha`: the punch, without the model in the middle
+
+`punch_status` and `punch_now` already do both jobs, and both are tools — so the model has
+to decide to call them. The morning the provider started timing out, that left a feature
+that writes to an attendance record reachable only through the one component that was down,
+and a day went by working out from the outside why no punch had gone out.
+
+So the same rule as `/test`: composed in code, no model call anywhere.
+
+```
+/ficha                    what the portal offers, what it last recorded, what I punched today
+/ficha entrada            entrada al trabajo
+/ficha comer | vuelta     the two ends of lunch
+/ficha salida             salida del trabajo
+```
+
+Bare `/ficha` writes nothing. It also prints what the automation itself registered today,
+labelled as ours and kept apart from the portal's own line: those two answer different
+questions, and merging them is how "you clocked in at 09:00" got said about a punch that
+never happened.
 
 ### `/test`: what is slow, when something is slow
 
