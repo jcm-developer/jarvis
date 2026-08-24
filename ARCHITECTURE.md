@@ -1761,34 +1761,52 @@ report as done when it never landed, is a record that lies.
 
 Playwright, which is how this normally gets done, cannot run on Workers, and Browser
 Rendering is on the paid plan. So [src/timeclock/http.ts](src/timeclock/http.ts) talks to
-the site the way the browser would: `GET` the page, fill the form, `POST` it back. Two
-decisions make that survivable against an ASP.NET WebForms app nobody documented for us:
+`registro.asp` the way a browser would: `GET` the page, fill the form, `POST` it back.
 
-- **Every hidden input is copied back verbatim.** `__VIEWSTATE`, `__EVENTVALIDATION` and
-  whatever else the platform invents travel through without this code knowing they exist.
-  It is the difference between an adapter and a reverse engineering project.
-- **Buttons are found by the words on them**, and only by their full wording. "entrada" as a
-  loose fallback would also match *Entrada del descanso* and clock the wrong thing.
-  Anything unrecognised is an error that lists what the page **does** offer, so the first
-  run against the real portal is also the capture we never got.
+The page is three things, and every decision below follows from them:
 
-`__doPostBack` links are handled next to real submit inputs, because WebForms renders half
-its buttons as anchors and which half is not predictable from outside.
+- **One submit button, and its wording is the phase.** "Registrar entrada" while you are
+  out, "Registrar salida" while you are in. Never both.
+- **A radio group above it** ("Motivo registro") with the reasons for that phase, the
+  ordinary one already selected. Starting and ending the day is pressing the button and
+  nothing else; the two break punches have to pick their reason first.
+- **"Último movimiento" below it**, stating what the portal recorded last and at what time,
+  to the second.
+
+What makes talking to it survivable is copying the form's own state back verbatim —every
+hidden input travels through without this code knowing it exists— and matching buttons and
+reasons by their **full** wording only. "entrada" as a loose fallback would also match
+*Entrada del descanso* and register the wrong reason. Anything unrecognised becomes an error
+carrying the route walked, what each page held and what it said, which is how a broken run
+names the hop that broke instead of just failing.
+
+Buttons are `<button type="submit">` with an icon inside and often no `name`, not
+`<input type="submit">`, so the label lives in the element's text and not in a `value`. A
+`type="button"` is skipped on purpose: it does whatever its script does, and on the login
+page that one is *Cambiar Contraseña*.
+
+**Three attempts, three wrong assumptions, and they are the lesson.** The first invented a
+button per action and looked for a control labelled *Salida al descanso* — which is a
+radio's label. The second recognised only `<input type="submit">`, so it could not have
+found the real buttons either. The third guessed the login's URL, asked for `/CCB/`, got a
+page that was not the login and filled nothing in; the site's own redirect from
+`registro.asp` was there all along and needed no guessing. Every one of the three showed up
+as "I do not understand this page", which is why the diagnosis grew a breadcrumb trail: the
+failure was never where the message pointed.
 
 ### The portal is the source of truth, not our table
 
-The site only ever offers the action that comes next: if it shows *Salida al descanso*, the
-entry is already registered. That single property does three jobs at once, and it is why
-there is no "have I punched today?" flag anywhere in the schema:
+The page shows one phase at a time, and that single property does three jobs at once. It is
+why there is no "have I punched today?" flag anywhere in the schema:
 
 - **Idempotence.** The user can clock in from the web at 09:20 and the automation, arriving
-  at 09:00 or at 09:04, finds no button and does nothing. Silently: there is nothing to
+  at 09:00, finds no "Registrar entrada" and does nothing. Silently: there is nothing to
   report, and a message per skipped stage is how a bot gets muted.
-- **`punch_status`.** What the user reads is the portal's state, not our log. Our log
-  answers the other half —what the automation did, and at what time— which the portal
-  cannot.
-- **Verification.** After pressing, the control must be gone. If it is still there the
-  punch did not land.
+- **`punch_status`.** What the user reads is the portal's state and its own "Último
+  movimiento", not our log. Our log answers the other half —what the automation did— which
+  the portal cannot.
+- **Verification.** After submitting, "Último movimiento" must be the reason we just sent.
+  Anything else and either it did not land or we cannot tell, and those are not the same.
 
 ### The four endings of one punch, and why they cannot share code
 

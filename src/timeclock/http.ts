@@ -334,7 +334,13 @@ interface Page {
   trail?: string[];
 }
 
-/** One hop of the trail: where we were and what was on it. */
+/**
+ * One hop of the trail: where we were, what was on it, and what it said.
+ *
+ * The snippet is the part that was missing. A hop reported as "nada reconocible" says the
+ * page was not understood but not what it was, and a page nobody can name is a page nobody
+ * can fix.
+ */
 function describePage(page: Page): string {
   const marks = [
     hasPassword(page.form) ? 'login' : '',
@@ -342,7 +348,10 @@ function describePage(page: Page): string {
     page.form.radios.length > 0 ? `${page.form.radios.length} motivos` : '',
     page.form.controls.length > 0 ? `${page.form.controls.length} botones` : '',
   ].filter(Boolean);
-  return `${new URL(page.url).pathname} [${marks.join(', ') || 'nada reconocible'}]`;
+
+  const text = textOf(page.html).slice(0, 60);
+  const said = marks.length === 0 && text ? ` "${text}"` : '';
+  return `${new URL(page.url).pathname} [${marks.join(', ') || 'nada reconocible'}]${said}`;
 }
 
 function hasPassword(form: ParsedForm): boolean {

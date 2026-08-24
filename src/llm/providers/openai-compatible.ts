@@ -98,7 +98,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       model: this.model,
       messages: messages.map(toWireMessage),
       temperature: this.temperature,
-      max_tokens: this.maxTokens,
+      max_tokens: options?.maxTokens ?? this.maxTokens,
       stream: false,
     };
 

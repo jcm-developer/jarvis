@@ -132,15 +132,36 @@ export function parseForm(html: string): ParsedForm {
     inputs.push({ name, type, value });
   }
 
-  // Anchors and buttons that post back. WebForms renders half its buttons this way, and
-  // which half is not something you can predict from outside.
+  // Anchors and buttons. Two different jobs in one loop:
+  //
+  // - A `<button type="submit">` is a real control and the page's own login uses one, with
+  //   an icon inside and no `name` at all. Its label is its text, and a browser sends no
+  //   field for a nameless button, so neither do we.
+  // - An anchor or button wired to `__doPostBack` is the other way a platform renders a
+  //   button, and which of the two a given page uses is not predictable from outside.
   for (const match of html.matchAll(/<(a|button)\b([^>]*)>([\s\S]*?)<\/\1>/gi)) {
     const attrs = attributes(match[2] ?? '');
+    const label = textOf(match[3] ?? '') || norm(attrs['title'] ?? '');
     const postback = DO_POSTBACK.exec(`${attrs['href'] ?? ''} ${attrs['onclick'] ?? ''}`);
-    if (!postback) continue;
+
+    if (postback) {
+      controls.push({
+        label,
+        fields: { __EVENTTARGET: postback[1]!, __EVENTARGUMENT: postback[2] ?? '' },
+      });
+      continue;
+    }
+
+    // Only submits: a `type="button"` does whatever its script does and pressing it by
+    // posting the form would be inventing an action. That is what "Cambiar Contraseña" is
+    // on the login page, and posting it would land on a password change form.
+    const type = (attrs['type'] ?? '').toLowerCase();
+    if (match[1]!.toLowerCase() !== 'button' || type !== 'submit') continue;
+    if (!label) continue;
+
     controls.push({
-      label: textOf(match[3] ?? '') || norm(attrs['title'] ?? ''),
-      fields: { __EVENTTARGET: postback[1]!, __EVENTARGUMENT: postback[2] ?? '' },
+      label,
+      fields: attrs['name'] ? { [attrs['name']]: attrs['value'] ?? '' } : {},
     });
   }
 

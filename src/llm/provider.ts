@@ -62,6 +62,16 @@ export interface LLMResponse {
 export interface ChatOptions {
   /** Cap for this particular call. Set by the message's global budget. */
   timeoutMs?: number;
+  /**
+   * Cap on what the model may write back, overriding the provider's default.
+   *
+   * It exists for `/test`, and it exists because of a measurement that lied: comparing a
+   * bare call against one carrying the system prompt compares two different things if the
+   * model is free to answer at length in one and not the other. At ~100 tokens a second,
+   * an 800-token default IS the eight seconds being measured. Bounding it turns the number
+   * back into latency.
+   */
+  maxTokens?: number;
 }
 
 export interface LLMProvider {

@@ -44,6 +44,14 @@ const MIN_STEP_MS = 2_500;
 /** Past this a step is reported as slow rather than fine. A message has 27 s for everything. */
 const SLOW_MS = 6_000;
 
+/**
+ * What the model may write back in these probes.
+ *
+ * Enough for "ok" and not one token more: what is being measured is how long the provider
+ * takes to answer, not how long it takes to type.
+ */
+const MAX_ANSWER_TOKENS = 16;
+
 export interface SelfTestDeps {
   env: Env;
   config: Config;
@@ -277,13 +285,18 @@ async function askModel(
   const cap = carry.tools ? MAX_LOADED_MS : carry.prompt ? MAX_PROMPT_MS : MAX_PING_MS;
   const response = await createProvider(deps.env, deps.config).chat(messages, schemas, {
     timeoutMs: deps.deadline.budgetFor(cap),
+    // Bounded so the three numbers are comparable. Without this the call carrying the
+    // system prompt is free to write up to 800 tokens —eight seconds of typing— while the
+    // bare one answers "ok" in two, and the difference reads as latency when it is not.
+    maxTokens: MAX_ANSWER_TOKENS,
   });
 
   const what = schemas ? `y ${schemas.length} herramientas` : 'y sin herramientas';
   return {
     details: [
       `${tokens(response.usage.promptTokens)} tokens de entrada ` +
-        `(${carry.prompt ? 'con prompt' : 'sin prompt'} ${what}).`,
+        `(${carry.prompt ? 'con prompt' : 'sin prompt'} ${what}), ` +
+        `${response.usage.completionTokens} de salida.`,
     ],
   };
 }
