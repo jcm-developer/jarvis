@@ -19,6 +19,24 @@ mejorables están así por un motivo que ya está escrito ahí.
   prompt, las descripciones de las tools y los `error` que vuelven al modelo. Eso es
   producto, no código, y traducirlo cambiaría cómo suena el bot. Las respuestas de
   este chat y este propio fichero también van en español.
+- **Formato de las respuestas de este chat.** Cuando pregunte algo, contesta siempre
+  con estas tres secciones y nada más, salvo que te pida explícitamente que te
+  explayes:
+
+  ```
+  *PROBLEMA (Claro y conciso)*
+  - Descripción si es necesaria
+
+  *SOLUCIÓN (Clara y concisa)*
+  - Descripción
+
+  *PASOS A SEGUIR POR EL USUARIO*
+  - Explicación (Clara y concisa)
+  ```
+
+  Conciso es conciso: una línea por punto y fuera. Si algo no aplica —no hay pasos
+  míos, o el problema no tiene solución todavía— dilo en su sección en vez de
+  inventar contenido para rellenarla o de saltártela.
 - **Vamos por fases.** El roadmap está al final de ARCHITECTURE.md. Cuando digo
   "el siguiente punto" o "continuamos", es la siguiente fase pendiente de esa tabla.
 - Al cerrar una fase se actualizan **los tres**: el código, el roadmap de
