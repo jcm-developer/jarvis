@@ -41,6 +41,10 @@ const MAX_LOADED_MS = 9_000;
 /** Under this, a step is not started: a cut-off measurement is worse than no measurement. */
 const MIN_STEP_MS = 2_500;
 
+/** How much of the page `/test html` shows, and how much context before the anchor. */
+const HTML_WINDOW = 1_400;
+const HTML_BEFORE = 200;
+
 /** Past this a step is reported as slow rather than fine. A message has 27 s for everything. */
 const SLOW_MS = 6_000;
 
@@ -58,6 +62,45 @@ export interface SelfTestDeps {
   db: Db;
   deadline: Deadline;
   timezone: string;
+}
+
+/**
+ * `/test html`: the register page as it comes, around the part that matters.
+ *
+ * A window and not the whole page —Telegram caps a message at 4 KB— centred on the first
+ * radio, because what has been impossible to guess from outside is how the page ties each
+ * option to its text.
+ */
+export async function runPageDump(deps: SelfTestDeps): Promise<string> {
+  if (!punchConfigured(deps.env)) return 'No hay credenciales de ficharweb configuradas.';
+
+  let page: { url: string; html: string };
+  try {
+    page = await createPunchClient(deps.env).readPage({
+      timeoutMs: deps.deadline.budgetFor(MAX_PORTAL_MS),
+    });
+  } catch (error) {
+    return `No he podido llegar a la página: ${describe(error)}`;
+  }
+
+  const anchor = anchorIndex(page.html);
+  const from = Math.max(0, anchor - HTML_BEFORE);
+  const window = page.html.slice(from, from + HTML_WINDOW);
+
+  return [
+    page.url,
+    `${page.html.length} caracteres en total; te enseño ${window.length} desde el ${from}.`,
+    '',
+    window,
+  ].join('\n');
+}
+
+/** Where to centre the window: the first radio, or the reason panel, or the top. */
+function anchorIndex(html: string): number {
+  const radio = /<input\b[^>]*type=['"]?radio/i.exec(html);
+  if (radio) return radio.index;
+  const panel = html.toLowerCase().indexOf('motivo');
+  return panel >= 0 ? panel : 0;
 }
 
 export async function runSelfTest(deps: SelfTestDeps): Promise<string> {

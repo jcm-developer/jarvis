@@ -134,6 +134,11 @@ export class HttpPunchClient implements PunchClient {
     return stateOf(page);
   }
 
+  async readPage(options: TimeclockOptions = {}): Promise<{ url: string; html: string }> {
+    const { page } = await this.open(options);
+    return { url: page.url, html: page.html };
+  }
+
   async punch(action: PunchAction, options: TimeclockOptions = {}): Promise<PunchResult> {
     const { page, jar, clock } = await this.open(options);
     const state = stateOf(page);

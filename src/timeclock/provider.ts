@@ -170,6 +170,14 @@ export interface PunchClient {
   readonly name: string;
   /** One read, no writes. What the automation checks before punching and what the user asks for. */
   readState(options?: TimeclockOptions): Promise<PunchState>;
+  /**
+   * The register page's raw html, for when the parsing is what is wrong.
+   *
+   * It exists because five deploys were spent inferring a page's structure from what the
+   * parser failed to find in it. A diagnosis that can show the page itself ends that loop,
+   * and it costs nothing: the page is already being fetched.
+   */
+  readPage(options?: TimeclockOptions): Promise<{ url: string; html: string }>;
   punch(action: PunchAction, options?: TimeclockOptions): Promise<PunchResult>;
 }
 

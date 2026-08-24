@@ -16,7 +16,7 @@ import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
 import { parseSnooze } from '../tools/snooze';
-import { runSelfTest } from '../selftest';
+import { runPageDump, runSelfTest } from '../selftest';
 import type {
   Env,
   TelegramCallbackQuery,
@@ -435,6 +435,7 @@ async function handleCommand(
         '',
         '/ping — estado y configuración',
         '/test — mide qué va lento: base de datos, ficharweb y el modelo',
+        '/test html — enseña la página de ficharweb tal como llega',
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
@@ -452,9 +453,20 @@ async function handleCommand(
       await forgetConversation({ chatId: ctx.actor.chatId, from: message.from }, ctx);
       return 'Hecho, he olvidado la conversación reciente. Lo que sé de ti sigue ahí.';
 
-    case 'test':
-      // Wrapped in the typing indicator because it is the one command that takes as long
-      // as a real message: it makes two model calls on purpose.
+    case 'test': {
+      // `/test html` dumps the timeclock page instead of measuring: when the parsing is
+      // what is broken, the page itself is the only useful answer.
+      if (/\bhtml\b/i.test(text)) {
+        return withTyping(ctx, () =>
+          runPageDump({
+            env: ctx.env,
+            config: ctx.config,
+            db: createDb(ctx.env),
+            deadline: ctx.deadline,
+            timezone: ctx.config.defaultTimezone,
+          }),
+        );
+      }
       return withTyping(ctx, () =>
         runSelfTest({
           env: ctx.env,
@@ -464,6 +476,7 @@ async function handleCommand(
           timezone: ctx.config.defaultTimezone,
         }),
       );
+    }
 
     case 'ping':
       return [

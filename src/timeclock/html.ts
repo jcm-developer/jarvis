@@ -107,7 +107,11 @@ export function textOf(html: string): string {
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]*>/g, ' ');
+    .replace(/<[^>]*>/g, ' ')
+    // A tag with no closing bracket, i.e. a fragment cut off by whoever sliced the html.
+    // Without this it survives as "text" and reads like a label: the register page's
+    // reasons came out as `<input type=text class=form-control placeholder=escr`.
+    .replace(/<[^>]*$/, ' ');
   return norm(decodeEntities(visible));
 }
 
