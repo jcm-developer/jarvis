@@ -164,6 +164,13 @@ export const punchStatus: ToolDefinition = {
       data: {
         date: today,
         portal_offers: state.available.map((action) => ({ action, what: ACTION_NAMES[action] })),
+        // Its turn has come and we cannot register it. Here because it is the answer to
+        // "why has it not punched", and without it the model has to guess one.
+        portal_blocked: state.blocked.map((action) => ({
+          action,
+          what: ACTION_NAMES[action],
+          why: 'el motivo exige un comentario escrito, así que lo tiene que fichar él',
+        })),
         // The portal stating what it last recorded, which covers the punches the user made
         // from the web himself. Ours is the other half, below.
         last_movement: state.lastMovement
@@ -175,18 +182,28 @@ export const punchStatus: ToolDefinition = {
           registered_at: punch.registered_at,
           source: punch.source,
         })),
+        // Field names chosen against a real failure: this used to say `at` and `hecho_hoy`,
+        // and the model read a plan as a fact —"has fichado la entrada a las 09:00 y la
+        // salida a comer a las 14:00"— when nothing had been punched at either hour. `at`
+        // looked like a time something happened and `fired_on` only ever meant "this row was
+        // attempted today", success or not. On an attendance record that is not a rounding
+        // error, it is an invented one, so the names now say what the values are.
         schedules: schedules
           .filter((schedule) => schedule.enabled)
           .map((schedule) => ({
             action: schedule.action,
             what: ACTION_NAMES[schedule.action],
-            at: schedule.at_time,
-            hecho_hoy: schedule.fired_on === today,
+            programado_a: schedule.at_time,
+            intentado_hoy: schedule.fired_on === today,
           })),
         note:
-          'portal_offers y last_movement son la verdad: el sitio solo ofrece la fase que ' +
-          'toca y dice a qué hora registró lo último, lo haya fichado él a mano o yo. ' +
-          'punched_by_jarvis son solo los míos.',
+          'La verdad de lo fichado son SOLO last_movement, portal_offers y ' +
+          'punched_by_jarvis. schedules es el plan del día, no lo ocurrido: ' +
+          'programado_a es la hora a la que TOCA fichar e intentado_hoy solo dice que ' +
+          'ese horario ya se intentó, no que entrase. Nunca digas que algo se fichó a la ' +
+          'hora de programado_a. Si punched_by_jarvis está vacío, yo no he fichado nada ' +
+          'hoy; lo que aparezca en last_movement lo fichó él a mano. Y si no sabes la ' +
+          'hora de algo, dilo en vez de dar una.',
       },
     };
   },
