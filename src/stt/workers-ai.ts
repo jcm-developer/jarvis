@@ -1,6 +1,6 @@
 import type { Env } from '../types';
 import type { Transcriber } from './provider';
-import { SttError } from './provider';
+import { SttError, stripSilenceArtefact } from './provider';
 
 /**
  * Transcription with Workers AI, inside Cloudflare's own network.
@@ -29,7 +29,7 @@ export class WorkersAiTranscriber implements Transcriber {
         task: 'transcribe',
       })) as { text?: string } | undefined;
 
-      return result?.text?.trim() ?? '';
+      return stripSilenceArtefact(result?.text?.trim() ?? '');
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new SttError('upstream', `workers-ai stt: ${detail}`);

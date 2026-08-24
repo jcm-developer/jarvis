@@ -1,5 +1,5 @@
 import type { Transcriber, TranscribeOptions } from './provider';
-import { SttError } from './provider';
+import { SttError, stripSilenceArtefact } from './provider';
 
 const ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -58,7 +58,7 @@ export class OpenAITranscriber implements Transcriber {
     }
 
     const body = (await response.json()) as { text?: string };
-    return body.text?.trim() ?? '';
+    return stripSilenceArtefact(body.text?.trim() ?? '');
   }
 }
 
