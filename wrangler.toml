@@ -134,7 +134,7 @@ STT_LANGUAGE = "es"
 # project that does not sit behind Telegram's whitelist, so it gets switched on
 # deliberately. Anything other than exactly "true" leaves it off, and with it off the
 # routes answer 404 — turning the whole channel off is a deploy, not a revert.
-VOICE_ENABLED = "false"
+VOICE_ENABLED = "true"
 
 # Voice synthesis. ONLY /voice reads these: Telegram never speaks (that is phase 11).
 #
