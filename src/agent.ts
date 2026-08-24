@@ -1,4 +1,5 @@
 import type { Config } from './config';
+import type { Principal } from './core/principal';
 import { Db } from './db/client';
 import { resolveIdentity } from './db/identity';
 import { logToolCall } from './db/logs';
@@ -19,7 +20,7 @@ import { getTool, toolSchemas } from './tools/registry';
 import { applySnooze } from './tools/snooze';
 import type { ToolContext, ToolResult } from './tools/types';
 import { ToolValidationError } from './tools/types';
-import type { Env, TelegramUser } from './types';
+import type { Env } from './types';
 
 /**
  * A photo attached to the message.
@@ -37,7 +38,7 @@ export interface AgentImage {
 
 export interface AgentInput {
   chatId: number;
-  from: TelegramUser | undefined;
+  from: Principal | undefined;
   /** What the user wrote. A photo's caption counts, and may be empty. */
   text: string;
   /** 'text' by default. Stored in the history for debugging audio and photos. */
@@ -278,7 +279,7 @@ function photoLabel(caption: string): string {
  * another table and another contract with the user.
  */
 export async function forgetConversation(
-  input: { chatId: number; from: TelegramUser | undefined },
+  input: { chatId: number; from: Principal | undefined },
   deps: AgentDeps,
 ): Promise<void> {
   const db = createDb(deps.env);
@@ -302,7 +303,7 @@ export async function forgetConversation(
  * model call to move a date by ten minutes is exactly what the button is for.
  */
 export async function snoozeReminder(
-  input: { chatId: number; from: TelegramUser | undefined; taskId: string; code: string },
+  input: { chatId: number; from: Principal | undefined; taskId: string; code: string },
   deps: AgentDeps,
 ): Promise<string> {
   const db = createDb(deps.env);
@@ -327,7 +328,7 @@ export async function snoozeReminder(
 
 export async function executeConfirmed(
   action: PendingAction,
-  input: { chatId: number; from: TelegramUser | undefined },
+  input: { chatId: number; from: Principal | undefined },
   deps: AgentDeps,
 ): Promise<string> {
   const calls = action.calls;

@@ -1,5 +1,4 @@
 import {
-  ConfigMissingError,
   createDb,
   executeConfirmed,
   forgetConversation,
@@ -7,12 +6,11 @@ import {
   snoozeReminder,
 } from '../agent';
 import type { Config } from '../config';
+import { describeError } from '../core/errors';
+import type { Principal } from '../core/principal';
 import { runPunchCommand } from '../punch';
-import { DbError } from '../db/client';
 import type { Deadline } from '../lib/deadline';
-import { DeadlineExceededError } from '../lib/deadline';
 import { seesImages } from '../llm';
-import { LLMError } from '../llm/provider';
 import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
@@ -24,6 +22,7 @@ import type {
   TelegramMessage,
   TelegramPhotoSize,
   TelegramUpdate,
+  TelegramUser,
 } from '../types';
 import type { Actor } from './guard';
 import { isTimeout, MAX_DOWNLOAD_BYTES, TelegramClient } from './client';
@@ -69,6 +68,19 @@ const MIN_AGENT_MS = 4_000;
 
 const CONFIRM_PREFIX = 'ok:';
 const CANCEL_PREFIX = 'no:';
+
+/**
+ * Telegram's user object, cut down to what the core actually reads.
+ *
+ * This is the whole boundary in four lines. `resolveIdentity` wants an id, a username and
+ * a first name; `is_bot` and `language_code` are wire noise it has no business seeing.
+ * Converting here and not there is what lets a second entry point exist without forging a
+ * `TelegramUser` to get past the types.
+ */
+function asPrincipal(user: TelegramUser | undefined): Principal | undefined {
+  if (!user) return undefined;
+  return { id: user.id, username: user.username, firstName: user.first_name };
+}
 
 export async function handleUpdate(update: TelegramUpdate, ctx: HandlerContext): Promise<void> {
   if (update.callback_query) {
@@ -127,7 +139,7 @@ async function buildReply(message: TelegramMessage, ctx: HandlerContext): Promis
       : { source: 'voice' as const, transcriptRaw: prompt };
 
     return await runAgent(
-      { chatId: ctx.actor.chatId, from: message.from, text: prompt, ...origin },
+      { chatId: ctx.actor.chatId, from: asPrincipal(message.from), text: prompt, ...origin },
       ctx,
     );
   } catch (error) {
@@ -212,7 +224,7 @@ async function replyToPhoto(
   return runAgent(
     {
       chatId: ctx.actor.chatId,
-      from: message.from,
+      from: asPrincipal(message.from),
       // The caption is user text and does feed the date guardrails. Empty when there is
       // none, which is precisely the case the confirmation exists for.
       text: message.caption?.trim() ?? '',
@@ -341,7 +353,7 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
   if (snooze) {
     try {
       const outcome = await snoozeReminder(
-        { chatId: ctx.actor.chatId, from: query.from, ...snooze },
+        { chatId: ctx.actor.chatId, from: asPrincipal(query.from), ...snooze },
         ctx,
       );
       await ctx.telegram.sendMessage(ctx.actor.chatId, outcome);
@@ -374,34 +386,13 @@ async function handleCallback(query: TelegramCallbackQuery, ctx: HandlerContext)
   try {
     const outcome = await executeConfirmed(
       pending,
-      { chatId: ctx.actor.chatId, from: query.from },
+      { chatId: ctx.actor.chatId, from: asPrincipal(query.from) },
       ctx,
     );
     await ctx.telegram.sendMessage(ctx.actor.chatId, outcome);
   } catch (error) {
     await ctx.telegram.sendMessage(ctx.actor.chatId, describeError(error));
   }
-}
-
-/** Turns exceptions into something a person can read in a chat. */
-function describeError(error: unknown): string {
-  if (error instanceof DeadlineExceededError) {
-    console.warn('presupuesto agotado antes de terminar');
-    return error.userMessage;
-  }
-  if (error instanceof LLMError) {
-    console.error(`llm_error kind=${error.kind} status=${error.status ?? '-'}`, error.message);
-    return error.userMessage;
-  }
-  if (error instanceof ConfigMissingError) {
-    console.error('config incompleta:', error.message);
-    return 'Me falta la configuración de la base de datos. Revisa los secrets de Supabase.';
-  }
-  if (error instanceof DbError) {
-    console.error('db_error:', error.message);
-    return 'No he podido hablar con la base de datos. Lo tienes en los logs.';
-  }
-  throw error;
 }
 
 async function handleCommand(
@@ -453,7 +444,7 @@ async function handleCommand(
       ].join('\n');
 
     case 'reset':
-      await forgetConversation({ chatId: ctx.actor.chatId, from: message.from }, ctx);
+      await forgetConversation({ chatId: ctx.actor.chatId, from: asPrincipal(message.from) }, ctx);
       return 'Hecho, he olvidado la conversación reciente. Lo que sé de ti sigue ahí.';
 
     case 'test': {
@@ -493,7 +484,7 @@ async function handleCommand(
             config: ctx.config,
             deadline: ctx.deadline,
             chatId: ctx.actor.chatId,
-            from: message.from,
+            from: asPrincipal(message.from),
           },
           arg || undefined,
         ),

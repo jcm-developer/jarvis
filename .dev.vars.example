@@ -38,3 +38,10 @@ GOOGLE_SA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KE
 # id is usually your own email. Never "primary" — that is the service account's own
 # calendar, which nobody looks at.
 GOOGLE_CALENDAR_ID="you@gmail.com"
+
+# Phase 25 — the voice channel (/voice and /voice/test). Without it both routes answer
+# 401, and with VOICE_ENABLED != "true" in wrangler.toml they answer 404 first.
+#
+# Generate it, never invent it:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+VOICE_API_TOKEN="a-long-random-string"

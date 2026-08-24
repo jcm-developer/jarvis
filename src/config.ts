@@ -1,5 +1,6 @@
 import { isProviderName, type ProviderName } from './llm';
 import { isSttProviderName, type SttProviderName } from './stt';
+import { isTtsProviderName, type TtsProviderName } from './tts';
 import type { Env } from './types';
 
 export interface Config {
@@ -15,6 +16,18 @@ export interface Config {
   sttProvider: SttProviderName;
   sttModel: string;
   sttLanguage: string;
+  /**
+   * Whether the voice channel is on. Off unless VOICE_ENABLED is exactly "true".
+   *
+   * Read once, here, so there is a single answer to the question: `src/index.ts` uses it
+   * to decide whether the routes exist at all, and a second reading somewhere else is how
+   * a disabled feature ends up half reachable.
+   */
+  voiceEnabled: boolean;
+  ttsProvider: TtsProviderName;
+  ttsModel: string;
+  /** A voice name on OpenAI, a speaker name on aura. melotts ignores it. */
+  ttsVoice: string;
   /** Local hour (0-23) at which the cron's daily briefing goes out. */
   briefingHour: number;
   /**
@@ -58,6 +71,21 @@ const DEFAULT_STT_MODELS: Record<SttProviderName, string> = {
   'workers-ai': '@cf/openai/whisper-large-v3-turbo',
 };
 
+const DEFAULT_TTS_MODELS: Record<TtsProviderName, string> = {
+  openai: 'tts-1',
+  'workers-ai': '@cf/deepgram/aura-2-es',
+};
+
+/**
+ * Defaults per provider, and the two names are not interchangeable: `nova` is one of the
+ * voices `tts-1` accepts, `aquila` is one of aura-2-es's ten Spanish speakers, and melotts
+ * ignores this field entirely and picks by language.
+ */
+const DEFAULT_TTS_VOICES: Record<TtsProviderName, string> = {
+  openai: 'nova',
+  'workers-ai': 'aquila',
+};
+
 export class ConfigError extends Error {}
 
 /**
@@ -99,6 +127,9 @@ export function loadConfig(env: Env): Config {
   const rawStt = env.STT_PROVIDER?.trim().toLowerCase() ?? '';
   const sttProvider: SttProviderName = isSttProviderName(rawStt) ? rawStt : 'openai';
 
+  const rawTts = env.TTS_PROVIDER?.trim().toLowerCase() ?? '';
+  const ttsProvider: TtsProviderName = isTtsProviderName(rawTts) ? rawTts : 'openai';
+
   // An inverted window would leave find_free_slots never returning a gap, and that is a
   // typo in wrangler.toml, not a reason to bring the bot down.
   const dayStartHour = parseHour(env.DAY_START_HOUR, 9);
@@ -117,6 +148,12 @@ export function loadConfig(env: Env): Config {
     sttProvider,
     sttModel: env.STT_MODEL?.trim() || DEFAULT_STT_MODELS[sttProvider],
     sttLanguage: env.STT_LANGUAGE?.trim() || 'es',
+    // Exactly "true" and nothing else. A typo in wrangler.toml leaves the channel off,
+    // which is the safe way round for the only door that does not sit behind the whitelist.
+    voiceEnabled: env.VOICE_ENABLED?.trim().toLowerCase() === 'true',
+    ttsProvider,
+    ttsModel: env.TTS_MODEL?.trim() || DEFAULT_TTS_MODELS[ttsProvider],
+    ttsVoice: env.TTS_VOICE?.trim() || DEFAULT_TTS_VOICES[ttsProvider],
     llmProvider,
     llmModel: env.LLM_MODEL?.trim() || DEFAULT_MODELS[llmProvider],
     historyWindow: parsePositiveInt(env.HISTORY_WINDOW, 20),

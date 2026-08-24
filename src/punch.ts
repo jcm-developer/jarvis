@@ -1,4 +1,5 @@
 import type { Config } from './config';
+import type { Principal } from './core/principal';
 import { createDb } from './agent';
 import { resolveIdentity } from './db/identity';
 import { listPunchesForDay, logPunch } from './db/timeclock';
@@ -6,7 +7,7 @@ import type { Deadline } from './lib/deadline';
 import { formatTime, localNow } from './lib/localtime';
 import { createPunchClient, punchConfigured } from './timeclock';
 import { ACTION_NAMES, TimeclockError, type PunchAction, type PunchState } from './timeclock/provider';
-import type { Env, TelegramUser } from './types';
+import type { Env } from './types';
 
 
 /**
@@ -36,7 +37,7 @@ export interface PunchCommandDeps {
   config: Config;
   deadline: Deadline;
   chatId: number;
-  from: TelegramUser | undefined;
+  from: Principal | undefined;
 }
 
 /**

@@ -44,6 +44,16 @@ compatibility_flags = ["nodejs_compat"]
 # company's attendance system this talks to. Optional — src/timeclock/ has the default.
 #   wrangler secret put TIMECLOCK_BASE_URL
 #
+# Voice channel (phase 25). One secret, and the routes stay 404 without it even with
+# VOICE_ENABLED on: an endpoint that spends money must not open because a secret was
+# forgotten. Generate it long and random, it is never typed from memory:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+#   wrangler secret put VOICE_API_TOKEN
+#
+# Deliberately NOT the same value as TELEGRAM_WEBHOOK_SECRET. This one gets typed into a
+# browser and lives in that laptop's localStorage; sharing them would mean rotating the
+# bot's webhook to revoke a laptop.
+
 # The four times and the +-5 minute window are NOT here: they live in `punch_schedules` in
 # Supabase, seeded on the first tick, so changing an hour is a row and not a deploy.
 #
@@ -117,6 +127,36 @@ DAY_END_HOUR = "21"
 STT_PROVIDER = "openai"
 STT_MODEL = "whisper-1"
 STT_LANGUAGE = "es"
+
+# Voice channel (phase 25): /voice and /voice/test.
+#
+# Off by default, and that is the point rather than caution: it is the only surface of the
+# project that does not sit behind Telegram's whitelist, so it gets switched on
+# deliberately. Anything other than exactly "true" leaves it off, and with it off the
+# routes answer 404 — turning the whole channel off is a deploy, not a revert.
+VOICE_ENABLED = "false"
+
+# Voice synthesis. ONLY /voice reads these: Telegram never speaks (that is phase 11).
+#
+# openai/tts-1 is the default for the same reason the STT default is OpenAI — Spanish —
+# and for one that is specific to it: it has no Neuron wall. The free alternatives inside
+# Cloudflare are real but each has a catch, and they are two orders of magnitude apart in
+# what they cost against the free plan's 10,000 Neurons a day:
+#
+#   TTS_PROVIDER = "workers-ai"  TTS_MODEL = "@cf/deepgram/aura-2-es"  TTS_VOICE = "aquila"
+#     Excellent Spanish, ten voices. ~409 Neurons a reply, so the free quota runs out at
+#     roughly two dozen replies a day and past that it needs Workers Paid — which works out
+#     dearer than tts-1.
+#   TTS_PROVIDER = "workers-ai"  TTS_MODEL = "@cf/myshell-ai/melotts"
+#     ~3 Neurons a reply, effectively free for ever. But the docs only list 'en' and 'fr'
+#     and there are unresolved reports of lang:"es" coming back as "8002: Invalid input".
+#     Verify it answers in Spanish before trusting it.
+#
+# TTS_VOICE is a voice name on OpenAI (alloy, echo, fable, nova, onyx, shimmer) and a
+# speaker name on aura. melotts ignores it and picks by language.
+TTS_PROVIDER = "openai"
+TTS_MODEL = "tts-1"
+TTS_VOICE = "nova"
 
 # Ephemeral state: update_id dedupe, pending confirmations, quotas.
 # Create it with:  npx wrangler kv namespace create STATE

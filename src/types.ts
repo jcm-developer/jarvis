@@ -50,6 +50,19 @@ export interface Env {
   IMPUTE_USR?: string;
   IMPUTE_PASS?: string;
   /**
+   * Bearer token of the voice channel (phase 25).
+   *
+   * Separate from TELEGRAM_WEBHOOK_SECRET on purpose: they protect different things and
+   * leak differently. This one is typed into a browser by a person, so it lives in a
+   * localStorage on whatever device was used to test; the Telegram one never leaves
+   * Cloudflare. Sharing them would mean rotating the bot to revoke a laptop.
+   *
+   * With VOICE_ENABLED off it is not read at all. Without it set, the routes answer 401
+   * even when they are enabled: an endpoint that spends money must not be open by
+   * omission.
+   */
+  VOICE_API_TOKEN?: string;
+  /**
    * Base URLs of both portals.
    *
    * Secrets and not vars, even though a hostname is not a credential: wrangler.toml is
@@ -77,6 +90,19 @@ export interface Env {
   /** The day's window (local hours) find_free_slots searches for gaps in. */
   DAY_START_HOUR?: string;
   DAY_END_HOUR?: string;
+  /**
+   * Master switch of the voice channel (phase 25). "true" turns it on; anything else,
+   * including it being absent, leaves it off.
+   *
+   * Off is the default and that is the point: this is the one surface of the project that
+   * is reachable without Telegram's whitelist in front of it, so it has to be switched on
+   * deliberately. The routes are not even registered when it is off — see src/index.ts.
+   */
+  VOICE_ENABLED?: string;
+  /** Voice synthesis (phase 25). Only /voice reads these; Telegram never speaks. */
+  TTS_PROVIDER?: string;
+  TTS_MODEL?: string;
+  TTS_VOICE?: string;
   LOG_LEVEL?: string;
 }
 

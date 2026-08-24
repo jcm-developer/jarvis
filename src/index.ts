@@ -7,6 +7,7 @@ import { TelegramClient } from './telegram/client';
 import { claimUpdate, extractActor, isAuthorized, verifyWebhookSecret } from './telegram/guard';
 import { handleUpdate } from './telegram/handler';
 import type { Env, TelegramUpdate } from './types';
+import { registerVoiceRoutes } from './voice/routes';
 
 /**
  * Total budget per message.
@@ -34,6 +35,12 @@ const CRON_BUDGET_MS = 25_000;
 const app = new Hono<{ Bindings: Env }>();
 
 app.get('/', (c) => c.text('jarvis ok'));
+
+// The voice channel (phase 25). It shares the agent, the database and the conversation
+// row with Telegram, and nothing else: no message of its own goes out over the bot, and
+// `src/tts/` is not reachable from `telegram/`. Every route here answers 404 unless
+// VOICE_ENABLED is "true", so a deploy is enough to make the whole thing disappear.
+registerVoiceRoutes(app);
 
 app.post('/webhook', async (c) => {
   const env = c.env;

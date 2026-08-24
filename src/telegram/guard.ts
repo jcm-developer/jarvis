@@ -1,4 +1,5 @@
 import type { Config } from '../config';
+import { timingSafeEqual } from '../core/secret';
 import type { Env, TelegramUpdate } from '../types';
 
 /** A repeated update is not processed again for 24 h. */
@@ -20,20 +21,6 @@ export function verifyWebhookSecret(request: Request, env: Env): boolean {
   const received = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
   if (!received) return false;
   return timingSafeEqual(received, env.TELEGRAM_WEBHOOK_SECRET);
-}
-
-/** Constant-time comparison. The length does leak, and that is acceptable. */
-function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
-  const left = encoder.encode(a);
-  const right = encoder.encode(b);
-  if (left.byteLength !== right.byteLength) return false;
-
-  let diff = 0;
-  for (let i = 0; i < left.byteLength; i++) {
-    diff |= left[i]! ^ right[i]!;
-  }
-  return diff === 0;
 }
 
 /** Extracts who is talking and in which chat, be it a message or a button tap. */

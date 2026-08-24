@@ -1,4 +1,5 @@
-import type { Env, TelegramUser } from '../types';
+import type { Principal } from '../core/principal';
+import type { Env } from '../types';
 import type { Db } from './client';
 import type { ConversationRow, UserRow } from './types';
 
@@ -22,7 +23,7 @@ export interface Identity {
 export async function resolveIdentity(
   env: Env,
   db: Db,
-  from: TelegramUser | undefined,
+  from: Principal | undefined,
   chatId: number,
   defaultTimezone: string,
 ): Promise<Identity> {
@@ -36,7 +37,7 @@ export async function resolveIdentity(
     {
       telegram_id: telegramId,
       username: from?.username ?? null,
-      first_name: from?.first_name ?? null,
+      first_name: from?.firstName ?? null,
       timezone: defaultTimezone,
     },
     'telegram_id',
