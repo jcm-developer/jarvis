@@ -140,6 +140,13 @@ export interface PunchState {
     controls: number;
     /** The page's visible text, cut short. What a human needs to recognise the page. */
     snippet: string;
+    /**
+     * Every page this run went through, in order.
+     *
+     * The first production attempt reported only the last one, which left the actual
+     * question —which hop went wrong— unanswerable.
+     */
+    trail: string[];
   };
 }
 

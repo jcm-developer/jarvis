@@ -977,25 +977,28 @@ Ficharweb: bien, 2,1 s
   Ahora mismo puedo fichar: salida a comer.
 
 MODELO — openai, gpt-4.1-mini
-  Petición mínima: bien, 0,9 s
-    Sin prompt ni herramientas: 12 tokens de entrada.
-  Petición real: NO CONTESTA, cortada a los 10,0 s
-    Con el prompt y las 17 herramientas: 7.938 tokens de entrada.
+  Sin nada: bien, 0,5 s
+    12 tokens de entrada (sin prompt y sin herramientas).
+  Con el prompt: bien, 0,7 s
+    2.764 tokens de entrada (con prompt y sin herramientas).
+  Con prompt y herramientas: NO CONTESTA, cortada a los 9,0 s
+    7.938 tokens de entrada (con prompt y 17 herramientas).
 
-CONCLUSIÓN: la llamada mínima va bien y la real se cae, así que lo que
-pesa es lo que enviamos (el prompt y los esquemas de las herramientas),
-no el proveedor.
+CONCLUSIÓN: con el prompt va bien y solo se cae al añadir los esquemas de
+las herramientas: son las 17 herramientas lo que no traga, no el proveedor
+ni el prompt.
 ```
 
 No columns aligned with spaces: Telegram renders plain text in a proportional font, so a
 padded column is aligned nowhere. One label per line, the verdict in words before the
 number, and the detail indented underneath.
 
-The two model lines are the reason it exists. "The model is slow" has two different causes
-with two different fixes: the provider having a bad minute, or our request having grown too
-big — the prompt plus seventeen tool schemas is around 7.900 tokens of input on **every**
-message. The bare ping measures one, the loaded call measures the other, and the gap between
-them is the answer.
+The three model lines are the reason it exists, and there are three rather than two because
+"the model is slow" has three different causes with three different fixes: the provider
+having a bad minute, the prompt having grown, or the tool schemas being what the provider
+chokes on. The prompt is about 2.800 tokens and the seventeen schemas take it past 7.900 on
+**every** message, so measuring them separately is the difference between "wait it out",
+"trim the prompt" and "cut down the catalogue".
 
 The ficharweb line is a bonus that pays for itself: it says which punch actions it
 recognised on the page, so a reworded portal shows up when you ask instead of at nine in the

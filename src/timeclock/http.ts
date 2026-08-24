@@ -41,16 +41,14 @@ import {
 const DEFAULT_BASE_URL = 'https://ficharweb.ccbosco.org';
 
 /**
- * The login form.
+ * Where the punching happens, and the only path this code knows.
  *
- * The trailing slash is not cosmetic. The login form's `action` is relative, and a relative
- * URL resolved against `/CCB` resolves against the ROOT —`/default.asp`, not
- * `/CCB/default.asp`— because without the slash `/CCB` is a file as far as URL resolution
- * is concerned. With it, everything relative on the page lands inside the application.
+ * The login page is NOT a constant here, and that was learned the hard way: asking for
+ * `/CCB/` first came back with something that was not the login form, so nothing was ever
+ * filled in and the run ended with "I do not understand this page". Asking for the register
+ * page while logged out makes the site bounce us to its own login, wherever that is — which
+ * is what a browser does and one guess fewer for us.
  */
-const LOGIN_PATH = '/CCB/';
-
-/** Where the punching happens, once logged in. */
 const REGISTER_PATH = '/CCB/registro.asp';
 
 /** Cap per request. The caller's budget is split across three of them at most. */
@@ -178,15 +176,25 @@ export class HttpPunchClient implements PunchClient {
   ): Promise<{ page: Page; jar: Jar; clock: Clock }> {
     const clock = new Clock(options.timeoutMs ?? 20_000);
     const jar = new Jar();
+    const trail: string[] = [];
 
-    let page = await this.request(this.url(LOGIN_PATH), { method: 'GET' }, jar, clock);
-    if (hasPassword(page.form)) page = await this.login(page, jar, clock);
+    // Straight at the register page. Logged out, the site redirects to its own login, so
+    // there is no login URL to guess and no page of ours to be wrong about.
+    let page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
+    trail.push(describePage(page));
 
-    // The login may land anywhere; the punching happens on one page only.
+    if (hasPassword(page.form)) {
+      page = await this.login(page, jar, clock);
+      trail.push(describePage(page));
+    }
+
+    // The login lands wherever it wants; the punching happens on one page only.
     if (!isRegisterPage(page.form)) {
       page = await this.request(this.url(REGISTER_PATH), { method: 'GET' }, jar, clock);
+      trail.push(describePage(page));
     }
-    return { page, jar, clock };
+
+    return { page: { ...page, trail }, jar, clock };
   }
 
   /**
@@ -316,6 +324,25 @@ interface Page {
   url: string;
   html: string;
   form: ParsedForm;
+  /**
+   * Where this run has been, one entry per page.
+   *
+   * It exists because the first production run reported only the LAST page it saw, and the
+   * question that mattered —which of the three hops went wrong— was unanswerable. A page
+   * that cannot be understood is worth a breadcrumb trail; one that works costs nothing.
+   */
+  trail?: string[];
+}
+
+/** One hop of the trail: where we were and what was on it. */
+function describePage(page: Page): string {
+  const marks = [
+    hasPassword(page.form) ? 'login' : '',
+    isRegisterPage(page.form) ? 'fichaje' : '',
+    page.form.radios.length > 0 ? `${page.form.radios.length} motivos` : '',
+    page.form.controls.length > 0 ? `${page.form.controls.length} botones` : '',
+  ].filter(Boolean);
+  return `${new URL(page.url).pathname} [${marks.join(', ') || 'nada reconocible'}]`;
 }
 
 function hasPassword(form: ParsedForm): boolean {
@@ -354,6 +381,7 @@ function stateOf(page: Page): PunchState {
       inputs: form.inputs.length,
       controls: form.controls.length,
       snippet: textOf(page.html).slice(0, 160),
+      trail: page.trail ?? [],
     },
   };
 }

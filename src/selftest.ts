@@ -34,8 +34,9 @@ import type { Env } from './types';
 /** Caps per step. They add up to more than the budget on purpose: what does not fit is skipped. */
 const MAX_DB_MS = 4_000;
 const MAX_PORTAL_MS = 8_000;
-const MAX_PING_MS = 8_000;
-const MAX_LOADED_MS = 10_000;
+const MAX_PING_MS = 5_000;
+const MAX_PROMPT_MS = 7_000;
+const MAX_LOADED_MS = 9_000;
 
 /** Under this, a step is not started: a cut-off measurement is worse than no measurement. */
 const MIN_STEP_MS = 2_500;
@@ -61,8 +62,12 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
   const portal = punchConfigured(env)
     ? await measure(MAX_PORTAL_MS, deps, () => checkPortal(deps))
     : notRun('no hay credenciales configuradas');
-  const ping = await measure(MAX_PING_MS, deps, () => pingModel(deps));
-  const loaded = await measure(MAX_LOADED_MS, deps, () => loadedModel(deps));
+  // Three calls and not two, and the middle one is the one that earns its place: it carries
+  // the system prompt WITHOUT the tool schemas. Two measurements can only say "it is the
+  // size"; three say which half of the size, and the two halves have different fixes.
+  const ping = await measure(MAX_PING_MS, deps, () => askModel(deps, { prompt: false, tools: false }));
+  const prompted = await measure(MAX_PROMPT_MS, deps, () => askModel(deps, { prompt: true, tools: false }));
+  const loaded = await measure(MAX_LOADED_MS, deps, () => askModel(deps, { prompt: true, tools: true }));
 
   // One label per line with its detail indented underneath, and no columns padded with
   // spaces: Telegram renders plain text in a proportional font, so aligned columns are
@@ -75,10 +80,11 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
     ...block('Ficharweb', portal, MAX_PORTAL_MS),
     '',
     `MODELO — ${config.llmProvider}, ${config.llmModel}`,
-    ...block('Petición mínima', ping, MAX_PING_MS, 2),
-    ...block('Petición real', loaded, MAX_LOADED_MS, 2),
+    ...block('Sin nada', ping, MAX_PING_MS, 2),
+    ...block('Con el prompt', prompted, MAX_PROMPT_MS, 2),
+    ...block('Con prompt y herramientas', loaded, MAX_LOADED_MS, 2),
     '',
-    `CONCLUSIÓN: ${diagnose(ping, loaded)}`,
+    `CONCLUSIÓN: ${diagnose(ping, prompted, loaded, toolSchemas(env).length)}`,
     '',
     `Comprobado en ${secs(Date.now() - started)} s de los 27 que tiene un mensaje; ` +
       `quedaban ${secs(deadline.remainingMs())} s.`,
@@ -212,8 +218,11 @@ async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
 
   // The empty-handed case, over several lines because each shape points somewhere
   // different and the one-line version was unreadable in the chat.
-  const { url, sawLoginForm, inputs, controls, snippet } = state.diagnosis;
+  const { url, sawLoginForm, inputs, controls, snippet, trail } = state.diagnosis;
   const lines = [`Página: ${url}`];
+  // The route, not just the destination: with three hops, which one went wrong is the
+  // whole question.
+  if (trail.length > 0) lines.push(`Ruta: ${trail.join(' -> ')}`);
 
   if (sawLoginForm) {
     lines.push('Sigue en el login: o las credenciales no valen, o no he sabido rellenarlo.');
@@ -232,53 +241,49 @@ async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
 }
 
 /**
- * The smallest possible call: no system prompt, no tools, one word back.
+ * One model call, with as much or as little of our own baggage as asked for.
  *
- * This is the provider's own latency floor. If this is already slow, nothing we do to our
- * own request is going to help.
+ * The three variants are the measurement: nothing, the prompt, and the prompt with the tool
+ * schemas. Whatever the model answers is thrown away, and no tool is ever run — the schemas
+ * travel only so the request weighs what a real one weighs.
  */
-async function pingModel(deps: SelfTestDeps): Promise<StepResult> {
-  const response = await createProvider(deps.env, deps.config).chat(
-    [{ role: 'user', content: 'Contesta solo: ok' }],
-    undefined,
-    { timeoutMs: deps.deadline.budgetFor(MAX_PING_MS) },
-  );
-  return {
-    details: [`Sin prompt ni herramientas: ${tokens(response.usage.promptTokens)} tokens de entrada.`],
-  };
-}
+async function askModel(
+  deps: SelfTestDeps,
+  carry: { prompt: boolean; tools: boolean },
+): Promise<StepResult> {
+  const schemas = carry.tools ? toolSchemas(deps.env) : undefined;
+  const messages = [
+    ...(carry.prompt
+      ? [
+          {
+            role: 'system' as const,
+            content: buildSystemPrompt({
+              timezone: deps.timezone,
+              now: new Date(),
+              canSeeImages: true,
+              eventAlertMinutes: deps.config.eventAlertMinutes,
+              canSearchWeb: true,
+              canPunch: punchConfigured(deps.env),
+            }),
+          },
+        ]
+      : []),
+    {
+      role: 'user' as const,
+      content: carry.tools ? 'Contesta solo: ok. No uses ninguna herramienta.' : 'Contesta solo: ok',
+    },
+  ];
 
-/**
- * The request as the assistant really sends it.
- *
- * Same system prompt and same tool schemas as a normal message, which is where the tokens
- * are: the prompt is about a tenth of it and the schemas are the rest. The model is told
- * not to use them and whatever it asks for is discarded — nothing is executed from here.
- */
-async function loadedModel(deps: SelfTestDeps): Promise<StepResult> {
-  const schemas = toolSchemas(deps.env);
-  const response = await createProvider(deps.env, deps.config).chat(
-    [
-      {
-        role: 'system',
-        content: buildSystemPrompt({
-          timezone: deps.timezone,
-          now: new Date(),
-          canSeeImages: true,
-          eventAlertMinutes: deps.config.eventAlertMinutes,
-          canSearchWeb: true,
-          canPunch: punchConfigured(deps.env),
-        }),
-      },
-      { role: 'user', content: 'Contesta solo: ok. No uses ninguna herramienta.' },
-    ],
-    schemas,
-    { timeoutMs: deps.deadline.budgetFor(MAX_LOADED_MS) },
-  );
+  const cap = carry.tools ? MAX_LOADED_MS : carry.prompt ? MAX_PROMPT_MS : MAX_PING_MS;
+  const response = await createProvider(deps.env, deps.config).chat(messages, schemas, {
+    timeoutMs: deps.deadline.budgetFor(cap),
+  });
+
+  const what = schemas ? `y ${schemas.length} herramientas` : 'y sin herramientas';
   return {
     details: [
-      `Con el prompt y las ${schemas.length} herramientas: ` +
-        `${tokens(response.usage.promptTokens)} tokens de entrada.`,
+      `${tokens(response.usage.promptTokens)} tokens de entrada ` +
+        `(${carry.prompt ? 'con prompt' : 'sin prompt'} ${what}).`,
     ],
   };
 }
@@ -290,27 +295,31 @@ async function loadedModel(deps: SelfTestDeps): Promise<StepResult> {
  * but "is it slow because of what we send", and those two have different fixes: one is
  * waiting for the provider, the other is trimming the request.
  */
-function diagnose(ping: Measurement, loaded: Measurement): string {
-  if (ping.notRun || loaded.notRun) {
-    return 'no he podido medir las dos llamadas, así que no puedo comparar. Repite el /test.';
+function diagnose(
+  ping: Measurement,
+  prompted: Measurement,
+  loaded: Measurement,
+  toolCount: number,
+): string {
+  if (ping.notRun || prompted.notRun || loaded.notRun) {
+    return 'no he podido medir las tres llamadas, así que no puedo comparar. Repite el /test.';
   }
 
-  const pingFailed = Boolean(ping.problem);
-  const loadedFailed = Boolean(loaded.problem);
-  if (pingFailed && loadedFailed) return 'el modelo no contesta ni a lo mínimo. Es el proveedor.';
-  if (pingFailed) return 'falla incluso la llamada mínima: es el proveedor, no lo que enviamos.';
-  if (loadedFailed) {
+  const bad = (result: Measurement) => Boolean(result.problem) || result.ms > SLOW_MS;
+
+  if (bad(ping)) return 'lento o caído hasta con la llamada más pequeña. Es el proveedor.';
+  if (bad(prompted)) {
     return (
-      'la llamada mínima va bien y la real se cae, así que lo que pesa es lo que enviamos ' +
-      '(el prompt y los esquemas de las herramientas), no el proveedor.'
+      'sin herramientas ya va mal, así que lo que pesa es el tamaño de la entrada en ' +
+      'general y no los esquemas. Toca recortar el prompt o cambiar de proveedor.'
     );
   }
-
-  if (ping.ms > SLOW_MS) return 'lento con cualquier llamada. Es el proveedor.';
-  if (loaded.ms > SLOW_MS && loaded.ms > ping.ms * 3) {
-    return 'la lentitud aparece con el tamaño de la petición, no con el proveedor.';
+  if (bad(loaded)) {
+    return (
+      'con el prompt va bien y solo se cae al añadir los esquemas de las herramientas: ' +
+      `son las ${toolCount} herramientas lo que no traga, no el proveedor ni el prompt.`
+    );
   }
-  if (loaded.ms > SLOW_MS) return 'la petición real va lenta. Vuelve a probar en un rato.';
   return 'todo responde bien ahora mismo.';
 }
 
