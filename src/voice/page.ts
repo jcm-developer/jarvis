@@ -4,6 +4,10 @@
  * No build step, no framework, no dependency: a page that needs `npm run build` to answer
  * "where do the seconds go" is a page that will be out of date the first time it matters.
  *
+ * Two ways in, and the default is the comfortable one: press once and talk, and the
+ * recorder cuts itself after about a second and a half of silence. Hold-to-talk is still
+ * there for a noisy room, where that detector is the thing getting in the way.
+ *
  * It is an instrument and not a demo. Everything on screen is a reading — the transcript
  * so a bad answer can be blamed on the STT instead of the model, the reply text so a
  * failed synthesis still leaves something to read, and the per-stage times because that is
@@ -65,6 +69,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid #2a2f3a;
     background: #0b0d12; color: #e6e8ec; font: inherit;
   }
+  .modes { display: flex; gap: 8px; }
+  .modes button {
+    flex: 1; padding: 9px; border-radius: 9px; border: 1px solid #232833;
+    background: #12151c; color: #6b7386; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .modes button.on { border-color: #3d4657; color: #e6e8ec; background: #171b23; }
+  #level { height: 4px; border-radius: 2px; background: #1a1e26; overflow: hidden; }
+  #levelFill { height: 100%; width: 0; background: #3ba55d; transition: width .08s linear; }
   .hidden { display: none; }
   footer { font-size: 12px; color: #4b5263; text-align: center; }
   footer a { color: #6b7386; }
@@ -82,7 +94,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   </div>
 
   <div id="app" class="hidden">
-    <button id="talk">Mantén pulsado para hablar</button>
+    <div class="modes">
+      <button id="modeToggle">Pulsar y hablar</button>
+      <button id="modeHold">Mantener pulsado</button>
+    </div>
+    <button id="talk">Pulsa para hablar</button>
+    <div id="level"><div id="levelFill"></div></div>
     <div id="status"><span id="dot"></span><span id="statusText">Listo.</span></div>
 
     <div id="confirm" class="card hidden">
@@ -100,7 +117,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     <div id="timesCard" class="card hidden"><h2>Tiempos</h2><table id="times"></table></div>
   </div>
 
-  <footer>Mantén pulsado, habla, suelta.<br>Los tiempos también quedan en <code>wrangler tail</code>.</footer>
+  <footer>La barra espaciadora hace lo mismo que el botón.<br>Los tiempos también quedan en <code>wrangler tail</code>.</footer>
 </div>
 <script>
 (function () {
@@ -150,6 +167,90 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     $(cardId).classList.toggle('hidden', !text);
   }
 
+  // ---- modes ------------------------------------------------------------
+  // Two ways in, because holding a button is fine at a desk and miserable anywhere else.
+  // 'toggle' is the default and it does not even need the second press: the recorder cuts
+  // itself when you stop talking. 'hold' stays for a noisy room, where that detector is
+  // precisely the thing getting in the way.
+  var MODE_KEY = 'jarvis.voice.mode';
+  var mode = 'toggle';
+  try { mode = localStorage.getItem(MODE_KEY) || 'toggle'; } catch (e) {}
+  setMode(mode);
+  $('modeToggle').onclick = function () { setMode('toggle'); };
+  $('modeHold').onclick = function () { setMode('hold'); };
+  function setMode(next) {
+    mode = next === 'hold' ? 'hold' : 'toggle';
+    try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
+    $('modeToggle').classList.toggle('on', mode === 'toggle');
+    $('modeHold').classList.toggle('on', mode === 'hold');
+    label();
+  }
+  function label() {
+    $('talk').textContent = recording
+      ? (mode === 'hold' ? 'Suelta para enviar' : 'Pulsa para parar')
+      : (mode === 'hold' ? 'Mantén pulsado para hablar' : 'Pulsa para hablar');
+  }
+
+  // ---- level and silence ------------------------------------------------
+  // An RMS over the raw samples, with the room's own noise measured during the first
+  // quarter second instead of a fixed threshold: a fixed one works on the desk it was
+  // tuned on and nowhere else. The bar is not decoration either — "is it hearing me" is
+  // the first question when nothing comes back, and this answers it without a round trip.
+  var SILENCE_MS = 1400;
+  var CALIBRATE_MS = 250;
+  var MAX_RECORD_MS = 30000;
+  var audioCtx = null, analyser = null, meterTimer = null;
+
+  function startMeter() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      audioCtx = new Ctx();
+      var source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+    } catch (e) { analyser = null; return; }
+
+    var floats = typeof analyser.getFloatTimeDomainData === 'function';
+    var buf = floats ? new Float32Array(analyser.fftSize) : new Uint8Array(analyser.fftSize);
+    var startedAt = Date.now(), noise = 0, samples = 0, threshold = 0.02;
+    var spoke = false, lastLoud = Date.now();
+
+    meterTimer = setInterval(function () {
+      if (!recording || !analyser) return;
+      if (floats) analyser.getFloatTimeDomainData(buf);
+      else analyser.getByteTimeDomainData(buf);
+
+      var sum = 0;
+      for (var i = 0; i < buf.length; i++) {
+        var v = floats ? buf[i] : (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      var rms = Math.sqrt(sum / buf.length);
+      var elapsed = Date.now() - startedAt;
+      $('levelFill').style.width = Math.min(100, Math.round(rms * 600)) + '%';
+
+      if (elapsed < CALIBRATE_MS) { noise += rms; samples++; return; }
+      if (samples) { threshold = Math.max(0.02, (noise / samples) * 3 + 0.008); samples = 0; }
+
+      if (rms > threshold) { spoke = true; lastLoud = Date.now(); }
+      // The hard cap applies in both modes: a recorder nobody stopped is how you get a
+      // 413 and a bill instead of an answer.
+      if (elapsed > MAX_RECORD_MS) { stop(); return; }
+      // Cutting on silence only makes sense when there is no finger on the button.
+      if (mode === 'toggle' && spoke && Date.now() - lastLoud > SILENCE_MS) stop();
+    }, 80);
+  }
+
+  function stopMeter() {
+    clearInterval(meterTimer);
+    meterTimer = null;
+    analyser = null;
+    $('levelFill').style.width = '0%';
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
+  }
+
   // ---- recording --------------------------------------------------------
   // MediaRecorder does not emit ogg/wav: it is Opus-in-WebM on Chrome and Firefox and
   // AAC-in-MP4 on Safari. Both are accepted by the endpoint, so nothing is converted
@@ -182,13 +283,17 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     recorder.start();
     recording = true;
     $('talk').classList.add('rec');
-    status('Grabando…', 'rec');
+    label();
+    startMeter();
+    status(mode === 'toggle' ? 'Grabando… se corta sola al callar.' : 'Grabando…', 'rec');
   }
 
   function stop() {
     if (!recording) return;
     recording = false;
     $('talk').classList.remove('rec');
+    stopMeter();
+    label();
     try { recorder.stop(); } catch (e) {}
   }
 
@@ -312,19 +417,26 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   // ---- push to talk -----------------------------------------------------
   // Pointer events cover mouse, touch and pen at once. pointerleave matters: dragging
   // off the button while holding must stop the recorder, or it runs until the tab closes.
+  // Pointer events cover mouse, touch and pen at once. In hold mode pointerleave matters:
+  // dragging off the button while holding must stop the recorder, or it runs to the cap.
   var talk = $('talk');
-  talk.addEventListener('pointerdown', function (e) { e.preventDefault(); start(); });
-  talk.addEventListener('pointerup', function (e) { e.preventDefault(); stop(); });
-  talk.addEventListener('pointerleave', stop);
-  talk.addEventListener('pointercancel', stop);
+  function press() { if (mode === 'hold') start(); else if (recording) stop(); else start(); }
+  function release() { if (mode === 'hold') stop(); }
+
+  talk.addEventListener('pointerdown', function (e) { e.preventDefault(); press(); });
+  talk.addEventListener('pointerup', function (e) { e.preventDefault(); release(); });
+  talk.addEventListener('pointerleave', release);
+  talk.addEventListener('pointercancel', release);
   talk.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  // Space bar, for testing with both hands free.
+  // Space bar does whatever the button does, for testing with both hands free.
   document.addEventListener('keydown', function (e) {
-    if (e.code === 'Space' && !e.repeat && document.activeElement !== $('token')) { e.preventDefault(); start(); }
+    if (e.code !== 'Space' || e.repeat || document.activeElement === $('token')) return;
+    e.preventDefault();
+    press();
   });
   document.addEventListener('keyup', function (e) {
-    if (e.code === 'Space') { e.preventDefault(); stop(); }
+    if (e.code === 'Space') { e.preventDefault(); release(); }
   });
 
   $('yes').onclick = function () { confirm('ok'); };
