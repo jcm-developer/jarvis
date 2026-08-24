@@ -1,5 +1,6 @@
 import {
   ConfigMissingError,
+  createDb,
   executeConfirmed,
   forgetConversation,
   runAgent,
@@ -15,6 +16,7 @@ import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
 import { parseSnooze } from '../tools/snooze';
+import { runSelfTest } from '../selftest';
 import type {
   Env,
   TelegramCallbackQuery,
@@ -432,6 +434,7 @@ async function handleCommand(
         'Comandos:',
         '',
         '/ping — estado y configuración',
+        '/test — mide qué va lento: base de datos, ficharweb y el modelo',
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
@@ -448,6 +451,19 @@ async function handleCommand(
     case 'reset':
       await forgetConversation({ chatId: ctx.actor.chatId, from: message.from }, ctx);
       return 'Hecho, he olvidado la conversación reciente. Lo que sé de ti sigue ahí.';
+
+    case 'test':
+      // Wrapped in the typing indicator because it is the one command that takes as long
+      // as a real message: it makes two model calls on purpose.
+      return withTyping(ctx, () =>
+        runSelfTest({
+          env: ctx.env,
+          config: ctx.config,
+          db: createDb(ctx.env),
+          deadline: ctx.deadline,
+          timezone: ctx.config.defaultTimezone,
+        }),
+      );
 
     case 'ping':
       return [

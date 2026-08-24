@@ -313,8 +313,8 @@ with a 7-day TTL as a stopgap; phase 4 moved it to Supabase.
 **Readable errors.** Exhausted quota, an invalid key or a timeout reach Telegram as a
 clear sentence, not as silence and not as a stack dump.
 
-Commands: `/ping`, `/reset`, `/help`. Everything else goes to the model. `/ping` also
-reports the briefing's hour and the notice given before appointments.
+Commands: `/ping`, `/test`, `/reset`, `/help`. Everything else goes to the model. `/ping`
+also reports the briefing's hour and the notice given before appointments.
 Audio is acknowledged but not transcribed until phase 3.
 
 ## What phase 2 does
@@ -958,6 +958,39 @@ everything else works exactly as before.
 `punches`; the script is idempotent. The four times seed themselves on the first tick, and
 from then on they live in `punch_schedules` — changing an hour, or turning one off with
 `enabled`, is a row in Supabase and not a deploy.
+
+### `/test`: what is slow, when something is slow
+
+The one command whose answer is written entirely in code, which is the point: it works when
+the model is exactly the thing that is broken. It reports four numbers —Supabase,
+ficharweb, a bare model ping and the request as the assistant really sends it— and then
+says what they mean:
+
+```
+Diagnóstico
+
+Supabase          0.3 s  ok
+ficharweb         2.1 s  ofrece break_start
+
+Modelo openai/gpt-4.1-mini
+  ping             0.9 s  12 tok de entrada
+  carga real      13.4 s  7938 tok de entrada
+
+La lentitud aparece con el tamaño de la petición, no con el proveedor.
+```
+
+The two model lines are the reason it exists. "The model is slow" has two different causes
+with two different fixes: the provider having a bad minute, or our request having grown too
+big — the prompt plus seventeen tool schemas is around 7.900 tokens of input on **every**
+message. The bare ping measures one, the loaded call measures the other, and the gap between
+them is the answer.
+
+The ficharweb line is a bonus that pays for itself: it says which punch actions it
+recognised on the page, so a reworded portal shows up when you ask instead of at nine in the
+morning. It reads the page and never presses anything.
+
+It costs two model calls, so it is not free — but it is on demand, and cheaper than reading
+`wrangler tail` with a token counter in the other hand.
 
 ## Several things in one message
 
