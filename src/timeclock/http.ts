@@ -69,7 +69,7 @@ export class HttpPunchClient implements PunchClient {
    */
   async readState(options: TimeclockOptions = {}): Promise<PunchState> {
     const { page } = await this.open(options);
-    return stateOf(page.form);
+    return stateOf(page);
   }
 
   async punch(action: PunchAction, options: TimeclockOptions = {}): Promise<PunchResult> {
@@ -77,7 +77,7 @@ export class HttpPunchClient implements PunchClient {
 
     const control = findControl(page.form, ACTION_LABELS[action]);
     if (!control) {
-      const state = stateOf(page.form);
+      const state = stateOf(page);
       // Two very different situations, and telling them apart is the whole point of
       // collecting the labels. Some action recognised means the site is simply on another
       // stage —already punched, or this one's turn has not come— which is a legitimate
@@ -87,9 +87,7 @@ export class HttpPunchClient implements PunchClient {
       if (state.available.length === 0) {
         throw new TimeclockError(
           'parse',
-          `no reconozco ningún botón de fichaje. La página ofrece: ${
-            state.labels.slice(0, 8).join(' / ') || 'nada con texto'
-          }`,
+          `no reconozco ningún botón de fichaje. ${describeDiagnosis(state)}`,
         );
       }
       throw new TimeclockError(
@@ -257,13 +255,37 @@ function hasPassword(form: ParsedForm): boolean {
   return form.inputs.some((input) => input.type === 'password');
 }
 
-/** Which of the four actions the page is offering, plus what it says, for diagnosis. */
-function stateOf(form: ParsedForm): PunchState {
+/** Which of the four actions the page is offering, plus enough to diagnose it when none is. */
+function stateOf(page: Page): PunchState {
+  const { form } = page;
   return {
     available: PUNCH_ACTIONS.filter((action) => findControl(form, ACTION_LABELS[action]) !== null),
     labels: form.controls.map((control) => control.label).filter((label) => label.length > 2),
     times: extractTimes(form),
+    diagnosis: {
+      url: page.url,
+      sawLoginForm: hasPassword(form),
+      inputs: form.inputs.length,
+      controls: form.controls.length,
+      snippet: textOf(page.html).slice(0, 160),
+    },
   };
+}
+
+/**
+ * The empty-handed case, in one line a person can act on.
+ *
+ * Each of the three shapes points somewhere different: a login form still on screen means
+ * the credentials or the fill failed, a page with nothing on it means we are not even on
+ * the app, and buttons we do not recognise means the wording changed.
+ */
+function describeDiagnosis(state: PunchState): string {
+  const { url, sawLoginForm, inputs, controls, snippet } = state.diagnosis;
+  if (sawLoginForm) return `sigue en el login (${url})`;
+  if (inputs === 0 && controls === 0) {
+    return `esa página no parece la aplicación: ${url} — "${snippet || 'sin texto'}"`;
+  }
+  return `botones sin reconocer en ${url}: ${state.labels.slice(0, 6).join(' / ') || 'ninguno con texto'}`;
 }
 
 /**

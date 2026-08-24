@@ -10,7 +10,7 @@ import type { CronTarget } from '../db/identity';
 import { saveTurns } from '../db/messages';
 import type { PunchScheduleRow } from '../db/types';
 import { createPunchClient, punchConfigured } from '../timeclock';
-import { TimeclockError, type PunchAction } from '../timeclock/provider';
+import { ACTION_NAMES, TimeclockError, type PunchAction } from '../timeclock/provider';
 import type { Deadline } from '../lib/deadline';
 import { localNow } from '../lib/localtime';
 import type { TelegramClient } from '../telegram/client';
@@ -71,14 +71,6 @@ const MIN_PUNCH_MS = 9_000;
  * user is told, which is the only honest ending.
  */
 const GIVE_UP_MINUTES = 30;
-
-/** What each action is called when it is announced in the chat. */
-const SPOKEN: Record<PunchAction, string> = {
-  clock_in: 'la entrada',
-  clock_out: 'la salida',
-  break_start: 'la salida a comer',
-  break_end: 'la vuelta de comer',
-};
 
 export interface PunchRunDeps {
   env: Env;
@@ -167,7 +159,7 @@ async function attempt(
     const when = result.registeredAt
       ? `a las ${result.registeredAt}`
       : 'ahora mismo (el portal no ha dicho la hora)';
-    await announce(`Fichada ${SPOKEN[schedule.action]} ${when}.`, deps);
+    await announce(`Fichada ${`la ${ACTION_NAMES[schedule.action]}`} ${when}.`, deps);
     return true;
   } catch (error) {
     if (!(error instanceof TimeclockError)) throw error;
@@ -194,7 +186,7 @@ async function attempt(
         // have landed. The day stays closed and a human is told.
         console.error(`timeclock: ${schedule.action} failed (${error.kind}): ${error.message}`);
         await announce(
-          `No he podido fichar ${SPOKEN[schedule.action]}: ${error.userMessage}`,
+          `No he podido fichar ${`la ${ACTION_NAMES[schedule.action]}`}: ${error.userMessage}`,
           deps,
         );
         return false;
@@ -218,7 +210,7 @@ async function giveUp(
   if (!(await claimScheduleForDay(deps.db, schedule.id, localDay))) return;
   console.warn(`timeclock: window missed for ${schedule.action} (${schedule.at_time})`);
   await announce(
-    `No he fichado ${SPOKEN[schedule.action]} de las ${schedule.at_time} y ya es tarde ` +
+    `No he fichado ${`la ${ACTION_NAMES[schedule.action]}`} de las ${schedule.at_time} y ya es tarde ` +
       'para hacerlo por mi cuenta. Fíchalo tú o dime que lo intente.',
     deps,
   );

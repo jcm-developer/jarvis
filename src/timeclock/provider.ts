@@ -26,6 +26,19 @@ export function isPunchAction(value: string): value is PunchAction {
   return (PUNCH_ACTIONS as readonly string[]).includes(value);
 }
 
+/**
+ * What each action is called in front of a person.
+ *
+ * Here and not in each caller because there were already two copies drifting apart, and
+ * the wording is chosen so an article can be put in front of it: "la salida a comer".
+ */
+export const ACTION_NAMES: Record<PunchAction, string> = {
+  clock_in: 'entrada al trabajo',
+  clock_out: 'salida del trabajo',
+  break_start: 'salida a comer',
+  break_end: 'vuelta de comer',
+};
+
 export interface TimeclockOptions {
   /** Cap for this call. Set by the message's or the tick's global budget, never here. */
   timeoutMs?: number;
@@ -101,6 +114,26 @@ export interface PunchState {
   labels: string[];
   /** Times the page shows for today, in the order they appear. Best effort. */
   times: string[];
+  /**
+   * Where it ended up and what it saw there.
+   *
+   * This is not decoration and it was paid for: the first real run answered "no recognised
+   * button, the page offers nothing" in 0.4 s, which is too fast to have logged in — and
+   * with only that sentence there was no way to tell a wrong path from a login form we
+   * cannot fill from a portal that had simply been reworded. Those three have three
+   * different fixes.
+   */
+  diagnosis: {
+    /** The URL the last response actually came from, redirects included. */
+    url: string;
+    /** Whether a password field was seen, i.e. whether logging in was even attempted. */
+    sawLoginForm: boolean;
+    /** How many inputs and controls the page had at all. Zero of both means it is not the app. */
+    inputs: number;
+    controls: number;
+    /** The page's visible text, cut short. What a human needs to recognise the page. */
+    snippet: string;
+  };
 }
 
 /** Clocking in and out. Credentials: TIMECLOCK_USER / TIMECLOCK_PASS. */

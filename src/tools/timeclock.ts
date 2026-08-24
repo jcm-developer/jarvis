@@ -1,6 +1,11 @@
 import { listSchedules, listPunchesForDay, logPunch } from '../db/timeclock';
 import { createPunchClient, punchConfigured } from '../timeclock';
-import { TimeclockError, isPunchAction, PUNCH_ACTIONS, type PunchAction } from '../timeclock/provider';
+import {
+  ACTION_NAMES,
+  TimeclockError,
+  isPunchAction,
+  PUNCH_ACTIONS,
+} from '../timeclock/provider';
 import { formatTime, localNow } from '../lib/localtime';
 import type { ToolDefinition, ToolResult } from './types';
 import { requireString } from './types';
@@ -34,14 +39,6 @@ const MIN_PUNCH_MS = 7_000;
 
 const MIN_STATE_MS = 4_000;
 
-/** How each action reads in a sentence. */
-const SPOKEN: Record<PunchAction, string> = {
-  clock_in: 'entrada al trabajo',
-  clock_out: 'salida del trabajo',
-  break_start: 'salida a comer',
-  break_end: 'vuelta de comer',
-};
-
 export const punchNow: ToolDefinition = {
   name: 'punch_now',
   description:
@@ -73,7 +70,7 @@ export const punchNow: ToolDefinition = {
   available: punchConfigured,
   confirmationPrompt: async (args) => {
     const raw = typeof args['action'] === 'string' ? args['action'] : '';
-    const action = isPunchAction(raw) ? SPOKEN[raw] : 'ese fichaje';
+    const action = isPunchAction(raw) ? ACTION_NAMES[raw] : 'ese fichaje';
     return `¿Ficho la ${action} ahora mismo?`;
   },
   handler: async (args, ctx): Promise<ToolResult> => {
@@ -111,7 +108,7 @@ export const punchNow: ToolDefinition = {
         ok: true,
         data: {
           action: raw,
-          what: SPOKEN[raw],
+          what: ACTION_NAMES[raw],
           // The portal's clock when it gives one, ours when it does not, and said which is
           // which: rule 4 of §7 —say the time you actually stored— on a legal record.
           registered_at: result.registeredAt,
@@ -166,11 +163,11 @@ export const punchStatus: ToolDefinition = {
       ok: true,
       data: {
         date: today,
-        portal_offers: state.available.map((action) => ({ action, what: SPOKEN[action] })),
+        portal_offers: state.available.map((action) => ({ action, what: ACTION_NAMES[action] })),
         times_shown_by_portal: state.times,
         punched_by_jarvis: mine.map((punch) => ({
           action: punch.action,
-          what: SPOKEN[punch.action],
+          what: ACTION_NAMES[punch.action],
           registered_at: punch.registered_at,
           source: punch.source,
         })),
@@ -178,7 +175,7 @@ export const punchStatus: ToolDefinition = {
           .filter((schedule) => schedule.enabled)
           .map((schedule) => ({
             action: schedule.action,
-            what: SPOKEN[schedule.action],
+            what: ACTION_NAMES[schedule.action],
             at: schedule.at_time,
             hecho_hoy: schedule.fired_on === today,
           })),

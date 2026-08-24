@@ -967,17 +967,26 @@ ficharweb, a bare model ping and the request as the assistant really sends it—
 says what they mean:
 
 ```
-Diagnóstico
+DIAGNÓSTICO
 
-Supabase          0.3 s  ok
-ficharweb         2.1 s  ofrece break_start
+Base de datos: bien, 0,2 s
+Ficharweb: bien, 2,1 s
+  Ahora mismo puedo fichar: salida a comer.
 
-Modelo openai/gpt-4.1-mini
-  ping             0.9 s  12 tok de entrada
-  carga real      13.4 s  7938 tok de entrada
+MODELO — openai, gpt-4.1-mini
+  Petición mínima: bien, 0,9 s
+    Sin prompt ni herramientas: 12 tokens de entrada.
+  Petición real: NO CONTESTA, cortada a los 10,0 s
+    Con el prompt y las 17 herramientas: 7.938 tokens de entrada.
 
-La lentitud aparece con el tamaño de la petición, no con el proveedor.
+CONCLUSIÓN: la llamada mínima va bien y la real se cae, así que lo que
+pesa es lo que enviamos (el prompt y los esquemas de las herramientas),
+no el proveedor.
 ```
+
+No columns aligned with spaces: Telegram renders plain text in a proportional font, so a
+padded column is aligned nowhere. One label per line, the verdict in words before the
+number, and the detail indented underneath.
 
 The two model lines are the reason it exists. "The model is slow" has two different causes
 with two different fixes: the provider having a bad minute, or our request having grown too
