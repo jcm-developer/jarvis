@@ -159,10 +159,15 @@ export function parseForm(html: string): ParsedForm {
       continue;
     }
 
-    // Only submits: a `type="button"` does whatever its script does and pressing it by
-    // posting the form would be inventing an action. That is what "Cambiar Contraseña" is
-    // on the login page, and posting it would land on a password change form.
-    const type = (attrs['type'] ?? '').toLowerCase();
+    // A `<button>` with NO type attribute is a submit: that is the HTML default, and it is
+    // what the register page's own button relies on. Requiring the attribute cost a
+    // production run — the page parsed, its four reasons parsed, and the button that was
+    // right there went unseen.
+    //
+    // `type="button"` is the one to skip: it does whatever its script does, and pressing it
+    // by posting the form would be inventing an action. On the login page that one is
+    // "Cambiar Contraseña", and posting it lands on a password change form.
+    const type = (attrs['type'] ?? 'submit').toLowerCase();
     if (match[1]!.toLowerCase() !== 'button' || type !== 'submit') continue;
     if (!label) continue;
 

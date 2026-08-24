@@ -1780,10 +1780,21 @@ reasons by their **full** wording only. "entrada" as a loose fallback would also
 carrying the route walked, what each page held and what it said, which is how a broken run
 names the hop that broke instead of just failing.
 
-Buttons are `<button type="submit">` with an icon inside and often no `name`, not
-`<input type="submit">`, so the label lives in the element's text and not in a `value`. A
-`type="button"` is skipped on purpose: it does whatever its script does, and on the login
-page that one is *Cambiar Contraseña*.
+Buttons are `<button>` elements with an icon inside and often no `name`, not
+`<input type="submit">`, so the label lives in the element's text and not in a `value`. Two
+details there are load-bearing, and both were paid for in production runs:
+
+- **A `<button>` with no `type` is a submit.** That is the HTML default and it is what the
+  register page relies on. Requiring the attribute meant the page parsed, its four reasons
+  parsed, and the button sitting between them went unseen.
+- **`type="button"` is skipped on purpose.** It does whatever its script does, and pressing
+  it by posting the form would be inventing an action. On the login page that one is
+  *Cambiar Contraseña*.
+
+And the rule that keeps a misread page from doing damage: **a form with a radio group is
+never treated as a bridge.** A choice means the form is meant for a person. Without that
+rule, the register page —button unrecognised, so indistinguishable from a self-posting
+page— got submitted blind, and the portal answered 500. Deservedly.
 
 And the login does not end at the login: it lands on a **bridge page**, a form with hidden
 fields, no button and a script that posts it. There is no JavaScript in this runtime to run

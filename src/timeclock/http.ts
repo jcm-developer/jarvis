@@ -411,6 +411,11 @@ function bridgeStep(page: Page): { kind: 'go'; url: string } | { kind: 'post' } 
   const refresh = metaRefresh(page.html);
   if (refresh) return { kind: 'go', url: refresh };
 
+  // A radio group is a choice, and a choice means the form is meant for a person. Posting
+  // one blind is how the register page —whose button had gone unrecognised— got submitted
+  // as if it were a bridge, and the portal answered 500. Deserved.
+  if (page.form.radios.length > 0) return null;
+
   if (page.form.hasForm && page.form.controls.length === 0) return { kind: 'post' };
   return null;
 }
