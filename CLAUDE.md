@@ -32,6 +32,8 @@ mejorables están así por un motivo que ya está escrito ahí.
 
   *PASOS A SEGUIR POR EL USUARIO*
   - Explicación (Clara y concisa)
+
+  *COMENTARIO DEL COMMIT (Si es necesario)*
   ```
 
   Conciso es conciso: una línea por punto y fuera. Si algo no aplica —no hay pasos
