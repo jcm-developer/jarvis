@@ -100,11 +100,26 @@ export function decodeEntities(text: string): string {
  */
 export function textOf(html: string): string {
   const visible = html
+    // Comments FIRST, and this order is the whole point. Commented-out markup is full of
+    // `>` characters, so stripping tags first eats `<!-- <input ...>` and leaves ` -->`
+    // behind as if it were text. That is how the register page's reasons came out reading
+    // "--> / --> / <input type=text placeholder=escriba un comentario".
+    .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]*>/g, ' ');
   return norm(decodeEntities(visible));
 }
+
+/**
+ * Ceiling on a radio's label.
+ *
+ * The label is taken as the text that follows the radio, so a page laid out differently
+ * from what this expects yields a paragraph instead of two words. Matching is by
+ * containment, so a long label is not wrong on its own — but it makes the diagnosis
+ * unreadable, and unreadable is what sent the last two runs chasing the wrong thing.
+ */
+const MAX_LABEL_CHARS = 80;
 
 const DO_POSTBACK =
   /__doPostBack\(\s*(?:&#39;|&apos;|['"])([^'"&]+)(?:&#39;|&apos;|['"])\s*,\s*(?:&#39;|&apos;|['"])([^'"&]*)/i;
@@ -211,9 +226,10 @@ export function parseRadios(html: string): RadioOption[] {
   return radios.map((radio, index) => ({
     name: radio.name,
     value: radio.value,
-    label:
+    label: (
       labelFor.get(radio.id) ||
-      textOf(html.slice(radio.end, radios[index + 1]?.end ?? radio.end + 300)),
+      textOf(html.slice(radio.end, radios[index + 1]?.end ?? radio.end + 300))
+    ).slice(0, MAX_LABEL_CHARS),
   }));
 }
 
