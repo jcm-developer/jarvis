@@ -1785,14 +1785,28 @@ Buttons are `<button type="submit">` with an icon inside and often no `name`, no
 `type="button"` is skipped on purpose: it does whatever its script does, and on the login
 page that one is *Cambiar Contraseña*.
 
-**Three attempts, three wrong assumptions, and they are the lesson.** The first invented a
+And the login does not end at the login: it lands on a **bridge page**, a form with hidden
+fields, no button and a script that posts it. There is no JavaScript in this runtime to run
+that script with, and there does not need to be — a form with nothing to press is a form
+meant to be posted as it stands, so it is posted as it stands. Without that hop there is no
+session, and the symptom is indistinguishable from a wrong password.
+
+**Four attempts, four wrong assumptions, and they are the lesson.** The first invented a
 button per action and looked for a control labelled *Salida al descanso* — which is a
 radio's label. The second recognised only `<input type="submit">`, so it could not have
 found the real buttons either. The third guessed the login's URL, asked for `/CCB/`, got a
 page that was not the login and filled nothing in; the site's own redirect from
-`registro.asp` was there all along and needed no guessing. Every one of the three showed up
-as "I do not understand this page", which is why the diagnosis grew a breadcrumb trail: the
-failure was never where the message pointed.
+`registro.asp` was there all along and needed no guessing. The fourth stopped at the bridge
+page and reported it as unrecognisable, when what the page held was a form waiting to be
+posted — the trail had not been counting input fields, so the one fact that would have said
+so was the one fact missing.
+
+Every one of the four showed up as "I do not understand this page", which is why the
+diagnosis grew a breadcrumb trail with what each hop held and what it said: the failure was
+never where the message pointed. The trail also caught a bug of its own on the way —
+`textOf` stripped tags but not `<script>` bodies, so the page's "text" was quoting
+JavaScript, and radio labels and the "Último movimiento" line were being matched against
+code.
 
 ### The portal is the source of truth, not our table
 

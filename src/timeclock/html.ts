@@ -34,6 +34,8 @@ export interface FormControl {
 }
 
 export interface ParsedForm {
+  /** Whether the page carries a form at all. A page without one is not the application. */
+  hasForm: boolean;
   /** The form's action, as written in the HTML. Relative more often than not. */
   action: string | null;
   /** The radio options, with the text printed beside each one. */
@@ -88,17 +90,22 @@ export function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/** Visible text of a fragment: tags out, entities in, whitespace collapsed. */
+/**
+ * Visible text of a fragment: scripts out, tags out, entities in, whitespace collapsed.
+ *
+ * Dropping `<script>` and `<style>` bodies is not tidiness. Stripping only tags leaves the
+ * JavaScript behind as if it were text, and that reached production twice: a diagnosis that
+ * quoted `$(function () { //$("#mif").submit();` as what the page "said", and —worse— radio
+ * labels and the "Último movimiento" line matched against code instead of against words.
+ */
 export function textOf(html: string): string {
-  return norm(decodeEntities(html.replace(/<[^>]*>/g, ' ')));
+  const visible = html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ');
+  return norm(decodeEntities(visible));
 }
 
-/**
- * `__doPostBack('target','argument')` as it appears inside an href or an onclick.
- *
- * The quotes are matched loosely because they arrive three different ways depending on
- * whether the attribute was written with double or single quotes: `'`, `&#39;`, `\'`.
- */
 const DO_POSTBACK =
   /__doPostBack\(\s*(?:&#39;|&apos;|['"])([^'"&]+)(?:&#39;|&apos;|['"])\s*,\s*(?:&#39;|&apos;|['"])([^'"&]*)/i;
 
@@ -165,7 +172,7 @@ export function parseForm(html: string): ParsedForm {
     });
   }
 
-  return { action, inputs, controls, radios: parseRadios(html) };
+  return { hasForm: formTag !== null, action, inputs, controls, radios: parseRadios(html) };
 }
 
 /**

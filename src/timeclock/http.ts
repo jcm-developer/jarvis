@@ -60,6 +60,14 @@ const MIN_REQUEST_MS = 1_500;
 const MAX_REDIRECTS = 5;
 
 /**
+ * How many self-posting bridge pages to follow.
+ *
+ * Two, because one is what the login uses and a second is cheap insurance; more than that
+ * and something is looping, which is worth reporting rather than chasing.
+ */
+const MAX_BRIDGES = 2;
+
+/**
  * Which button each action needs on screen.
  *
  * This is the phase check and the idempotence in one: if the entry button is not there,
@@ -185,6 +193,14 @@ export class HttpPunchClient implements PunchClient {
 
     if (hasPassword(page.form)) {
       page = await this.login(page, jar, clock);
+      trail.push(describePage(page));
+    }
+
+    // The login lands on a bridge: a page whose form the browser posts by itself from a
+    // script. Not following it means never getting a session, and the symptom is identical
+    // to a wrong password — which is exactly the wrong turn this cost.
+    for (let bounce = 0; bounce < MAX_BRIDGES && isBridge(page.form); bounce++) {
+      page = await this.submit(page, {}, jar, clock);
       trail.push(describePage(page));
     }
 
@@ -345,7 +361,11 @@ function describePage(page: Page): string {
   const marks = [
     hasPassword(page.form) ? 'login' : '',
     isRegisterPage(page.form) ? 'fichaje' : '',
+    isBridge(page.form) ? 'puente' : '',
     page.form.radios.length > 0 ? `${page.form.radios.length} motivos` : '',
+    // The count that was missing: a page reported as "nada reconocible" while carrying
+    // hidden fields is a form waiting to be posted, not a dead end.
+    page.form.inputs.length > 0 ? `${page.form.inputs.length} campos` : '',
     page.form.controls.length > 0 ? `${page.form.controls.length} botones` : '',
   ].filter(Boolean);
 
@@ -356,6 +376,17 @@ function describePage(page: Page): string {
 
 function hasPassword(form: ParsedForm): boolean {
   return form.inputs.some((input) => input.type === 'password');
+}
+
+/**
+ * A page whose form nobody can press: inputs and no button, a script and a redirect.
+ *
+ * There is no JavaScript here to read the script with, and there does not need to be: a
+ * form with nothing to press is a form meant to be posted as it stands, which is precisely
+ * what the browser's own script does with it.
+ */
+function isBridge(form: ParsedForm): boolean {
+  return form.hasForm && form.controls.length === 0 && !hasPassword(form) && !isRegisterPage(form);
 }
 
 /** Whether this is the page that can punch, i.e. it carries one of the two buttons. */
