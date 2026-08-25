@@ -192,11 +192,10 @@ async function punchNow(deps: PunchCommandDeps, action: PunchAction): Promise<st
       : `El portal no ha dicho la hora; eran alrededor de las ${formatTime(now, deps.config.defaultTimezone)}.`;
     return `Fichada la ${ACTION_NAMES[action]}. ${when}${logged}`;
   } catch (error) {
-    if (error instanceof TimeclockError) {
-      // The technical message and not `userMessage`: this command is the technical channel,
-      // same as /test.
-      return `No he fichado la ${ACTION_NAMES[action]}: ${error.kind} — ${error.message}`;
-    }
+    // The technical message and not `userMessage`: this command is the technical channel,
+    // same as /test. Through `detail()` so the trail comes with it — the state report has
+    // printed the route since the day it was written, and this one, the half that actually
+    // writes, was the half answering "500" and nothing else.
     return `No he fichado la ${ACTION_NAMES[action]}: ${detail(error)}`;
   }
 }
