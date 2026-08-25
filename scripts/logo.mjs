@@ -143,20 +143,17 @@ writeFileSync('assets/logo-ink.svg', svg(700, { disc: false, ink: BG, weight: FU
 // That is the page's own rule and not a shortcut: it ships zero assets —even the film grain
 // is painted into a canvas at load— so that serving it is one response and there is no
 // second request to get wrong, cache wrong or 404 in a browser that already has the HTML.
-// A route for the icon would be the first exception, and the whole icon is 3 kB of text that
-// gzips to almost nothing.
+// A route for the icon would be the first exception.
 //
-// 18 dots and not the 700 of the page, and the number is the whole design of this file.
+// The full 700 dot cloud, the same image as assets/avatar-512.png, and that is a choice
+// made with its cost known: at 16 px every dot lands on less than a pixel, gets averaged
+// into the disc behind it and the tab reads as a dark circle. A version drawn with 18 fat
+// dots is legible there and is a different picture; this one is the picture, everywhere.
 //
-// A favicon is read at 16 px, where the sphere is 16 pixels across and every dot of the real
-// cloud lands on less than one of them. Anything under a pixel gets averaged into the disc
-// behind it, so 700 white dots on black come out as black — which is exactly what the tab
-// showed. The dots have to be fat enough to own a pixel each, and once they are that fat
-// only about twenty of them fit. So the small mark is not the logo shrunk: it is the same
-// sphere, the same tilt and the same depth, sampled down to the dots that survive.
+// It costs 36 kB of base64 in the HTML, 6 kB once Cloudflare gzips it.
 //
 // Regenerate with `node scripts/logo.mjs` — do not hand-edit src/voice/icon.ts.
-const icon = svg(18, { disc: true, tight: true, weight: { size: 13, floor: 0.78 } });
+const icon = svg(700, { disc: true, tight: true, weight: FULL });
 writeFileSync(
   'src/voice/icon.ts',
   [
