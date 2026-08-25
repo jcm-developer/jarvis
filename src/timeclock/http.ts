@@ -364,7 +364,15 @@ export class HttpPunchClient implements PunchClient {
       }
 
       if (!response.ok) {
-        throw new TimeclockError('upstream', `el portal ha respondido ${response.status}`);
+        // The body, not just the number. A 500 from an ASP.NET site normally carries the
+        // exception —or at least its type— in the page it returns, and throwing that away
+        // is what left "el portal ha respondido 500" as the entire diagnosis of a punch
+        // that has never once landed. Only the first line of text, because the alternative
+        // is a stack trace in a chat window.
+        throw new TimeclockError(
+          'upstream',
+          `el portal ha respondido ${response.status}${await says(response)}`,
+        );
       }
 
       const html = await response.text();
@@ -372,6 +380,27 @@ export class HttpPunchClient implements PunchClient {
     }
 
     throw new TimeclockError('upstream', 'el portal encadena demasiadas redirecciones');
+  }
+}
+
+/**
+ * What an error page says, in one line and never more.
+ *
+ * Reading the body of a failed response can itself fail —a truncated stream, a timeout that
+ * fired between the headers and the body— and that must not replace the status code, which
+ * is the one thing we already know.
+ */
+async function says(response: Response): Promise<string> {
+  try {
+    const text = (await response.text()).slice(0, 4000);
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1];
+    const line = (title ?? text.replace(/<[^>]+>/g, ' '))
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 160);
+    return line ? `: ${line}` : '';
+  } catch {
+    return '';
   }
 }
 
