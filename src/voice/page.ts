@@ -430,6 +430,29 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   })();
 
   function paintSphere() {
+    // The reschedule lives in a finally, and that is the whole fix for "se queda pillado".
+    //
+    // A single throw in here used to kill the animation for good: the rAF call was the
+    // last statement, so anything that threw before it meant the frame never scheduled the
+    // next one. And there was something that threw. The displacement pushes points past
+    // the unit sphere —up to about 1.8 when it bristles or scatters— so the depth used for
+    // the dot radius could come out negative, and canvas arc() with a negative radius
+    // throws IndexSizeError. Loud audio or a long think, and the sphere froze mid-turn.
+    //
+    // Clamping depth below fixes that one. The finally makes sure the next one cannot do
+    // the same: a bad frame should be a bad frame, never a dead animation.
+    try {
+      drawSphere();
+    } catch (e) {
+      // Once, so a genuine bug is still visible in the console instead of silently
+      // swallowed sixty times a second.
+      if (!paintSphere.warned) { paintSphere.warned = true; console.warn('esfera:', e); }
+    } finally {
+      requestAnimationFrame(paintSphere);
+    }
+  }
+
+  function drawSphere() {
     var css = sphere.clientWidth || 320;
     var dpr = Math.min(2, window.devicePixelRatio || 1);
     if (sphere.width !== Math.round(css * dpr)) {
@@ -478,7 +501,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
       // Depth does the whole job of making it a ball: nearer points are bigger and
       // brighter, and there is no shading anywhere else.
-      var depth = (rd + 1) / 2;
+      // Clamped, because the displacement takes points outside the unit sphere and a
+      // depth below zero becomes a negative radius, which is a throw and not a small dot.
+      var depth = Math.max(0, Math.min(1, (rd + 1) / 2));
       sctx.globalAlpha = 0.045 + depth * depth * 0.72;
       sctx.beginPath();
       sctx.arc(mid + rx * R, mid + ry * R, 0.4 + depth * 1.5, 0, 6.2832);
@@ -487,7 +512,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
     sctx.globalAlpha = 1;
     sctx.globalCompositeOperation = 'source-over';
-    requestAnimationFrame(paintSphere);
   }
   paintSphere();
 
@@ -551,7 +575,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   function level(value) {
-    var v = Math.max(0, Math.min(1, value));
+    // A NaN here would poison energy for the rest of the session: every later frame
+    // averages towards it and never comes back. It only takes one bad RMS reading.
+    var v = isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
     targetEnergy = v;
     document.body.style.setProperty('--l', String(v));
   }
