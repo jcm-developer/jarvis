@@ -199,7 +199,13 @@ async function attempt(
         // Nothing was written: the portal never answered. The day goes back so the next
         // tick tries again, still inside the 30 minute window.
         await releaseSchedule(db, schedule.id);
-        console.warn(`timeclock: ${schedule.action} retryable: ${error.message}`);
+        // The trail as well as the message. Without it this line has said "the portal
+        // answered 500" four times a day for two days and named neither the request that
+        // got it nor the session it was carrying.
+        console.warn(
+          `timeclock: ${schedule.action} retryable: ${error.message}` +
+            (error.trail.length > 0 ? ` | ruta: ${error.trail.join(' -> ')}` : ''),
+        );
         return false;
 
       default: {
