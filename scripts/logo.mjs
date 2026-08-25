@@ -20,6 +20,7 @@
  */
 
 import { writeFileSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
 
 /** The page's own numbers, so the logo and the orb on screen are the same object. */
 const SIZE = 340;
@@ -172,4 +173,140 @@ writeFileSync(
   ].join('\n'),
 );
 
-console.log('assets/logo*.svg and src/voice/icon.ts');
+
+
+/* ------------------------------- raster ---------------------------------- */
+
+/**
+ * The same sphere as pixels, because one surface refuses vectors.
+ *
+ * Chrome's "install as an app" dialog does not read the SVG favicon: it takes its icon from
+ * the web app manifest, and a manifest icon has to be a raster. Without one the dialog falls
+ * back to drawing the first letter of the title in a grey box, which is the J that started
+ * this.
+ *
+ * So there is a PNG encoder in here, hand-written like the rest of the clients in this
+ * project, for the same reason: `sharp` or `canvas` would be a build dependency and a
+ * postinstall compile step for something that is 60 lines of zlib and CRC. It draws with 3x
+ * supersampling —the alternative is a ball of jagged dots— onto an opaque background, so the
+ * PNG needs no alpha channel.
+ */
+function raster(dots, weight, size, ss = 3) {
+  const w = size * ss;
+  const px = new Float64Array(w * w); // coverage, 0..1, of white over the background
+  const scale = w / SIZE;
+
+  for (const p of sphere(dots, weight)) {
+    const cx = p.cx * scale;
+    const cy = p.cy * scale;
+    const r = p.r * scale;
+    const from = Math.max(0, Math.floor(cy - r));
+    const to = Math.min(w - 1, Math.ceil(cy + r));
+
+    for (let y = from; y <= to; y++) {
+      const dy = y + 0.5 - cy;
+      const half = Math.sqrt(Math.max(0, r * r - dy * dy));
+      const x0 = Math.max(0, Math.floor(cx - half));
+      const x1 = Math.min(w - 1, Math.ceil(cx + half));
+      for (let x = x0; x <= x1; x++) {
+        const dx = x + 0.5 - cx;
+        if (dx * dx + dy * dy > r * r) continue;
+        const i = y * w + x;
+        // Painted back to front like the SVG, so the same `over` compositing applies.
+        px[i] = px[i] * (1 - p.o) + p.o;
+      }
+    }
+  }
+
+  // The disc, and the corners outside it. A square PNG is what a manifest wants; the corners
+  // are the page background so an installed window has no seam around the icon.
+  const bg = [parseInt(BG.slice(1, 3), 16), parseInt(BG.slice(3, 5), 16), parseInt(BG.slice(5, 7), 16)];
+  const rgb = Buffer.alloc(size * size * 3);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let sum = 0;
+      for (let sy = 0; sy < ss; sy++) {
+        for (let sx = 0; sx < ss; sx++) sum += px[(y * ss + sy) * w + (x * ss + sx)];
+      }
+      const cover = sum / (ss * ss);
+      const at = (y * size + x) * 3;
+      for (let c = 0; c < 3; c++) rgb[at + c] = Math.round(bg[c] * (1 - cover) + 255 * cover);
+    }
+  }
+  return png(rgb, size);
+}
+
+/** Minimal PNG: one IDAT of filter-0 scanlines, which is all a flat icon needs. */
+function png(rgb, size) {
+  const raw = Buffer.alloc(size * (size * 3 + 1));
+  for (let y = 0; y < size; y++) {
+    raw[y * (size * 3 + 1)] = 0;
+    rgb.copy(raw, y * (size * 3 + 1) + 1, y * size * 3, (y + 1) * size * 3);
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolour, no alpha
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function chunk(type, data) {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, 'ascii');
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])), 0);
+  return Buffer.concat([head, data, crc]);
+}
+
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// The app icons. 512 is what Chrome's install dialog shows and what Telegram wants for a
+// profile photo; 192 is the one an installed shortcut uses. Both are written as files —a
+// person uploads them by hand— and inlined into the source, because a manifest icon has to
+// be a URL and the Worker has no filesystem to read at runtime.
+const ICON_512 = raster(700, FULL, 512);
+const ICON_192 = raster(700, FULL, 192);
+
+writeFileSync('assets/avatar-512.png', ICON_512);
+writeFileSync('assets/avatar-192.png', ICON_192);
+writeFileSync(
+  'src/voice/app-icons.ts',
+  [
+    '/**',
+    ' * The sphere as PNG, for the two places that will not take the SVG: the web app',
+    ' * manifest and anything that installs the page as an app.',
+    ' *',
+    ' * GENERATED by scripts/logo.mjs. Do not edit by hand.',
+    ' */',
+    '',
+    `export const APP_ICON_512 = '${ICON_512.toString('base64')}';`,
+    '',
+    `export const APP_ICON_192 = '${ICON_192.toString('base64')}';`,
+    '',
+  ].join('\n'),
+);
+
+console.log('assets/logo*.svg, assets/avatar-*.png, src/voice/icon.ts, src/voice/app-icons.ts');

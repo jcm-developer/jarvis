@@ -44,6 +44,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Jarvis</title>
 <link rel="icon" href="${VOICE_ICON}">
+<link rel="apple-touch-icon" href="/voice/icon-192.png">
+<link rel="manifest" href="/voice/manifest.webmanifest">
+<meta name="theme-color" content="#08090b">
 <style>
   :root {
     color-scheme: dark;

@@ -14,6 +14,7 @@ import {
   type VoiceContext,
   type VoiceOutcome,
 } from './handler';
+import { APP_ICON_192, APP_ICON_512 } from './app-icons';
 import { VOICE_TEST_PAGE } from './page';
 
 /**
@@ -161,6 +162,57 @@ export function registerVoiceRoutes(app: Hono<{ Bindings: Env }>): void {
     } catch (error) {
       return failure(error, ctx);
     }
+  });
+
+  // The manifest and its two icons, the one place this page breaks its own no-assets rule.
+  //
+  // It has no choice: Chrome's "install as an app" dialog reads the icon from a web app
+  // manifest, a manifest is fetched by URL and its icons are fetched by URL too, so none of
+  // the three can be a data: URI inside the HTML. Without them the dialog draws the first
+  // letter of the title in a grey box.
+  //
+  // They are still not files: the PNGs live as base64 in the bundle, which keeps the deploy
+  // a single Worker and the icon impossible to get out of step with the logo.
+  app.get('/voice/manifest.webmanifest', (c) => {
+    if (!enabledConfig(c.env)) return c.notFound();
+    const manifest = {
+      name: 'Jarvis',
+      short_name: 'Jarvis',
+      // The page itself, so an installed window opens where the microphone is.
+      start_url: '/voice/test',
+      scope: '/voice/',
+      display: 'standalone',
+      background_color: '#08090b',
+      theme_color: '#08090b',
+      icons: [
+        { src: '/voice/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/voice/icon-512.png', sizes: '512x512', type: 'image/png' },
+      ],
+    };
+    // Its own media type and not `application/json`: browsers are lenient about it today,
+    // and this is a file whose whole job is to be recognised by somebody else's installer.
+    return new Response(JSON.stringify(manifest), {
+      headers: {
+        'content-type': 'application/manifest+json; charset=utf-8',
+        'cache-control': 'public, max-age=3600',
+      },
+    });
+  });
+
+  app.get('/voice/icon-192.png', (c) => (enabledConfig(c.env) ? icon(APP_ICON_192) : c.notFound()));
+  app.get('/voice/icon-512.png', (c) => (enabledConfig(c.env) ? icon(APP_ICON_512) : c.notFound()));
+}
+
+/** One of the app icons, decoded out of the bundle. Immutable: it changes with a deploy. */
+function icon(base64: string): Response {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Response(bytes, {
+    headers: {
+      'content-type': 'image/png',
+      'cache-control': 'public, max-age=31536000, immutable',
+    },
   });
 }
 
