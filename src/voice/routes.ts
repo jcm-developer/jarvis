@@ -185,8 +185,11 @@ export function registerVoiceRoutes(app: Hono<{ Bindings: Env }>): void {
       background_color: '#08090b',
       theme_color: '#08090b',
       icons: [
-        { src: '/voice/icon-192.png', sizes: '192x192', type: 'image/png' },
-        { src: '/voice/icon-512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/voice/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        // `maskable` as well, and it is safe to claim rather than a box ticked: a masked icon
+        // is cropped to the inner 80% and the sphere takes up 76% of the square, so the mask
+        // only ever eats dark corners.
+        { src: '/voice/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
       ],
     };
     // Its own media type and not `application/json`: browsers are lenient about it today,

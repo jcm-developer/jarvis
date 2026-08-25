@@ -287,8 +287,16 @@ function crc32(buf) {
 // profile photo; 192 is the one an installed shortcut uses. Both are written as files —a
 // person uploads them by hand— and inlined into the source, because a manifest icon has to
 // be a URL and the Worker has no filesystem to read at runtime.
-const ICON_512 = raster(700, FULL, 512);
-const ICON_192 = raster(700, FULL, 192);
+// Fatter and brighter than the logo, and this is the part that was actually broken.
+//
+// Windows never draws these at 512. The desktop asks for 48 and the taskbar for 32, and it
+// gets there by downscaling — which averages each of the 700 dots with the black around it.
+// At `FULL` weight the result is a black square, which is exactly what the shortcut showed.
+// Same 700 points, same sphere, dots wide enough to survive the downscale.
+const APP = { size: 1.8, floor: 0.25 };
+
+const ICON_512 = raster(700, APP, 512);
+const ICON_192 = raster(700, APP, 192);
 
 writeFileSync('assets/avatar-512.png', ICON_512);
 writeFileSync('assets/avatar-192.png', ICON_192);
@@ -317,7 +325,7 @@ writeFileSync(
  * inside ICO since Vista, so this is a header, four directory entries and the files.
  */
 function ico(sizes) {
-  const images = sizes.map((size) => ({ size, png: raster(700, FULL, size) }));
+  const images = sizes.map((size) => ({ size, png: raster(700, APP, size) }));
 
   const header = Buffer.alloc(6);
   header.writeUInt16LE(0, 0); // reserved
