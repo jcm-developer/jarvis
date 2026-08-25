@@ -1,3 +1,5 @@
+import { VOICE_ICON } from './icon';
+
 /**
  * The voice client, served as one inline string.
  *
@@ -41,6 +43,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Jarvis</title>
+<link rel="icon" href="${VOICE_ICON}">
 <style>
   :root {
     color-scheme: dark;
