@@ -2,27 +2,35 @@
  * The voice client, served as one inline string.
  *
  * No build step, no framework, no CDN: the page is a `<style>` and a `<script>` inside a
- * template literal, and that is a decision rather than laziness. A Tailwind CDN was tried
- * on paper and dropped for the obvious reason — a page whose only job is to talk to this
- * Worker should not stop looking like itself because someone else's host is down.
+ * template literal. A page whose only job is to talk to this Worker should not stop
+ * looking like itself because someone else's host is down.
  *
- * The screen is one orb and nothing else. Everything that used to be on it —transcript,
- * reply, per-stage times, the mode switch, the text box— still exists, one tap away behind
- * the dots. That split is the whole design: the orb is for using it, the panel is for
- * finding out why it did something odd, and the second job must not tax the first.
+ * ---------------------------------------------------------------------------
+ * The orb is a port, not an import, and the distinction is worth writing down.
  *
- * The orb is driven by real numbers, never by a decorative loop. While recording it scales
- * with the microphone's RMS, and while answering it scales with the RMS of the audio being
- * played through an AnalyserNode. So "is it hearing me" and "is it still talking" are
- * answered by the same shape, and a dead microphone shows up as an orb that does not move —
- * which is exactly the failure that cost an afternoon.
+ * The look comes from Jakub Antalik's `thinking-orbs` (MIT, orbs.jakubantalik.com):
+ * dotted spheres drawn with plain 2D canvas arcs — no ctx.filter, no SVG filters, no
+ * WebGL — so the pixels come out the same in every browser. That constraint is the good
+ * idea and it is copied here deliberately.
+ *
+ * It is not installed because it is a React component, and this page has neither React
+ * nor a bundler: pulling both in to render one canvas would cost more than the canvas.
+ * So the technique is reimplemented in about fifty lines of vanilla JS.
+ *
+ * What the reimplementation buys is the thing an import could not give: the states are
+ * fed by real numbers. The points bristle outwards with the microphone's RMS while you
+ * talk and run in latitude waves with the amplitude of the reply while it talks back, so
+ * a dead microphone is a sphere that sits perfectly still — which is exactly the failure
+ * that cost an afternoon.
+ * ---------------------------------------------------------------------------
+ *
+ * The screen is that orb and nothing else. Transcript, reply, per-stage times, the mode
+ * switch and the text box all still exist, one tap away behind the dots.
  *
  * The wake word is the one thing here that talks to somebody else. Chrome's speech
  * recognition runs on Google's servers, so while that switch is on, everything the
- * microphone hears leaves the machine. It is off by default, it says so on screen the
- * whole time it is on, and it is the reason the pill at the top is red rather than
- * tasteful. Porcupine running locally is the honest long-term answer; this is the one that
- * fits in an afternoon.
+ * microphone hears leaves the machine. It is off by default and says so on screen the
+ * whole time it is on, which is why the pill is red rather than tasteful.
  *
  * The token is never in here. It is typed once by a person and kept in that browser's
  * localStorage, so this file can be served to anyone: without a token, /voice answers 401.
@@ -36,64 +44,57 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #050609;
-    --fg: #e8eaf0;
+    --bg: #08090b;
+    --fg: #e9eaed;
     --dim: #6b7280;
     --line: rgba(255,255,255,.07);
-    /* Luminous rather than dark. The sphere is filled with these, not tinted by them:
-       that is the whole difference between a ball with coloured patches on it and a ball
-       made of light. */
-    --c1: #5b6cff; --c2: #a855f7; --c3: #38bdf8;
+    /* The sphere is monochrome, like the reference. Colour only ever appears as a breath
+       of it in the bloom behind, which is what keeps the dots reading as dots. */
+    --accent: #8f9bb3;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
+    margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     overflow: hidden;
   }
+
   /* ---------- the room ---------- */
-  /* Two auras, motes and grain. The auras are a solid colour behind a radial mask rather
-     than a gradient, and that is not a detail: background-color interpolates on a
-     transition and a gradient does not, so the whole room cross-fades when the state
-     changes instead of snapping. */
-  .aura {
-    position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
-    filter: blur(70px); opacity: .11;
-    -webkit-mask: radial-gradient(circle, #000 0%, transparent 70%);
-            mask: radial-gradient(circle, #000 0%, transparent 70%);
-    transition: background-color 1.4s ease, opacity 1.4s ease;
+  /* One aura behind the sphere, colour-shifted by state. It uses background-color under a
+     radial mask instead of a gradient, and that is not a detail: background-color
+     interpolates on a transition and a gradient does not, so the room cross-fades rather
+     than snapping. */
+  #aura {
+    position: fixed; top: 50%; left: 50%; width: 760px; height: 760px;
+    margin: -380px 0 0 -380px; border-radius: 50%;
+    background-color: var(--accent); opacity: .10; filter: blur(90px);
+    -webkit-mask: radial-gradient(circle, #000 0%, transparent 68%);
+            mask: radial-gradient(circle, #000 0%, transparent 68%);
+    pointer-events: none; z-index: 0;
+    transform: scale(calc(1 + var(--l, 0) * .22));
+    transition: background-color 1.4s ease, opacity 1.4s ease, transform .18s ease-out;
+    animation: sway 30s ease-in-out infinite alternate;
   }
-  #aura1 { width: 620px; height: 620px; top: -14%; left: -10%; background-color: var(--c1);
-           animation: wander1 26s ease-in-out infinite alternate; }
-  #aura2 { width: 560px; height: 560px; bottom: -16%; right: -12%; background-color: var(--c2);
-           animation: wander2 31s ease-in-out infinite alternate; }
-  @keyframes wander1 { to { transform: translate3d(14vw, 10vh, 0) scale(1.18); } }
-  @keyframes wander2 { to { transform: translate3d(-12vw, -9vh, 0) scale(1.12); } }
-  body[data-state="thinking"] .aura { opacity: .20; }
-  body[data-state="speaking"] .aura { opacity: .17; }
+  @keyframes sway { to { transform: translate3d(3%, -4%, 0) scale(1.1); } }
 
   #motes { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
   .mote {
     position: absolute; width: 2px; height: 2px; border-radius: 50%;
-    background: var(--c3); opacity: 0;
-    animation: rise linear infinite;
-    transition: background .9s ease;
+    background: #fff; opacity: 0; animation: rise linear infinite;
   }
   @keyframes rise {
     0%   { transform: translate3d(0, 30px, 0); opacity: 0; }
-    12%  { opacity: .55; }
-    82%  { opacity: .35; }
-    100% { transform: translate3d(14px, -102vh, 0); opacity: 0; }
+    14%  { opacity: .26; }
+    84%  { opacity: .14; }
+    100% { transform: translate3d(16px, -102vh, 0); opacity: 0; }
   }
 
   /* Film grain, painted into a canvas at load so the page still ships zero assets. */
   #grain {
     position: fixed; inset: -60px; pointer-events: none; z-index: 3;
-    opacity: .035; animation: grain 7s steps(5) infinite;
+    opacity: .04; animation: grain 7s steps(5) infinite;
   }
   @keyframes grain {
     0%   { transform: translate3d(0, 0, 0); }
@@ -104,160 +105,53 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   /* ---------- the orb ---------- */
-  #stage { position: relative; width: 280px; height: 280px; display: grid; place-items: center; z-index: 2; }
+  #stage { position: relative; width: 320px; height: 320px; display: grid; place-items: center; z-index: 2; }
 
-  /* The spectrum. Real frequency data from whichever AnalyserNode is live — the
-     microphone while you talk, the reply while it talks back — so the ring is a reading
-     and not a loop. Mirrored left to right because a symmetric shape reads as a face
-     rather than as a chart. */
-  #bars { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .45s ease; }
-  .bar {
-    position: absolute; left: 50%; top: 50%;
-    width: 2px; height: 22px; margin-left: -1px;
-    border-radius: 2px; background: var(--c3);
-    transform-origin: 50% 0; transform: rotate(0deg) translateY(132px) scaleY(0);
-    transition: background .9s ease;
+  #bloom {
+    position: absolute; width: 340px; height: 340px; border-radius: 50%;
+    background: radial-gradient(circle, var(--accent) 0%, transparent 62%);
+    opacity: .2; filter: blur(46px);
+    transform: scale(calc(1 + var(--l, 0) * .3));
+    transition: transform .14s ease-out, opacity .8s ease, background .9s ease;
   }
-  /* Blurred and dimmed on purpose: it is a reading, but it should look like part of the
-     glow rather than like a chart parked next to a sphere. */
-  #bars { filter: blur(.4px); }
-  body[data-state="listening"] #bars,
-  body[data-state="speaking"]  #bars { opacity: .55; }
-
-  .ripple {
-    position: absolute; left: 50%; top: 50%; width: 220px; height: 220px;
-    margin: -110px 0 0 -110px; border-radius: 50%;
-    border: 1px solid var(--c3); pointer-events: none;
-    animation: ripple 1.6s cubic-bezier(.16,1,.3,1) forwards;
-  }
-  @keyframes ripple {
-    from { transform: scale(.98); opacity: .55; }
-    to   { transform: scale(2.2); opacity: 0; }
-  }
-
-  /* The bloom. Big, soft and the same colour as the sphere, because what sells a ball of
-     light is not the ball, it is what it does to the air around it. */
-  #halo {
-    position: absolute; width: 420px; height: 420px; border-radius: 50%;
-    background: radial-gradient(circle, var(--c1) 0%, transparent 60%);
-    opacity: .42; filter: blur(56px);
-    transform: scale(calc(1 + var(--l, 0) * .38));
-    transition: transform .12s ease-out, opacity .6s ease, background 1s ease;
-  }
-
-  /* Light pooling under the sphere. Costs one div and does more for the illusion of a
-     physical object than anything inside the orb. */
-  #spill {
-    position: absolute; bottom: -46px; left: 50%; width: 300px; height: 56px;
-    margin-left: -150px; border-radius: 50%;
-    background: var(--c2); filter: blur(40px); opacity: .28;
-    transform: scale(calc(1 + var(--l, 0) * .22));
-    transition: background 1s ease, transform .12s ease-out;
-  }
-
-  #ring {
-    position: absolute; width: 248px; height: 248px; border-radius: 50%;
-    background: conic-gradient(from 0deg, transparent 0 62%, var(--c3) 78%, transparent 92%);
-    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
-            mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
-    opacity: 0; transition: opacity .45s ease;
-    animation: spin 1.5s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
   #orb {
-    position: relative; width: 232px; height: 232px; border-radius: 50%;
-    border: 0; padding: 0; cursor: pointer; overflow: hidden;
-    /* Filled with colour, not with near-black. Everything else here is shaping light that
-       is already there instead of adding patches of it to a dark ball. */
-    background: var(--c1);
-    box-shadow:
-      0 0 70px -8px var(--c1),
-      inset 0 -26px 50px -20px rgba(0,0,0,.55),
-      inset 0 16px 32px -14px rgba(255,255,255,.42);
-    transform: scale(calc(1 + var(--l, 0) * .15));
-    transition: transform .12s cubic-bezier(.22,1,.36,1), background 1s ease, box-shadow 1s ease;
+    position: relative; width: 320px; height: 320px;
+    border: 0; padding: 0; background: none; cursor: pointer;
     touch-action: none; -webkit-user-select: none; user-select: none;
+    transition: transform .2s cubic-bezier(.22,1,.36,1);
   }
   #orb:disabled { cursor: not-allowed; }
-  #orb.pop { animation: pop .55s cubic-bezier(.22,1,.36,1); }
-  @keyframes pop { 35% { transform: scale(1.13); } }
-  #orb:focus-visible { outline: 2px solid var(--c3); outline-offset: 6px; }
+  #orb:focus-visible { outline: 1px solid rgba(255,255,255,.25); outline-offset: 4px; border-radius: 50%; }
+  #orb.pop { animation: pop .6s cubic-bezier(.22,1,.36,1); }
+  @keyframes pop { 35% { transform: scale(1.08); } }
+  #sphere { display: block; width: 100%; height: 100%; }
 
-  #skin {
-    position: absolute; inset: 0;
-    animation: breathe 6s ease-in-out infinite, hue 28s linear infinite;
+  .ripple {
+    position: absolute; left: 50%; top: 50%; width: 210px; height: 210px;
+    margin: -105px 0 0 -105px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.2); pointer-events: none;
+    animation: ripple 1.7s cubic-bezier(.16,1,.3,1) forwards;
   }
-  @keyframes breathe { 50% { transform: scale(1.05); } }
-  /* A drift small enough that you never catch it moving, only notice it moved. */
-  @keyframes hue { 50% { filter: hue-rotate(18deg) saturate(1.15); } }
-
-  /* Five wide, soft fields of colour overlapping inside the sphere.
-     No blend mode on purpose: screen over a bright base washes straight to white, and
-     plus-lighter is not everywhere yet. Heavy blur plus partial opacity gives the liquid
-     look and behaves the same in every engine.
-     Each one drifts on its own long period and they are all coprime-ish, so the pattern
-     takes minutes to repeat and never looks like a loop. */
-  .blob {
-    position: absolute; inset: -45%; border-radius: 50%;
-    filter: blur(34px); will-change: transform;
-  }
-  .b1 { background: radial-gradient(circle at 32% 30%, var(--c2), transparent 62%); opacity: .80;
-        animation: swirl-a 13s ease-in-out infinite alternate; }
-  .b2 { background: radial-gradient(circle at 70% 38%, var(--c3), transparent 60%); opacity: .72;
-        animation: swirl-b 17s ease-in-out infinite alternate; }
-  .b3 { background: radial-gradient(circle at 44% 76%, var(--c1), transparent 58%); opacity: .68;
-        animation: swirl-c 23s ease-in-out infinite alternate; }
-  .b4 { background: radial-gradient(circle at 76% 72%, var(--c2), transparent 56%); opacity: .55;
-        animation: swirl-d 29s ease-in-out infinite alternate; }
-  .b5 { background: radial-gradient(circle at 20% 58%, #ffffff, transparent 46%); opacity: .30;
-        animation: swirl-b 19s ease-in-out infinite alternate-reverse; }
-
-  @keyframes swirl-a { to { transform: translate3d(11%, -9%, 0)  scale(1.22) rotate(38deg); } }
-  @keyframes swirl-b { to { transform: translate3d(-13%, 7%, 0)  scale(.86)  rotate(-30deg); } }
-  @keyframes swirl-c { to { transform: translate3d(8%, 12%, 0)   scale(1.18) rotate(24deg); } }
-  @keyframes swirl-d { to { transform: translate3d(-9%, -11%, 0) scale(.9)   rotate(-44deg); } }
-  #gloss {
-    position: absolute; inset: -25%; border-radius: 50%; pointer-events: none;
-    background: conic-gradient(from 0deg, transparent 0 70%, rgba(255,255,255,.16) 81%, transparent 90%);
-    animation: spin 18s linear infinite;
-  }
-
-  /* Grain inside the glass. It is what stops a blurred gradient reading as a render and
-     starts it reading as a material. Same canvas texture as the page, painted at load. */
-  #grainIn {
-    position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
-    opacity: .13; mix-blend-mode: overlay;
-  }
-
-  /* The glass: a highlight up top and a dark rim, so it reads as a sphere and not a disc. */
-  /* The glass: a bright specular cap, a rim of light along the top edge, and shadow
-     gathering at the bottom. Three cheap layers and the disc becomes a sphere. */
-  #sheen {
-    position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
-    background:
-      radial-gradient(42% 32% at 33% 19%, rgba(255,255,255,.55), transparent 62%),
-      radial-gradient(90% 70% at 50% 6%,  rgba(255,255,255,.20), transparent 55%),
-      radial-gradient(120% 105% at 50% 128%, rgba(3,4,8,.68), transparent 60%);
-    box-shadow: inset 0 1px 1px rgba(255,255,255,.5), inset 0 -1px 2px rgba(0,0,0,.4);
+  @keyframes ripple {
+    from { transform: scale(.9); opacity: .45; }
+    to   { transform: scale(2); opacity: 0; }
   }
 
   /* ---------- states ---------- */
-  body[data-state="listening"] { --c1: #22d3ee; --c2: #3b82f6; --c3: #5eead4; }
-  body[data-state="thinking"]  { --c1: #fb923c; --c2: #f43f5e; --c3: #c084fc; }
-  body[data-state="speaking"]  { --c1: #34d399; --c2: #38bdf8; --c3: #818cf8; }
-  body[data-state="error"]     { --c1: #f43f5e; --c2: #fb7185; --c3: #fca5a5; }
-
-  body[data-state="thinking"] #ring { opacity: .9; }
-  body[data-state="thinking"] #skin { animation-duration: 2.6s; }
-  body[data-state="listening"] #halo { opacity: .5; }
-  body[data-state="speaking"]  #halo { opacity: .5; }
+  /* Colour is a whisper here. The states are told apart by how the points behave, the way
+     the reference does it, not by repainting the sphere. */
+  body[data-state="listening"] { --accent: #7dd3fc; }
+  body[data-state="thinking"]  { --accent: #c4b5fd; }
+  body[data-state="speaking"]  { --accent: #86efac; }
+  body[data-state="error"]     { --accent: #fda4af; }
+  body[data-state="thinking"] #bloom { opacity: .28; }
   body[data-state="error"] #orb { animation: shake .45s ease; }
   @keyframes shake { 25% { transform: translateX(-7px); } 75% { transform: translateX(7px); } }
 
   /* ---------- chrome ---------- */
   #status {
-    margin-top: 30px; min-height: 22px; font-size: 14px; color: var(--dim);
+    margin-top: 2px; min-height: 22px; font-size: 14px; color: var(--dim);
     letter-spacing: .01em; text-align: center;
     transition: color .3s ease, opacity .16s ease, transform .16s ease;
   }
@@ -268,7 +162,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     display: none; align-items: center; gap: 9px;
     padding: 7px 15px 7px 12px; border-radius: 999px;
     border: 1px solid rgba(244,63,94,.32); background: rgba(244,63,94,.09);
-    color: #fda4af; font: inherit; font-size: 12px; cursor: pointer;
+    color: #fda4af; font: inherit; font-size: 12px; cursor: pointer; z-index: 6;
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
   #wake.on { display: flex; animation: pillglow 3.2s ease-in-out infinite; }
@@ -279,14 +173,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   #dots {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     border: 0; background: none; color: #333947; cursor: pointer;
-    font-size: 20px; line-height: 1; letter-spacing: 3px; padding: 10px 16px;
-    transition: color .25s ease;
+    padding: 10px 16px; transition: color .25s ease;
   }
   #dots:hover { color: var(--dim); }
   #dots span {
     display: inline-block; width: 4px; height: 4px; margin: 0 3px;
-    border-radius: 50%; background: currentColor;
-    animation: bob 1.9s ease-in-out infinite;
+    border-radius: 50%; background: currentColor; animation: bob 1.9s ease-in-out infinite;
   }
   #dots span:nth-child(2) { animation-delay: .16s; }
   #dots span:nth-child(3) { animation-delay: .32s; }
@@ -295,17 +187,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   /* ---------- panel ---------- */
   /* The panel covers the bottom of the screen, and the button that opens it lives there
      too — so once open it was hiding its own switch. Hence the backdrop and the handle:
-     three ways out (tap outside, drag the handle, Escape) instead of one that was buried. */
+     four ways out instead of one that was buried. */
   #panelBack {
-    position: fixed; inset: 0; z-index: 4;
-    background: rgba(4,5,8,.55);
+    position: fixed; inset: 0; z-index: 4; background: rgba(4,5,8,.6);
     opacity: 0; pointer-events: none; transition: opacity .35s ease;
   }
   #panelBack.open { opacity: 1; pointer-events: auto; }
 
-  #panelHandle {
-    display: block; width: 100%; padding: 0 0 14px; border: 0; background: none; cursor: pointer;
-  }
+  #panelHandle { display: block; width: 100%; padding: 0 0 14px; border: 0; background: none; cursor: pointer; }
   #panelHandle::before {
     content: ''; display: block; width: 42px; height: 4px; margin: 0 auto;
     border-radius: 999px; background: #2a2f3a; transition: background .2s ease;
@@ -314,17 +203,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   #panel {
     position: fixed; inset: auto 0 0 0; z-index: 5;
-    max-height: 82vh; overflow-y: auto;
-    padding: 22px 20px 28px;
-    background: rgba(10,12,17,.92);
+    max-height: 82vh; overflow-y: auto; padding: 22px 20px 28px;
+    background: rgba(10,12,17,.93);
     -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-    border-top: 1px solid var(--line);
-    border-radius: 20px 20px 0 0;
+    border-top: 1px solid var(--line); border-radius: 20px 20px 0 0;
     transform: translateY(101%);
     transition: transform .38s cubic-bezier(.22,1,.36,1);
   }
   #panel.open { transform: translateY(0); }
-  /* The panel's sections arrive one after another instead of all at once. */
   #panel.open #panelInner > * { animation: rise-in .5s cubic-bezier(.22,1,.36,1) backwards; }
   #panel.open #panelInner > *:nth-child(1) { animation-delay: .05s; }
   #panel.open #panelInner > *:nth-child(2) { animation-delay: .09s; }
@@ -335,6 +221,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   #panel.open #panelInner > *:nth-child(7) { animation-delay: .29s; }
   #panel.open #panelInner > *:nth-child(8) { animation-delay: .33s; }
   @keyframes rise-in { from { opacity: 0; transform: translateY(16px); } }
+
   #panelInner { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
   #panel h2 {
     margin: 0 0 6px; font-size: 10px; font-weight: 600; letter-spacing: .14em;
@@ -364,13 +251,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   input:focus { border-color: rgba(255,255,255,.2); }
   .field { display: flex; gap: 8px; }
   .field input { flex: 1; }
+
   .btn {
+    position: relative; overflow: hidden;
     padding: 12px 18px; font: inherit; font-size: 14px; cursor: pointer;
     border-radius: 12px; border: 1px solid var(--line);
     background: rgba(255,255,255,.04); color: var(--fg);
     transition: background .2s, border-color .2s;
   }
-  .btn { position: relative; overflow: hidden; }
   /* A light sweeping across the button on hover. Transform only, so it costs nothing. */
   .btn::after {
     content: ''; position: absolute; inset: 0;
@@ -387,7 +275,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   /* ---------- confirmation ---------- */
   #confirm {
     position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
-    padding: 24px; background: rgba(5,6,9,.72);
+    padding: 24px; background: rgba(5,6,9,.74);
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
     opacity: 0; pointer-events: none; transition: opacity .3s ease;
   }
@@ -413,15 +301,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; }
-    #orb, #halo, .bar { transition: none !important; }
-    #motes, #grain, #gloss { display: none; }
+    #orb, #bloom, #aura { transition: none !important; }
+    #motes, #grain { display: none; }
   }
 </style>
 </head>
 <body data-state="idle">
 
-<div class="aura" id="aura1"></div>
-<div class="aura" id="aura2"></div>
+<div id="aura"></div>
 <div id="motes"></div>
 <div id="grain"></div>
 
@@ -434,20 +321,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
 <div id="app" class="hidden">
   <div id="stage">
-    <div id="halo"></div>
-    <div id="ring"></div>
-    <div id="bars"></div>
-    <button id="orb" aria-label="Hablar">
-      <div id="skin">
-        <span class="blob b1"></span><span class="blob b2"></span>
-        <span class="blob b3"></span><span class="blob b4"></span>
-        <span class="blob b5"></span>
-      </div>
-      <span id="gloss"></span>
-      <span id="grainIn"></span>
-      <span id="sheen"></span>
-    </button>
-    <div id="spill"></div>
+    <div id="bloom"></div>
+    <button id="orb" aria-label="Hablar"><canvas id="sphere"></canvas></button>
   </div>
   <div id="status">Toca para hablar</div>
 </div>
@@ -526,36 +401,119 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   var recorder = null, chunks = [], stream = null, recording = false, busy = false;
   var recordStartedAt = 0, lastRecordMs = 0, heardSomething = false, localText = '';
   var pendingToken = '';
+  var wakeOn = false, wakeTimer = null;
+
+  // ---- the dotted sphere ------------------------------------------------
+  // Ported from Jakub Antalik's thinking-orbs (MIT). Two things are taken from it: the
+  // shape —points on a sphere, drawn as flat 2D arcs with no filters at all, which is why
+  // it looks identical in every browser— and the idea that a state is a way of moving
+  // rather than a colour.
+  //
+  // The points are spread by the golden angle. A latitude/longitude grid is the obvious
+  // alternative and it is wrong: it crowds the poles, and the crowding is the first thing
+  // the eye picks up on a spinning ball.
+  var DOTS = 700;
+  var sphere = $('sphere'), sctx = sphere.getContext('2d');
+  var points = [], jitter = [];
+  var spin = 0, phase = 0, energy = 0, targetEnergy = 0;
+
+  (function buildSphere() {
+    var golden = Math.PI * (3 - Math.sqrt(5));
+    for (var i = 0; i < DOTS; i++) {
+      var y = 1 - (i / (DOTS - 1)) * 2;
+      var r = Math.sqrt(Math.max(0, 1 - y * y));
+      var a = golden * i;
+      points.push([Math.cos(a) * r, y, Math.sin(a) * r]);
+      // A fixed per-point offset, so bristling and scattering look organic and not uniform.
+      jitter.push(0.55 + Math.random());
+    }
+  })();
+
+  function paintSphere() {
+    var css = sphere.clientWidth || 320;
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (sphere.width !== Math.round(css * dpr)) {
+      sphere.width = sphere.height = Math.round(css * dpr);
+    }
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sctx.clearRect(0, 0, css, css);
+
+    var state = document.body.dataset.state;
+    var mid = css / 2, R = css * 0.3;
+
+    // The audio drives this, smoothed here rather than at the source so both ends of a
+    // turn —microphone and reply— reach the sphere through the same filter.
+    energy += (targetEnergy - energy) * 0.16;
+    spin += state === 'thinking' ? 0.012 : 0.004;
+    phase += 0.055;
+
+    var cs = Math.cos(spin), sn = Math.sin(spin);
+    var ct = Math.cos(0.42), st = Math.sin(0.42);
+
+    sctx.globalCompositeOperation = 'lighter';
+    sctx.fillStyle = '#ffffff';
+
+    for (var i = 0; i < DOTS; i++) {
+      var p = points[i], x = p[0], y = p[1], z = p[2];
+
+      // Each state is a different displacement of the same sphere.
+      var d;
+      if (state === 'listening') {
+        // Bristling: every point pushed out by how loud you are.
+        d = 1 + energy * 0.5 * jitter[i];
+      } else if (state === 'speaking') {
+        // Latitude waves running pole to pole with the amplitude of the reply.
+        d = 1 + Math.sin(y * 6.5 + phase) * energy * 0.42;
+      } else if (state === 'thinking') {
+        // Scatter and regroup, each point on its own phase.
+        d = 1 + (Math.sin(phase * 0.55 + i * 0.9) * 0.5 + 0.5) * 0.4 * jitter[i];
+      } else {
+        // Breathing: barely there, but enough that the sphere is never quite still.
+        d = 1 + Math.sin(phase * 0.18 + i * 0.35) * 0.02;
+      }
+      x *= d; y *= d; z *= d;
+
+      var rx = x * cs - z * sn, rz = x * sn + z * cs;
+      var ry = y * ct - rz * st, rd = y * st + rz * ct;
+
+      // Depth does the whole job of making it a ball: nearer points are bigger and
+      // brighter, and there is no shading anywhere else.
+      var depth = (rd + 1) / 2;
+      sctx.globalAlpha = 0.045 + depth * depth * 0.72;
+      sctx.beginPath();
+      sctx.arc(mid + rx * R, mid + ry * R, 0.4 + depth * 1.5, 0, 6.2832);
+      sctx.fill();
+    }
+
+    sctx.globalAlpha = 1;
+    sctx.globalCompositeOperation = 'source-over';
+    requestAnimationFrame(paintSphere);
+  }
+  paintSphere();
+
+  /** A ring pushed outwards from the orb. Removes itself; nothing accumulates. */
+  function ripple() {
+    var node = document.createElement('div');
+    node.className = 'ripple';
+    $('stage').appendChild(node);
+    setTimeout(function () { node.remove(); }, 1800);
+  }
 
   // ---- decor ------------------------------------------------------------
-  // Built in code rather than written into the markup: 16 motes and 56 bars are 72 lines
-  // of HTML nobody would ever read, and the only thing that varies between them is a
-  // number.
-  var NBARS = 56, bars = [];
-
   (function buildDecor() {
     var motes = $('motes');
-    for (var i = 0; i < 16; i++) {
+    for (var i = 0; i < 14; i++) {
       var mote = document.createElement('span');
       mote.className = 'mote';
       mote.style.left = (Math.random() * 100) + '%';
       mote.style.bottom = '-10px';
-      mote.style.animationDuration = (26 + Math.random() * 26) + 's';
-      mote.style.animationDelay = (-Math.random() * 40) + 's';
+      mote.style.animationDuration = (28 + Math.random() * 28) + 's';
+      mote.style.animationDelay = (-Math.random() * 45) + 's';
       motes.appendChild(mote);
     }
 
-    var ring = $('bars');
-    for (var b = 0; b < NBARS; b++) {
-      var bar = document.createElement('span');
-      bar.className = 'bar';
-      bar.dataset.angle = String((360 / NBARS) * b);
-      ring.appendChild(bar);
-      bars.push(bar);
-    }
-
-    // Grain painted once into a canvas. A texture that ships as an asset would be the
-    // only file this page needs; a texture it draws itself is not a file at all.
+    // Grain painted once into a canvas. A texture that ships as an asset would be the only
+    // file this page needs; a texture it draws itself is not a file at all.
     try {
       var canvas = document.createElement('canvas');
       canvas.width = canvas.height = 96;
@@ -567,71 +525,11 @@ export const VOICE_TEST_PAGE = `<!doctype html>
         img.data[d + 3] = 26;
       }
       g.putImageData(img, 0, 0);
-      var texture = 'url(' + canvas.toDataURL() + ')';
-      $('grain').style.backgroundImage = texture;
-      $('grainIn').style.backgroundImage = texture;
+      $('grain').style.backgroundImage = 'url(' + canvas.toDataURL() + ')';
     } catch (e) { $('grain').style.display = 'none'; }
   })();
 
-  function setBars(values) {
-    for (var i = 0; i < NBARS; i++) {
-      bars[i].style.transform =
-        'rotate(' + bars[i].dataset.angle + 'deg) translateY(122px) scaleY(' + values[i].toFixed(3) + ')';
-    }
-  }
-  function resetBars() { setBars(new Array(NBARS).fill(0)); }
-
-  /** A ring pushed outwards from the orb. Removes itself; nothing accumulates. */
-  function ripple() {
-    var node = document.createElement('div');
-    node.className = 'ripple';
-    $('stage').appendChild(node);
-    setTimeout(function () { node.remove(); }, 1700);
-  }
-
-  // ---- spectrum ---------------------------------------------------------
-  // One loop for both ends of a turn. Whichever analyser is live drives the ring, so the
-  // microphone and the reply are drawn by exactly the same code.
-  var liveAnalyser = null, spectrumRaf = 0, spectrumBuf = null, smoothed = new Array(NBARS).fill(0);
-
-  function driveSpectrum(analyser) {
-    liveAnalyser = analyser;
-    spectrumBuf = new Uint8Array(analyser.frequencyBinCount);
-    if (!spectrumRaf) spectrumRaf = requestAnimationFrame(spectrumTick);
-  }
-
-  function stopSpectrum() {
-    liveAnalyser = null;
-    cancelAnimationFrame(spectrumRaf);
-    spectrumRaf = 0;
-    smoothed = new Array(NBARS).fill(0);
-    resetBars();
-  }
-
-  function spectrumTick() {
-    if (!liveAnalyser) { spectrumRaf = 0; return; }
-    liveAnalyser.getByteFrequencyData(spectrumBuf);
-    var half = NBARS / 2;
-    var usable = Math.floor(spectrumBuf.length * 0.55);
-    var next = new Array(NBARS);
-    for (var i = 0; i < NBARS; i++) {
-      // Mirrored, and biased towards the low end: voice lives in the first bins and a
-      // linear map would leave two thirds of the ring flat.
-      var k = Math.min(i, NBARS - 1 - i) / half;
-      var bin = Math.min(usable - 1, Math.floor(Math.pow(k, 1.55) * usable));
-      var target = spectrumBuf[bin] / 255;
-      // Rising fast and falling slow is what makes it read as a voice and not as noise.
-      var previous = smoothed[i];
-      smoothed[i] = target > previous ? target : previous * 0.82 + target * 0.18;
-      next[i] = 0.08 + smoothed[i] * 1.5;
-    }
-    setBars(next);
-    spectrumRaf = requestAnimationFrame(spectrumTick);
-  }
-
   // ---- state ------------------------------------------------------------
-  // One place decides what the orb looks like and what the line under it says. Every
-  // path through the app ends here, which is why there is no state the user cannot name.
   var lastState = '';
   function setState(state, text) {
     var changed = state !== lastState;
@@ -640,8 +538,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     if (text === undefined) return;
 
     var status = $('status');
-    // The counter while thinking rewrites this line ten times a second. Cross-fading
-    // that would be a strobe, so only a real change of state gets the transition.
+    // The counter while thinking rewrites this line ten times a second. Cross-fading that
+    // would be a strobe, so only a real change of state gets the transition.
     if (!changed) { status.textContent = text; return; }
     status.style.opacity = '0';
     status.style.transform = 'translateY(5px)';
@@ -651,8 +549,11 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       status.style.transform = '';
     }, 150);
   }
+
   function level(value) {
-    document.body.style.setProperty('--l', String(Math.max(0, Math.min(1, value))));
+    var v = Math.max(0, Math.min(1, value));
+    targetEnergy = v;
+    document.body.style.setProperty('--l', String(v));
   }
 
   // ---- token ------------------------------------------------------------
@@ -684,17 +585,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   // ---- panel ------------------------------------------------------------
-  function openPanel() {
-    $('panel').classList.add('open');
-    $('panelBack').classList.add('open');
-  }
-  function closePanel() {
-    $('panel').classList.remove('open');
-    $('panelBack').classList.remove('open');
-  }
-  function togglePanel() {
-    if ($('panel').classList.contains('open')) closePanel(); else openPanel();
-  }
+  function openPanel() { $('panel').classList.add('open'); $('panelBack').classList.add('open'); }
+  function closePanel() { $('panel').classList.remove('open'); $('panelBack').classList.remove('open'); }
+  function togglePanel() { if ($('panel').classList.contains('open')) closePanel(); else openPanel(); }
 
   $('dots').onclick = togglePanel;
   $('panelHandle').onclick = closePanel;
@@ -718,12 +611,13 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     $('modeHold').classList.toggle('on', mode === 'hold');
     if (!recording && !busy) idle();
   }
+
   function idle() {
     var hint = mode === 'hold' ? 'Mantén pulsado para hablar' : 'Toca para hablar';
     setState('idle', wakeOn ? 'Di «oye Jarvis»' : hint);
     level(0);
-    // The cooldown is not politeness: re-arming the instant the reply ends catches its
-    // own tail through the speakers and wakes the assistant up with its own voice.
+    // The cooldown is not politeness: re-arming the instant the reply ends catches its own
+    // tail through the speakers and wakes the assistant up with its own voice.
     if (wakeOn) { clearTimeout(wakeTimer); wakeTimer = setTimeout(arm, WAKE_COOLDOWN_MS); }
   }
 
@@ -736,7 +630,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   var MIN_RECORD_MS = 900;
   var MAX_RECORD_MS = 30000;
   // Nobody said anything. Without this a tap —or a false wake— records the full 30 s of
-  // nothing before finding out, and the orb sits there looking like it is working.
+  // nothing before finding out, and the sphere sits there looking like it is working.
   var NO_SPEECH_MS = 3500;
   var micCtx = null, micAnalyser = null, meterTimer = null;
 
@@ -751,7 +645,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       source.connect(micAnalyser);
     } catch (e) { micAnalyser = null; heardSomething = true; return; }
 
-    driveSpectrum(micAnalyser);
     var read = reader(micAnalyser);
     var startedAt = Date.now(), noise = 0, samples = 0, threshold = 0.02;
     var lastLoud = Date.now();
@@ -766,13 +659,13 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       if (samples) { threshold = Math.max(0.02, (noise / samples) * 3 + 0.008); samples = 0; }
 
       if (rms > threshold) { heardSomething = true; lastLoud = Date.now(); }
-      // The hard cap applies in both modes: a recorder nobody stopped is how you get a
-      // 413 and a bill instead of an answer.
+      // The hard cap applies in both modes: a recorder nobody stopped is how you get a 413
+      // and a bill instead of an answer.
       if (elapsed > MAX_RECORD_MS) { stop(); return; }
       if (mode !== 'hold' && !heardSomething && elapsed > NO_SPEECH_MS) { stop(); return; }
       // Cutting on silence only makes sense when there is no finger on the button, and
-      // never before MIN_RECORD_MS: a pause for breath after the first word would send
-      // half a sentence, which comes back as an answer to a question nobody asked.
+      // never before MIN_RECORD_MS: a pause for breath after the first word would send half
+      // a sentence, which comes back as an answer to a question nobody asked.
       if (mode === 'toggle' && heardSomething && elapsed > MIN_RECORD_MS &&
           Date.now() - lastLoud > SILENCE_MS) stop();
     }, 70);
@@ -780,7 +673,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   function stopMeter() {
     clearInterval(meterTimer); meterTimer = null; micAnalyser = null;
-    stopSpectrum();
     if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; }
     level(0);
   }
@@ -803,14 +695,32 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   // ---- recording --------------------------------------------------------
   // MediaRecorder does not emit ogg/wav: it is Opus-in-WebM on Chrome and Firefox and
-  // AAC-in-MP4 on Safari. Both are accepted by the endpoint, so nothing is converted
-  // here — the browser's own container is sent as-is with its Content-Type.
+  // AAC-in-MP4 on Safari. Both are accepted by the endpoint, so nothing is converted here
+  // — the browser's own container is sent as-is with its Content-Type.
   function pickMime() {
     var candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
     for (var i = 0; i < candidates.length; i++) {
       if (window.MediaRecorder && MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
     }
     return '';
+  }
+
+  /**
+   * One microphone stream for the whole session.
+   *
+   * Held open rather than acquired per turn so that a wake word can start recording in
+   * milliseconds instead of after a permission round trip — by then the first word of the
+   * request is gone. Echo cancellation is not optional here: with the wake listener on,
+   * the assistant's own reply comes back through the speakers and re-triggers it.
+   */
+  async function ensureStream() {
+    if (stream) return true;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      return true;
+    } catch (e) { return false; }
   }
 
   async function start() {
@@ -837,24 +747,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     setState('listening', mode === 'hold' ? 'Te escucho…' : 'Te escucho… calla y lo envío');
   }
 
-  /**
-   * One microphone stream for the whole session.
-   *
-   * Held open rather than acquired per turn so that a wake word can start recording in
-   * milliseconds instead of after a permission round trip — by then the first word of the
-   * request is gone. Echo cancellation is not optional here: with the wake listener on, the
-   * assistant's own reply comes back through the speakers and re-triggers it.
-   */
-  async function ensureStream() {
-    if (stream) return true;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
-      return true;
-    } catch (e) { return false; }
-  }
-
   function stop() {
     if (!recording) return;
     recording = false;
@@ -866,8 +758,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   // ---- the turn ---------------------------------------------------------
   async function send(blob) {
     // Nothing above the noise floor means a muted microphone, and sending it anyway is
-    // worse than useless: Whisper answers silence with the subtitle credits it was
-    // trained on, and the assistant then replies to a sentence nobody said.
+    // worse than useless: Whisper answers silence with the subtitle credits it was trained
+    // on, and the assistant then replies to a sentence nobody said.
     if (!heardSomething || !blob.size) {
       setState('error', 'No he oído nada. ¿Está el micrófono encendido?');
       setTimeout(idle, 2600);
@@ -916,8 +808,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     var startedAt = Date.now();
     var ticker = setInterval(function () {
       setState('thinking', 'Pensando… ' + ((Date.now() - startedAt) / 1000).toFixed(1) + ' s');
-      // A slow wander while the model works, so the orb never looks stuck.
-      level(0.25 + Math.sin(Date.now() / 420) * 0.12);
+      // A slow wander while the model works, so the sphere never looks stuck.
+      level(0.28 + Math.sin(Date.now() / 430) * 0.14);
     }, 90);
     setState('thinking', 'Pensando…');
 
@@ -969,8 +861,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     if (type.indexOf('audio') === 0) {
       await play(await response.blob(), needsConfirm, reply);
     } else {
-      // No audio: the reply survives on screen, and the panel opens itself because that
-      // is the only place it is legible.
+      // No audio: the reply survives on screen, and the panel opens itself because that is
+      // the only place it is legible.
       setState('error', notice || 'Respuesta sin audio. Mira los detalles.');
       openPanel();
       if (needsConfirm) showConfirm(reply);
@@ -984,9 +876,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   // ---- playback ---------------------------------------------------------
-  // The audio is routed through an AnalyserNode so the orb moves with the actual voice
-  // instead of a canned animation. It is the same reader the microphone uses, so both
-  // ends of a turn are measured the same way.
+  // The audio is routed through an AnalyserNode so the sphere moves with the actual voice
+  // instead of a canned animation. It is the same reader the microphone uses, so both ends
+  // of a turn are measured the same way.
   function play(blob, needsConfirm, reply) {
     return new Promise(function (resolve) {
       var url = URL.createObjectURL(blob);
@@ -997,7 +889,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
         cancelAnimationFrame(raf);
         URL.revokeObjectURL(url);
         if (ctx) { try { ctx.close(); } catch (e) {} }
-        stopSpectrum();
         level(0);
       }
       function done() {
@@ -1007,7 +898,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       }
 
       audio.onended = done;
-      audio.onerror = function () { cleanup(); setState('error', 'El audio no se pudo reproducir.'); setTimeout(idle, 2600); resolve(); };
+      audio.onerror = function () {
+        cleanup();
+        setState('error', 'El audio no se pudo reproducir.');
+        setTimeout(idle, 2600);
+        resolve();
+      };
 
       setState('speaking', 'Hablando…');
       ripple();
@@ -1019,11 +915,10 @@ export const VOICE_TEST_PAGE = `<!doctype html>
           analyser.fftSize = 512;
           ctx.createMediaElementSource(audio).connect(analyser);
           analyser.connect(ctx.destination);
-          driveSpectrum(analyser);
           var read = reader(analyser);
           var tick = function () { level(read() * 4.5); raf = requestAnimationFrame(tick); };
           tick();
-        } catch (e) { /* Without the analyser it still plays; it just does not dance. */ }
+        } catch (e) { /* Without the analyser it still plays; it just does not move. */ }
       }).catch(function () {
         cleanup();
         setState('error', 'El navegador bloqueó el audio. Toca la pantalla y repite.');
@@ -1034,8 +929,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   // ---- confirmation -----------------------------------------------------
-  // The one thing that is never decided by voice alone. It is a modal and not a line in
-  // a panel on purpose: nothing destructive should be one careless tap away.
+  // The one thing that is never decided by voice alone. It is a modal and not a line in a
+  // panel on purpose: nothing destructive should be one careless tap away.
   function showConfirm(text) {
     $('confirmText').textContent = text;
     $('confirm').classList.add('open');
@@ -1064,8 +959,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       ['agente', server.agent],
       ['síntesis de voz', server.tts],
       ['servidor', server.total],
-      // Everything the server did not spend: upload, download and the handshakes.
-      // Derived and not reported, because it is the only tramo the Worker cannot see.
+      // Everything the server did not spend: upload, download and the handshakes. Derived
+      // and not reported, because it is the only tramo the Worker cannot see.
       ['red', server.total !== undefined ? clientMs - server.total : undefined],
       ['total', clientMs]
     ];
@@ -1075,8 +970,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       html += '<tr><td>' + row[0] + '</td><td' + (row[1] > 4000 ? ' class="slow"' : '') + '>' + row[1] + ' ms</td></tr>';
     });
     if (bytes) {
-      // Duration and size together, because separately neither says much: 7 s in 2 KB is
-      // a microphone that captured silence.
+      // Duration and size together, because separately neither says much: 7 s in 2 KB is a
+      // microphone that captured silence.
       html += '<tr><td>audio</td><td>' + (lastRecordMs / 1000).toFixed(1) + ' s · ' +
               Math.round(bytes / 1024) + ' KB</td></tr>';
     }
@@ -1095,7 +990,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   // over. The leading word is what keeps the false positives down: "jarvis" on its own
   // comes up in conversation, "oye jarvis" does not.
   var WAKE_RE = /\\b(oye|hola|hey|eh|ok|okay)\\s+(jarvis|yarvis|jarvi|jarbis|jervis|harvis|garvis|charvis|travis|arvis)\\b/;
-  var recognition = null, wakeOn = false, wakeTurns = 0, wakeTimer = null;
+  var recognition = null, wakeTurns = 0;
 
   function wakeSupported() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 
@@ -1164,7 +1059,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     $('orb').classList.remove('pop');
     void $('orb').offsetWidth;
     $('orb').classList.add('pop');
-    setTimeout(function () { $('orb').classList.remove('pop'); }, 600);
+    setTimeout(function () { $('orb').classList.remove('pop'); }, 650);
     start();
   }
 
@@ -1233,9 +1128,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   idle();
 
-  // Resume the listener when it was left on. It is the user's own saved choice and the
-  // red pill says so from the first frame — but the browser can refuse to start a
-  // recogniser with no gesture behind it, so a failure here is silent and reversible.
+  // Resume the listener when it was left on. It is the user's own saved choice and the red
+  // pill says so from the first frame — but the browser can refuse to start a recogniser
+  // with no gesture behind it, so a failure here is silent and reversible.
   try {
     if (localStorage.getItem(WAKE_KEY) === '1' && token && wakeSupported()) setWake(true);
   } catch (e) {}
