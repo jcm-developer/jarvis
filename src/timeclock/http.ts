@@ -129,7 +129,35 @@ const MOVEMENT_LABEL: Record<PunchAction, string[]> = REASON_RADIO;
  */
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-  'Chrome/128.0.0.0 Safari/537.36';
+  'Chrome/150.0.0.0 Safari/537.36';
+
+/**
+ * Everything else Chrome sends, because the body is no longer a suspect.
+ *
+ * The successful punch was captured from the browser and compared with ours: the same 212
+ * bytes, field for field, in the same order. So whatever `registro.asp` objects to is not in
+ * the body, and the only other thing that travels is the headers. These are Chrome's, taken
+ * from that capture — the `Sec-Fetch-*` set in particular says "a form on this same site
+ * navigated here", which is exactly the sentence a filter in front of an attendance portal
+ * would want to hear, and the one our request was not saying.
+ *
+ * `Accept-Encoding` is deliberately absent: the runtime sets it and decompresses for us.
+ */
+const BROWSER_HEADERS: Record<string, string> = {
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'es-ES,es;q=0.9',
+  'Cache-Control': 'max-age=0',
+  'User-Agent': DESKTOP_UA,
+  'Sec-Ch-Ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'same-origin',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1',
+};
 
 /** Words on the login button, in the order they are worth trying. */
 const LOGIN_LABELS = ['entrar', 'acceder', 'iniciar sesion', 'login', 'enviar'];
@@ -334,7 +362,9 @@ export class HttpPunchClient implements PunchClient {
       return await this.postAndRead(target, body, jar, clock, page);
     } catch (error) {
       if (error instanceof TimeclockError) {
-        error.trail.push(`POST ${new URL(target).pathname} [${[...body.keys()].join(',')}]`);
+        error.trail.push(
+          `POST ${new URL(target).pathname} [${[...body.keys()].join(',')}] cookies: ${jar.summary()}`,
+        );
       }
       throw error;
     }
@@ -390,9 +420,7 @@ export class HttpPunchClient implements PunchClient {
           ...request,
           redirect: 'manual',
           headers: {
-            Accept: 'text/html,application/xhtml+xml',
-            'Accept-Language': 'es-ES,es;q=0.9',
-            'User-Agent': DESKTOP_UA,
+            ...BROWSER_HEADERS,
             ...jar.header(),
             ...(request.headers as Record<string, string> | undefined),
           },
@@ -748,13 +776,32 @@ class Jar {
       const [pair] = cookie.split(';');
       const separator = pair?.indexOf('=') ?? -1;
       if (!pair || separator <= 0) continue;
-      this.cookies.set(pair.slice(0, separator).trim(), pair.slice(separator + 1).trim());
+
+      const name = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+
+      // An empty value is a deletion, and it must not overwrite a good cookie. Sites clear
+      // their auth cookie on the way through the login —a `SignOut()` before the sign in—
+      // and this jar used to keep the last thing it saw, whatever it was. The result would
+      // be a request that carries `.ASPXAUTH=` and looks, to the far end, like somebody who
+      // was logged in a moment ago and is not any more.
+      if (!value) {
+        this.cookies.delete(name);
+        continue;
+      }
+      this.cookies.set(name, value);
     }
   }
 
   header(): Record<string, string> {
     if (this.cookies.size === 0) return {};
     return { Cookie: [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; ') };
+  }
+
+  /** Names and value lengths, for a failure report. Never the values: these are sessions. */
+  summary(): string {
+    if (this.cookies.size === 0) return 'sin cookies';
+    return [...this.cookies].map(([name, value]) => `${name}(${value.length})`).join(' ');
   }
 }
 
