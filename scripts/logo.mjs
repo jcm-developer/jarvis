@@ -309,4 +309,39 @@ writeFileSync(
   ].join('\n'),
 );
 
-console.log('assets/logo*.svg, assets/avatar-*.png, src/voice/icon.ts, src/voice/app-icons.ts');
+
+
+/**
+ * The same PNGs wrapped in an ICO, for the one case that is not a browser: a Windows
+ * shortcut whose icon is changed by hand from its properties dialog. Windows has taken PNG
+ * inside ICO since Vista, so this is a header, four directory entries and the files.
+ */
+function ico(sizes) {
+  const images = sizes.map((size) => ({ size, png: raster(700, FULL, size) }));
+
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // 1 = icon
+  header.writeUInt16LE(images.length, 4);
+
+  let offset = 6 + images.length * 16;
+  const entries = images.map(({ size, png: data }) => {
+    const entry = Buffer.alloc(16);
+    // 0 means 256 in a byte-wide field, which is the whole reason 256 is the largest ICO.
+    entry[0] = size >= 256 ? 0 : size;
+    entry[1] = size >= 256 ? 0 : size;
+    entry.writeUInt16LE(1, 4); // colour planes
+    entry.writeUInt16LE(32, 6); // bits per pixel
+    entry.writeUInt32BE(0, 8);
+    entry.writeUInt32LE(data.length, 8);
+    entry.writeUInt32LE(offset, 12);
+    offset += data.length;
+    return entry;
+  });
+
+  return Buffer.concat([header, ...entries, ...images.map((image) => image.png)]);
+}
+
+writeFileSync('assets/jarvis.ico', ico([256, 48, 32, 16]));
+
+console.log('assets/ (svg, png, ico) and src/voice/ (icon.ts, app-icons.ts)');
