@@ -146,18 +146,17 @@ writeFileSync('assets/logo-ink.svg', svg(700, { disc: false, ink: BG, weight: FU
 // A route for the icon would be the first exception, and the whole icon is 3 kB of text that
 // gzips to almost nothing.
 //
-// 70 dots and not the 700 of the page: a favicon is read at 16 and 32 px, where the full
-// cloud is a grey smudge and the honest sphere is one drawn with fewer, brighter dots.
+// 18 dots and not the 700 of the page, and the number is the whole design of this file.
+//
+// A favicon is read at 16 px, where the sphere is 16 pixels across and every dot of the real
+// cloud lands on less than one of them. Anything under a pixel gets averaged into the disc
+// behind it, so 700 white dots on black come out as black — which is exactly what the tab
+// showed. The dots have to be fat enough to own a pixel each, and once they are that fat
+// only about twenty of them fit. So the small mark is not the logo shrunk: it is the same
+// sphere, the same tilt and the same depth, sampled down to the dots that survive.
 //
 // Regenerate with `node scripts/logo.mjs` — do not hand-edit src/voice/icon.ts.
-// The favicon is the mark inverted, and that was not a stylistic choice. A dark disc with
-// white dots is the page and it is also, at 16 px, a black circle: the dots land on a pixel
-// each, the disc is the only thing with area left, and Chrome's tab bar is dark too. So the
-// small mark keeps the shape and swaps what carries it — the ball is the page's own accent
-// and the dots are the holes in it, which is the one version that survives the tab bar in
-// both themes.
-const ICON = { disc: '#8f9bb3', ink: BG, tight: true, weight: { size: 5, floor: 0.55 } };
-const icon = svg(60, ICON);
+const icon = svg(18, { disc: true, tight: true, weight: { size: 13, floor: 0.78 } });
 writeFileSync(
   'src/voice/icon.ts',
   [
