@@ -53,6 +53,11 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     --accent: #8f9bb3;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* No scrollbars anywhere. This is a screen and not a document: the only thing that
+     overflows is the panel, and a bar sliding in over a full-bleed background is the one
+     bit of chrome that gives away that this is a web page. Scrolling itself is untouched. */
+  * { scrollbar-width: none; -ms-overflow-style: none; }
+  *::-webkit-scrollbar { width: 0; height: 0; display: none; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
