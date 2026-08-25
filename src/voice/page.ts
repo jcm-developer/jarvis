@@ -36,11 +36,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #07080c;
+    --bg: #050609;
     --fg: #e8eaf0;
     --dim: #6b7280;
     --line: rgba(255,255,255,.07);
-    --c1: #4f6ef7; --c2: #8b5cf6; --c3: #22d3ee;
+    /* Luminous rather than dark. The sphere is filled with these, not tinted by them:
+       that is the whole difference between a ball with coloured patches on it and a ball
+       made of light. */
+    --c1: #5b6cff; --c2: #a855f7; --c3: #38bdf8;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -59,7 +62,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
      changes instead of snapping. */
   .aura {
     position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
-    filter: blur(70px); opacity: .16;
+    filter: blur(70px); opacity: .11;
     -webkit-mask: radial-gradient(circle, #000 0%, transparent 70%);
             mask: radial-gradient(circle, #000 0%, transparent 70%);
     transition: background-color 1.4s ease, opacity 1.4s ease;
@@ -70,8 +73,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
            animation: wander2 31s ease-in-out infinite alternate; }
   @keyframes wander1 { to { transform: translate3d(14vw, 10vh, 0) scale(1.18); } }
   @keyframes wander2 { to { transform: translate3d(-12vw, -9vh, 0) scale(1.12); } }
-  body[data-state="thinking"] .aura { opacity: .26; }
-  body[data-state="speaking"] .aura { opacity: .22; }
+  body[data-state="thinking"] .aura { opacity: .20; }
+  body[data-state="speaking"] .aura { opacity: .17; }
 
   #motes { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
   .mote {
@@ -110,13 +113,16 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   #bars { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .45s ease; }
   .bar {
     position: absolute; left: 50%; top: 50%;
-    width: 3px; height: 26px; margin-left: -1.5px;
+    width: 2px; height: 22px; margin-left: -1px;
     border-radius: 2px; background: var(--c3);
-    transform-origin: 50% 0; transform: rotate(0deg) translateY(122px) scaleY(0);
+    transform-origin: 50% 0; transform: rotate(0deg) translateY(132px) scaleY(0);
     transition: background .9s ease;
   }
+  /* Blurred and dimmed on purpose: it is a reading, but it should look like part of the
+     glow rather than like a chart parked next to a sphere. */
+  #bars { filter: blur(.4px); }
   body[data-state="listening"] #bars,
-  body[data-state="speaking"]  #bars { opacity: .8; }
+  body[data-state="speaking"]  #bars { opacity: .55; }
 
   .ripple {
     position: absolute; left: 50%; top: 50%; width: 220px; height: 220px;
@@ -129,12 +135,24 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     to   { transform: scale(2.2); opacity: 0; }
   }
 
+  /* The bloom. Big, soft and the same colour as the sphere, because what sells a ball of
+     light is not the ball, it is what it does to the air around it. */
   #halo {
-    position: absolute; width: 300px; height: 300px; border-radius: 50%;
-    background: radial-gradient(circle, var(--c1) 0%, transparent 62%);
-    opacity: .30; filter: blur(46px);
-    transform: scale(calc(1 + var(--l, 0) * .45));
-    transition: transform .1s ease-out, opacity .5s ease, background .8s ease;
+    position: absolute; width: 420px; height: 420px; border-radius: 50%;
+    background: radial-gradient(circle, var(--c1) 0%, transparent 60%);
+    opacity: .42; filter: blur(56px);
+    transform: scale(calc(1 + var(--l, 0) * .38));
+    transition: transform .12s ease-out, opacity .6s ease, background 1s ease;
+  }
+
+  /* Light pooling under the sphere. Costs one div and does more for the illusion of a
+     physical object than anything inside the orb. */
+  #spill {
+    position: absolute; bottom: -46px; left: 50%; width: 300px; height: 56px;
+    margin-left: -150px; border-radius: 50%;
+    background: var(--c2); filter: blur(40px); opacity: .28;
+    transform: scale(calc(1 + var(--l, 0) * .22));
+    transition: background 1s ease, transform .12s ease-out;
   }
 
   #ring {
@@ -148,12 +166,17 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   @keyframes spin { to { transform: rotate(360deg); } }
 
   #orb {
-    position: relative; width: 220px; height: 220px; border-radius: 50%;
+    position: relative; width: 232px; height: 232px; border-radius: 50%;
     border: 0; padding: 0; cursor: pointer; overflow: hidden;
-    background: #0b0d13;
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 24px 60px -20px rgba(0,0,0,.9);
-    transform: scale(calc(1 + var(--l, 0) * .17));
-    transition: transform .1s cubic-bezier(.22,1,.36,1);
+    /* Filled with colour, not with near-black. Everything else here is shaping light that
+       is already there instead of adding patches of it to a dark ball. */
+    background: var(--c1);
+    box-shadow:
+      0 0 70px -8px var(--c1),
+      inset 0 -26px 50px -20px rgba(0,0,0,.55),
+      inset 0 16px 32px -14px rgba(255,255,255,.42);
+    transform: scale(calc(1 + var(--l, 0) * .15));
+    transition: transform .12s cubic-bezier(.22,1,.36,1), background 1s ease, box-shadow 1s ease;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
   #orb:disabled { cursor: not-allowed; }
@@ -169,36 +192,61 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   /* A drift small enough that you never catch it moving, only notice it moved. */
   @keyframes hue { 50% { filter: hue-rotate(18deg) saturate(1.15); } }
 
-  .blob { position: absolute; inset: -35%; border-radius: 50%; filter: blur(26px); mix-blend-mode: screen; }
-  .b1 { background: radial-gradient(circle at 34% 32%, var(--c1), transparent 58%); animation: drift 11s ease-in-out infinite; }
-  .b2 { background: radial-gradient(circle at 68% 40%, var(--c2), transparent 56%); animation: drift 15s ease-in-out infinite reverse; }
-  .b3 { background: radial-gradient(circle at 46% 74%, var(--c3), transparent 54%); animation: drift 19s ease-in-out infinite; }
-  .b4 { background: radial-gradient(circle at 74% 70%, var(--c1), transparent 50%); animation: drift 23s ease-in-out infinite reverse; opacity: .75; }
-  @keyframes drift {
-    0%   { transform: rotate(0deg)   translate3d(0, 0, 0)      scale(1); }
-    33%  { transform: rotate(120deg) translate3d(7%, -5%, 0)   scale(1.12); }
-    66%  { transform: rotate(240deg) translate3d(-5%, 6%, 0)   scale(.92); }
-    100% { transform: rotate(360deg) translate3d(0, 0, 0)      scale(1); }
+  /* Five wide, soft fields of colour overlapping inside the sphere.
+     No blend mode on purpose: screen over a bright base washes straight to white, and
+     plus-lighter is not everywhere yet. Heavy blur plus partial opacity gives the liquid
+     look and behaves the same in every engine.
+     Each one drifts on its own long period and they are all coprime-ish, so the pattern
+     takes minutes to repeat and never looks like a loop. */
+  .blob {
+    position: absolute; inset: -45%; border-radius: 50%;
+    filter: blur(34px); will-change: transform;
   }
+  .b1 { background: radial-gradient(circle at 32% 30%, var(--c2), transparent 62%); opacity: .80;
+        animation: swirl-a 13s ease-in-out infinite alternate; }
+  .b2 { background: radial-gradient(circle at 70% 38%, var(--c3), transparent 60%); opacity: .72;
+        animation: swirl-b 17s ease-in-out infinite alternate; }
+  .b3 { background: radial-gradient(circle at 44% 76%, var(--c1), transparent 58%); opacity: .68;
+        animation: swirl-c 23s ease-in-out infinite alternate; }
+  .b4 { background: radial-gradient(circle at 76% 72%, var(--c2), transparent 56%); opacity: .55;
+        animation: swirl-d 29s ease-in-out infinite alternate; }
+  .b5 { background: radial-gradient(circle at 20% 58%, #ffffff, transparent 46%); opacity: .30;
+        animation: swirl-b 19s ease-in-out infinite alternate-reverse; }
+
+  @keyframes swirl-a { to { transform: translate3d(11%, -9%, 0)  scale(1.22) rotate(38deg); } }
+  @keyframes swirl-b { to { transform: translate3d(-13%, 7%, 0)  scale(.86)  rotate(-30deg); } }
+  @keyframes swirl-c { to { transform: translate3d(8%, 12%, 0)   scale(1.18) rotate(24deg); } }
+  @keyframes swirl-d { to { transform: translate3d(-9%, -11%, 0) scale(.9)   rotate(-44deg); } }
   #gloss {
     position: absolute; inset: -25%; border-radius: 50%; pointer-events: none;
-    background: conic-gradient(from 0deg, transparent 0 68%, rgba(255,255,255,.12) 80%, transparent 90%);
-    animation: spin 16s linear infinite;
+    background: conic-gradient(from 0deg, transparent 0 70%, rgba(255,255,255,.16) 81%, transparent 90%);
+    animation: spin 18s linear infinite;
+  }
+
+  /* Grain inside the glass. It is what stops a blurred gradient reading as a render and
+     starts it reading as a material. Same canvas texture as the page, painted at load. */
+  #grainIn {
+    position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+    opacity: .13; mix-blend-mode: overlay;
   }
 
   /* The glass: a highlight up top and a dark rim, so it reads as a sphere and not a disc. */
+  /* The glass: a bright specular cap, a rim of light along the top edge, and shadow
+     gathering at the bottom. Three cheap layers and the disc becomes a sphere. */
   #sheen {
     position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
     background:
-      radial-gradient(58% 46% at 34% 22%, rgba(255,255,255,.16), transparent 60%),
-      radial-gradient(100% 100% at 50% 120%, rgba(0,0,0,.55), transparent 62%);
+      radial-gradient(42% 32% at 33% 19%, rgba(255,255,255,.55), transparent 62%),
+      radial-gradient(90% 70% at 50% 6%,  rgba(255,255,255,.20), transparent 55%),
+      radial-gradient(120% 105% at 50% 128%, rgba(3,4,8,.68), transparent 60%);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,.5), inset 0 -1px 2px rgba(0,0,0,.4);
   }
 
   /* ---------- states ---------- */
-  body[data-state="listening"] { --c1: #22d3ee; --c2: #3b82f6; --c3: #34d399; }
-  body[data-state="thinking"]  { --c1: #f59e0b; --c2: #ec4899; --c3: #a78bfa; }
-  body[data-state="speaking"]  { --c1: #34d399; --c2: #22d3ee; --c3: #60a5fa; }
-  body[data-state="error"]     { --c1: #f43f5e; --c2: #fb7185; --c3: #f59e0b; }
+  body[data-state="listening"] { --c1: #22d3ee; --c2: #3b82f6; --c3: #5eead4; }
+  body[data-state="thinking"]  { --c1: #fb923c; --c2: #f43f5e; --c3: #c084fc; }
+  body[data-state="speaking"]  { --c1: #34d399; --c2: #38bdf8; --c3: #818cf8; }
+  body[data-state="error"]     { --c1: #f43f5e; --c2: #fb7185; --c3: #fca5a5; }
 
   body[data-state="thinking"] #ring { opacity: .9; }
   body[data-state="thinking"] #skin { animation-duration: 2.6s; }
@@ -393,10 +441,13 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       <div id="skin">
         <span class="blob b1"></span><span class="blob b2"></span>
         <span class="blob b3"></span><span class="blob b4"></span>
+        <span class="blob b5"></span>
       </div>
       <span id="gloss"></span>
+      <span id="grainIn"></span>
       <span id="sheen"></span>
     </button>
+    <div id="spill"></div>
   </div>
   <div id="status">Toca para hablar</div>
 </div>
@@ -516,7 +567,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
         img.data[d + 3] = 26;
       }
       g.putImageData(img, 0, 0);
-      $('grain').style.backgroundImage = 'url(' + canvas.toDataURL() + ')';
+      var texture = 'url(' + canvas.toDataURL() + ')';
+      $('grain').style.backgroundImage = texture;
+      $('grainIn').style.backgroundImage = texture;
     } catch (e) { $('grain').style.display = 'none'; }
   })();
 
