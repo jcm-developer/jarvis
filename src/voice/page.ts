@@ -17,6 +17,13 @@
  * answered by the same shape, and a dead microphone shows up as an orb that does not move —
  * which is exactly the failure that cost an afternoon.
  *
+ * The wake word is the one thing here that talks to somebody else. Chrome's speech
+ * recognition runs on Google's servers, so while that switch is on, everything the
+ * microphone hears leaves the machine. It is off by default, it says so on screen the
+ * whole time it is on, and it is the reason the pill at the top is red rather than
+ * tasteful. Porcupine running locally is the honest long-term answer; this is the one that
+ * fits in an afternoon.
+ *
  * The token is never in here. It is typed once by a person and kept in that browser's
  * localStorage, so this file can be served to anyone: without a token, /voice answers 401.
  */
@@ -131,6 +138,18 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
   body[data-state="error"] #status { color: #fb7185; }
 
+  #wake {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 9px;
+    padding: 7px 15px 7px 12px; border-radius: 999px;
+    border: 1px solid rgba(244,63,94,.32); background: rgba(244,63,94,.09);
+    color: #fda4af; font: inherit; font-size: 12px; cursor: pointer;
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
+  #wake.on { display: flex; }
+  #wake i { width: 7px; height: 7px; border-radius: 50%; background: #f43f5e; animation: blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+
   #dots {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     border: 0; background: none; color: #333947; cursor: pointer;
@@ -140,6 +159,25 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   #dots:hover { color: var(--dim); }
 
   /* ---------- panel ---------- */
+  /* The panel covers the bottom of the screen, and the button that opens it lives there
+     too — so once open it was hiding its own switch. Hence the backdrop and the handle:
+     three ways out (tap outside, drag the handle, Escape) instead of one that was buried. */
+  #panelBack {
+    position: fixed; inset: 0; z-index: 4;
+    background: rgba(4,5,8,.55);
+    opacity: 0; pointer-events: none; transition: opacity .35s ease;
+  }
+  #panelBack.open { opacity: 1; pointer-events: auto; }
+
+  #panelHandle {
+    display: block; width: 100%; padding: 0 0 14px; border: 0; background: none; cursor: pointer;
+  }
+  #panelHandle::before {
+    content: ''; display: block; width: 42px; height: 4px; margin: 0 auto;
+    border-radius: 999px; background: #2a2f3a; transition: background .2s ease;
+  }
+  #panelHandle:hover::before { background: #3d4657; }
+
   #panel {
     position: fixed; inset: auto 0 0 0; z-index: 5;
     max-height: 82vh; overflow-y: auto;
@@ -247,9 +285,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   <div id="status">Toca para hablar</div>
 </div>
 
+<button id="wake"><i></i><span id="wakeLabel">Escuchando · di «oye Jarvis»</span></button>
+
 <button id="dots" class="hidden" aria-label="Detalles">···</button>
 
+<div id="panelBack"></div>
+
 <div id="panel">
+  <button id="panelHandle" aria-label="Cerrar"></button>
   <div id="panelInner">
     <div>
       <h2>Te he oído</h2>
@@ -268,6 +311,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       <table id="times"></table>
     </div>
     <div>
+      <h2>Escucha por voz</h2>
+      <div class="seg"><button id="wakeToggle">Desactivada</button></div>
+      <p id="wakeHint" style="margin-top:9px;font-size:12px;color:#4b5263;line-height:1.5">
+        Di «oye Jarvis» y empieza a grabar sola. Solo funciona en Chrome, y mientras esté
+        activa el audio del micrófono pasa continuamente por los servidores de Google.
+      </p>
+    </div>
+    <div>
       <h2>Modo</h2>
       <div class="seg">
         <button id="modeToggle">Tocar y hablar</button>
@@ -282,6 +333,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       </div>
     </div>
     <button class="link" id="forget">Olvidar el token de este navegador</button>
+    <button class="btn" id="panelClose">Cerrar</button>
   </div>
 </div>
 
@@ -348,8 +400,24 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   // ---- panel ------------------------------------------------------------
-  $('dots').onclick = function () { $('panel').classList.toggle('open'); };
-  function closePanel() { $('panel').classList.remove('open'); }
+  function openPanel() {
+    $('panel').classList.add('open');
+    $('panelBack').classList.add('open');
+  }
+  function closePanel() {
+    $('panel').classList.remove('open');
+    $('panelBack').classList.remove('open');
+  }
+  function togglePanel() {
+    if ($('panel').classList.contains('open')) closePanel(); else openPanel();
+  }
+
+  $('dots').onclick = togglePanel;
+  $('panelHandle').onclick = closePanel;
+  $('panelClose').onclick = closePanel;
+  // The backdrop is what makes tapping anywhere outside work, and it also stops a tap
+  // meant to dismiss the panel from landing on the orb and starting a recording.
+  $('panelBack').onclick = closePanel;
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { closePanel(); hideConfirm(); }
   });
@@ -367,8 +435,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     if (!recording && !busy) idle();
   }
   function idle() {
-    setState('idle', mode === 'hold' ? 'Mantén pulsado para hablar' : 'Toca para hablar');
+    var hint = mode === 'hold' ? 'Mantén pulsado para hablar' : 'Toca para hablar';
+    setState('idle', wakeOn ? 'Di «oye Jarvis»' : hint);
     level(0);
+    // The cooldown is not politeness: re-arming the instant the reply ends catches its
+    // own tail through the speakers and wakes the assistant up with its own voice.
+    if (wakeOn) { clearTimeout(wakeTimer); wakeTimer = setTimeout(arm, WAKE_COOLDOWN_MS); }
   }
 
   // ---- microphone level and silence -------------------------------------
@@ -379,6 +451,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   var CALIBRATE_MS = 250;
   var MIN_RECORD_MS = 900;
   var MAX_RECORD_MS = 30000;
+  // Nobody said anything. Without this a tap —or a false wake— records the full 30 s of
+  // nothing before finding out, and the orb sits there looking like it is working.
+  var NO_SPEECH_MS = 3500;
   var micCtx = null, micAnalyser = null, meterTimer = null;
 
   function startMeter() {
@@ -409,6 +484,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       // The hard cap applies in both modes: a recorder nobody stopped is how you get a
       // 413 and a bill instead of an answer.
       if (elapsed > MAX_RECORD_MS) { stop(); return; }
+      if (mode !== 'hold' && !heardSomething && elapsed > NO_SPEECH_MS) { stop(); return; }
       // Cutting on silence only makes sense when there is no finger on the button, and
       // never before MIN_RECORD_MS: a pause for breath after the first word would send
       // half a sentence, which comes back as an answer to a question nobody asked.
@@ -457,9 +533,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       setState('error', 'Este navegador no graba audio.');
       return;
     }
-    try {
-      if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e) {
+    if (!(await ensureStream())) {
       setState('error', 'Sin permiso de micrófono.');
       return;
     }
@@ -474,6 +548,24 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     recordStartedAt = Date.now();
     startMeter();
     setState('listening', mode === 'hold' ? 'Te escucho…' : 'Te escucho… calla y lo envío');
+  }
+
+  /**
+   * One microphone stream for the whole session.
+   *
+   * Held open rather than acquired per turn so that a wake word can start recording in
+   * milliseconds instead of after a permission round trip — by then the first word of the
+   * request is gone. Echo cancellation is not optional here: with the wake listener on, the
+   * assistant's own reply comes back through the speakers and re-triggers it.
+   */
+  async function ensureStream() {
+    if (stream) return true;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      return true;
+    } catch (e) { return false; }
   }
 
   function stop() {
@@ -593,7 +685,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       // No audio: the reply survives on screen, and the panel opens itself because that
       // is the only place it is legible.
       setState('error', notice || 'Respuesta sin audio. Mira los detalles.');
-      $('panel').classList.add('open');
+      openPanel();
       if (needsConfirm) showConfirm(reply);
     }
   }
@@ -702,6 +794,118 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     $('timesBox').classList.toggle('hidden', !html);
   }
 
+  // ---- wake word --------------------------------------------------------
+  // Chrome's SpeechRecognition is used ONLY to spot the phrase. What you then say is
+  // recorded and transcribed by our own pipeline, exactly like a tapped turn: the two are
+  // the same code path from here on, so a bug can only ever be in one of them.
+  var WAKE_KEY = 'jarvis.voice.wake';
+  var WAKE_COOLDOWN_MS = 900;
+  var WAKE_MAX_TURNS = 40;
+  // The name comes back mangled in a dozen ways and none of them are worth losing a turn
+  // over. The leading word is what keeps the false positives down: "jarvis" on its own
+  // comes up in conversation, "oye jarvis" does not.
+  var WAKE_RE = /\\b(oye|hola|hey|eh|ok|okay)\\s+(jarvis|yarvis|jarvi|jarbis|jervis|harvis|garvis|charvis|travis|arvis)\\b/;
+  var recognition = null, wakeOn = false, wakeTurns = 0, wakeTimer = null;
+
+  function wakeSupported() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+
+  function normalise(text) {
+    return text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+  }
+
+  function buildRecognition() {
+    var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var r = new Rec();
+    r.lang = 'es-ES';
+    r.continuous = true;
+    // Interim results are the point: waiting for a final one adds a second to every wake.
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onresult = function (e) {
+      if (busy || recording) return;
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        if (WAKE_RE.test(normalise(e.results[i][0].transcript))) { woken(); return; }
+      }
+    };
+
+    r.onerror = function (e) {
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      if (e.error === 'network') {
+        // Brave, Vivaldi and plain Chromium have the object but not Google's key. The
+        // failure is at runtime, not at feature detection, so it has to be said out loud.
+        setWake(false);
+        setState('error', 'Este navegador no tiene reconocimiento de voz. Usa Chrome.');
+        return;
+      }
+      setWake(false);
+      setState('error', 'La escucha se ha caído (' + e.error + ').');
+    };
+
+    r.onend = function () {
+      // Chrome ends recognition on its own after about a minute of silence. Without this
+      // the wake word just quietly stops working and nothing on screen says so.
+      if (!wakeOn) return;
+      clearTimeout(wakeTimer);
+      wakeTimer = setTimeout(arm, 250);
+    };
+
+    return r;
+  }
+
+  function arm() {
+    if (!wakeOn || busy || recording || !recognition) return;
+    try { recognition.start(); } catch (e) { /* already running */ }
+  }
+
+  function woken() {
+    if (busy || recording) return;
+    wakeTurns++;
+    if (wakeTurns > WAKE_MAX_TURNS) {
+      setWake(false);
+      setState('error', 'Tope de turnos de esta sesión. Vuelve a activar la escucha.');
+      return;
+    }
+    // abort() and not stop(): stop() waits for a final result, and by then the first word
+    // of the actual request is already gone.
+    try { recognition.abort(); } catch (e) {}
+    start();
+  }
+
+  async function setWake(on) {
+    if (on && !wakeSupported()) {
+      setState('error', 'Este navegador no tiene reconocimiento de voz. Usa Chrome.');
+      return;
+    }
+    if (on && !(await ensureStream())) {
+      setState('error', 'Sin permiso de micrófono.');
+      return;
+    }
+
+    wakeOn = on;
+    wakeTurns = 0;
+    try { localStorage.setItem(WAKE_KEY, on ? '1' : '0'); } catch (e) {}
+    $('wake').classList.toggle('on', on);
+    $('wakeToggle').classList.toggle('on', on);
+    $('wakeToggle').textContent = on ? 'Activada' : 'Desactivada';
+
+    clearTimeout(wakeTimer);
+    if (on) {
+      if (!recognition) recognition = buildRecognition();
+      arm();
+    } else if (recognition) {
+      try { recognition.abort(); } catch (e) {}
+    }
+    if (!busy && !recording) idle();
+  }
+
+  $('wakeToggle').onclick = function () { setWake(!wakeOn); };
+  $('wake').onclick = function () { setWake(false); };
+  if (!wakeSupported()) {
+    $('wakeToggle').disabled = true;
+    $('wakeHint').textContent = 'Este navegador no tiene reconocimiento de voz. Hace falta Chrome.';
+  }
+
   // ---- input ------------------------------------------------------------
   // Pointer events cover mouse, touch and pen at once. In hold mode pointerleave matters:
   // dragging off the orb while holding must stop the recorder, or it runs to the cap.
@@ -732,6 +936,13 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   });
 
   idle();
+
+  // Resume the listener when it was left on. It is the user's own saved choice and the
+  // red pill says so from the first frame — but the browser can refuse to start a
+  // recogniser with no gesture behind it, so a failure here is silent and reversible.
+  try {
+    if (localStorage.getItem(WAKE_KEY) === '1' && token && wakeSupported()) setWake(true);
+  } catch (e) {}
 })();
 </script>
 </body>
