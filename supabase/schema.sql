@@ -173,59 +173,6 @@ end $$;
 create index if not exists jobs_claimable_idx
   on jobs (state, run_after);
 
--- Fichaje: scheduled punches (phase 23) -------------------------------------
--- What used to be schedules.json. One row per action and time, rolled forward: the day's
--- state lives in `offset_for` and `fired_on`, never in a row per day.
-create table if not exists punch_schedules (
-  id             uuid primary key default gen_random_uuid(),
-  user_id        uuid not null references users(id) on delete cascade,
-  action         text not null
-                   check (action in ('clock_in','clock_out','break_start','break_end')),
-  -- Local time of day. Stored as text 'HH:MM' and not as `time`: everything that reads it
-  -- compares against the local clock computed in lib/localtime.ts, and a `time` column
-  -- invites doing the comparison in UTC in SQL, which is wrong twice a year.
-  at_time        text not null check (at_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
-  enabled        boolean not null default true,
-  -- The window the daily offset is drawn from, in minutes. Columns and not constants so
-  -- the jitter can be turned off (0/0) without a deploy.
-  offset_min     smallint not null default -5,
-  offset_max     smallint not null default 5,
-  -- The offset drawn for `offset_for`, and the local day it was drawn for. It is written
-  -- down because the cron ticks every five minutes and the rule is `now >= at_time +
-  -- offset`: re-drawing on each tick would fire on the first tick whose draw happens to
-  -- pass, pinning every day to the earliest edge of the window.
-  offset_minutes smallint,
-  offset_for     date,
-  -- Last local day this row fired. Same job as tasks.reminded_at.
-  fired_on       date,
-  created_at     timestamptz not null default now(),
-  updated_at     timestamptz not null default now(),
-  -- The same action at the same time twice is a mistake, never an intention.
-  unique (user_id, action, at_time)
-);
-create index if not exists punch_schedules_due_idx
-  on punch_schedules (user_id, enabled, at_time);
-
--- Fichaje: what actually went out (phase 22) --------------------------------
--- Append-only, and NOT the source of truth: the portal is, because the user can always
--- punch from the web themselves. What this table answers is the half the portal cannot —
--- what the automation did and at what time— so "have I clocked in?" gets an hour and not
--- just a yes.
-create table if not exists punches (
-  id             uuid primary key default gen_random_uuid(),
-  user_id        uuid not null references users(id) on delete cascade,
-  action         text not null
-                   check (action in ('clock_in','clock_out','break_start','break_end')),
-  source         text not null check (source in ('auto','manual')),
-  -- The time the portal reported, when it reported one. Text and not `time`: it is
-  -- somebody else's clock and it goes back out exactly as it came in.
-  registered_at  text,
-  local_day      date not null,
-  punched_at     timestamptz not null default now()
-);
-create index if not exists punches_user_day_idx
-  on punches (user_id, local_day);
-
 -- Imputación: what was submitted (phase 24) ---------------------------------
 -- What used to be impute_log.json. Append-only: it is a record of what was sent to
 -- somebody else's system, and a record that can be edited is not a record.
@@ -329,10 +276,6 @@ create trigger tasks_touch before update on tasks
 
 drop trigger if exists books_touch on books;
 create trigger books_touch before update on books
-  for each row execute function touch_updated_at();
-
-drop trigger if exists punch_schedules_touch on punch_schedules;
-create trigger punch_schedules_touch before update on punch_schedules
   for each row execute function touch_updated_at();
 
 drop trigger if exists jobs_touch on jobs;

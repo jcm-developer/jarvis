@@ -34,16 +34,6 @@ compatibility_flags = ["nodejs_compat"]
 # JINA_API_KEY is different — Jina Reader works without a key at a lower rate limit, so
 # read_url needs no secret at all.
 #
-# Fichaje (phase 22). Without them the punch tools are not offered to the model and the
-# scheduled punches do nothing: the assistant works exactly as before, with one feature off.
-#   wrangler secret put TIMECLOCK_USER
-#   wrangler secret put TIMECLOCK_PASS
-#
-# The portal's address is a secret too, and not because a hostname is a credential: this
-# file is read straight off a public repo, and there is no reason to publish which
-# company's attendance system this talks to. Optional — src/timeclock/ has the default.
-#   wrangler secret put TIMECLOCK_BASE_URL
-#
 # Voice channel (phase 25). One secret, and the routes stay 404 without it even with
 # VOICE_ENABLED on: an endpoint that spends money must not open because a secret was
 # forgotten. Generate it long and random, it is never typed from memory:
@@ -54,9 +44,6 @@ compatibility_flags = ["nodejs_compat"]
 # browser and lives in that laptop's localStorage; sharing them would mean rotating the
 # bot's webhook to revoke a laptop.
 
-# The four times and the +-5 minute window are NOT here: they live in `punch_schedules` in
-# Supabase, seeded on the first tick, so changing an hour is a row and not a deploy.
-#
 # There is no SEARCH_PROVIDER var on purpose: with one provider it would be dead
 # configuration, the same call as the calendar's. The interface in src/search/ is what
 # makes swapping cheap, and it will need it: these free tiers move fast. Brave's was the

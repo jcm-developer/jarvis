@@ -1813,177 +1813,7 @@ call with its arguments, so that is measurable instead of assumed. Same move as 
 with postponements: read the logs before adding structure. A table, a TTL and a purge are
 cheap to add later and impossible to un-add.
 
-## 18. Fichaje: the first thing that acts on its own outside
-
-Everything the cron did until here was a message. Phase 22 is different in kind: four times
-a day the tick logs into somebody else's portal and writes to an attendance record. Nothing
-about the mechanics is hard —three HTTP requests— and everything about the failure modes is,
-because the two ways of being wrong are not symmetrical. A punch that does not happen is a
-line missing from a timesheet. A punch that happens twice, or at the wrong time, or that we
-report as done when it never landed, is a record that lies.
-
-### There is no browser, and that turned out not to matter
-
-Playwright, which is how this normally gets done, cannot run on Workers, and Browser
-Rendering is on the paid plan. So [src/timeclock/http.ts](src/timeclock/http.ts) talks to
-`registro.asp` the way a browser would: `GET` the page, fill the form, `POST` it back.
-
-The page is three things, and every decision below follows from them:
-
-- **One submit button, and its wording is the phase.** "Registrar entrada" while you are
-  out, "Registrar salida" while you are in. Never both.
-- **A radio group above it** ("Motivo registro") with the reasons for that phase, the
-  ordinary one already selected. Starting and ending the day is pressing the button and
-  nothing else; the two break punches have to pick their reason first.
-- **"Último movimiento" below it**, stating what the portal recorded last and at what time,
-  to the second.
-
-What makes talking to it survivable is copying the form's own state back verbatim —every
-hidden input travels through without this code knowing it exists— and matching buttons and
-reasons by their **full** wording only. "entrada" as a loose fallback would also match
-*Entrada del descanso* and register the wrong reason. Anything unrecognised becomes an error
-carrying the route walked, what each page held and what it said, which is how a broken run
-names the hop that broke instead of just failing.
-
-Buttons are `<button>` elements with an icon inside and often no `name`, not
-`<input type="submit">`, so the label lives in the element's text and not in a `value`. Two
-details there are load-bearing, and both were paid for in production runs:
-
-- **A `<button>` with no `type` is a submit.** That is the HTML default and it is what the
-  register page relies on. Requiring the attribute meant the page parsed, its four reasons
-  parsed, and the button sitting between them went unseen.
-- **`type="button"` is skipped on purpose.** It does whatever its script does, and pressing
-  it by posting the form would be inventing an action. On the login page that one is
-  *Cambiar Contraseña*.
-
-And the rule that keeps a misread page from doing damage: **a form with a radio group is
-never treated as a bridge.** A choice means the form is meant for a person. Without that
-rule, the register page —button unrecognised, so indistinguishable from a self-posting
-page— got submitted blind, and the portal answered 500. Deservedly.
-
-And the login does not end at the login: it lands on a **bridge page**, a form with hidden
-fields, no button and a script that posts it. There is no JavaScript in this runtime to run
-that script with, and there does not need to be — a form with nothing to press is a form
-meant to be posted as it stands, so it is posted as it stands. Without that hop there is no
-session, and the symptom is indistinguishable from a wrong password.
-
-**Four attempts, four wrong assumptions, and they are the lesson.** The first invented a
-button per action and looked for a control labelled *Salida al descanso* — which is a
-radio's label. The second recognised only `<input type="submit">`, so it could not have
-found the real buttons either. The third guessed the login's URL, asked for `/CCB/`, got a
-page that was not the login and filled nothing in; the site's own redirect from
-`registro.asp` was there all along and needed no guessing. The fourth stopped at the bridge
-page and reported it as unrecognisable, when what the page held was a form waiting to be
-posted — the trail had not been counting input fields, so the one fact that would have said
-so was the one fact missing.
-
-Every one of the four showed up as "I do not understand this page", which is why the
-diagnosis grew a breadcrumb trail with what each hop held and what it said: the failure was
-never where the message pointed. The trail also caught a bug of its own on the way —
-`textOf` stripped tags but not `<script>` bodies, so the page's "text" was quoting
-JavaScript, and radio labels and the "Último movimiento" line were being matched against
-code.
-
-### The portal is the source of truth, not our table
-
-The page shows one phase at a time, and that single property does three jobs at once. It is
-why there is no "have I punched today?" flag anywhere in the schema:
-
-- **Idempotence.** The user can clock in from the web at 09:20 and the automation, arriving
-  at 09:00, finds no "Registrar entrada" and does nothing. Silently: there is nothing to
-  report, and a message per skipped stage is how a bot gets muted.
-- **`punch_status`.** What the user reads is the portal's state and its own "Último
-  movimiento", not our log. Our log answers the other half —what the automation did— which
-  the portal cannot.
-- **Verification.** "Último movimiento" is the signal, because it names the reason and the
-  time to the second. The portal paints that panel with JavaScript, which for five deploys
-  was reported as "so it does not reach this code" — wrongly. The string is in the html the
-  whole time, inside the script that writes it:
-  `$("#presultado .panel-body").html("24/08/2026 14:07:08 - Salida al descanso")`. What
-  dropped it was our own `textOf`, which strips script bodies for good reasons of its own, so
-  it is read from the script before that stripping (`scriptAssignedText`). The fallback, for
-  a page that stops printing it, is the phase flipping: the button just pressed must be gone.
-  When the line IS there and disagrees with what was just sent, that is the one outcome that
-  must never be retried: it means the write may have landed.
-
-**The bug that made all of this moot for a week.** None of the above ran even once, because
-every POST was rejected in silence. The hidden `tipo` field looks like it names the kind of
-punch and it does not — it names the **phase**, and the page's own script sets it from the
-button that was pressed: `if (tipo == "send"){ $("#tipo").val("S"); } else { ... "E" }`. We
-were writing the reason's code into it. The server answered a normal page, wrote nothing, and
-left no error anywhere: the punch simply did not happen. The reason travels on its own, in the
-radio's field. Two lessons, and the second is the expensive one: a form's field names are not
-documentation, and *nothing went wrong* is a failure mode a legal record cannot afford — which
-is why `refused` now exists as its own ending.
-
-The same reading of `fEnviar()` settled the other half. What blocks a submit is
-`consubmotivo == "True"` with an empty `#comentario`, **not** `conobservacion`, which only
-reveals the comment box. Reading the wrong attribute meant refusing reasons the page would
-have sent. And when the attribute is missing altogether the page's own function falls through
-and submits nothing at all, so a missing attribute is treated here as "needs a comment": the
-automation refuses exactly what a person clicking the button would fail to send.
-
-### The five endings of one punch, and why they cannot share code
-
-This is the whole design, and it is a table rather than a `catch`:
-
-| What happened | What it means | What is done |
-|---|---|---|
-| The phase button is not there | Already punched, or not this stage's turn | Nothing, quietly. Day closed |
-| Its turn, and the reason demands a comment | It will refuse tomorrow too | Day closed, **user told** |
-| Portal down, timeout | Nothing was written | Day **released**, next tick retries |
-| Wrong credentials, page not understood | A human has to look | Day closed, user told |
-| Answered, "Último movimiento" unchanged | **Unknown** whether it registered | Day closed, user told, **never retried** |
-
-**And a sixth ending that was not in the table because nobody had written it down: the
-unforeseen one.** Anything thrown inside `attempt()` that was not a `TimeclockError` —a bug,
-Supabase refusing the insert— propagated to the caller, which logged it and said nothing,
-with the day already claimed. So the feature could fail on all four stages and look, from the
-chat, exactly like a day with nothing to do; that is precisely what happened on the first day
-it ran. It now releases the day and says so. Releasing is safe for the same reason the rest of
-this design leans on: the portal only offers the phase that comes next, so if the punch did
-land and it was the log that broke, the retry finds the button gone and ends quietly as
-`not_available`. A lost log row is recoverable, a lost punch is a hole in a legal record.
-
-Row two is new and it is there because it was row one for a while. Sharing a kind with
-"another stage's turn" bought its silence, and silence is right for that one and wrong for
-this one: the day gets claimed, no punch goes out, nobody is told, and the hole surfaces in a
-timesheet. Same shape as the row below it, opposite handling, and only the caller can tell
-them apart — hence `refused`.
-
-The last row is the one worth the section. A retry there is a coin flip on a duplicate
-punch, so the code refuses to take it: an unverified punch is reported and left alone. That
-asymmetry —silence is cheap, duplication is not— decides every branch above.
-
-### The day is claimed before it is punched
-
-`fired_on` is stamped with a conditional `UPDATE ... RETURNING`, the same trick the job
-queue claims rows with (§16). Two overlapping ticks cannot both win, which matters here more
-than it does for a page summary: the loser would clock in a second time. The price is that a
-failure has already spent the day, which is why the "nothing was written" case explicitly
-gives it back.
-
-### The random offset is drawn once a day and written down
-
-The requested behaviour is a window of five minutes either side of each time. The obvious
-implementation —jitter on each tick— does not produce that: the tick runs every five
-minutes and the rule is `now >= at_time + offset`, so re-rolling fires on the first tick
-whose draw happens to pass, pinning every day to the earliest edge. `offset_minutes` and
-`offset_for` exist so the number survives to the next tick.
-
-### And it runs first in the tick, not last
-
-The opposite of the jobs of §16, and for the opposite reason. A job is the one thing nobody
-is waiting on; a punch has to land at the time it was told, so it does not queue behind a
-calendar read that might eat the budget. It also never becomes a job for the same reason —
-that was a real change of mind mid-implementation, recorded in `db/types.ts` where the
-`JobKind` union no longer has a punch in it.
-
-What it cannot know is holidays: nobody told us the calendar of somebody else's company. On
-a holiday the portal simply does not offer the button, which lands on the first row of the
-table above and is the safe direction.
-
-## 19. The reading log: taste, not a catalogue
+## 18. The reading log: taste, not a catalogue
 
 Phase 24, and it is the first domain added since the tasks one that is not about time.
 "Me he leído tal" goes in as a row; "recomiéndame algo" reads those rows back. Nothing
@@ -2037,7 +1867,7 @@ this domain that gets caught for certain — at the bookshop.
 
 ---
 
-## 20. Roadmap
+## 19. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -2063,8 +1893,8 @@ this domain that gets caught for certain — at the bookshop.
 | **19** | Markets: a watchlist, not a ticker | ⬜ Pending |
 | **20** | Web search, split in two | ✅ Done |
 | **21** | Expenses in a spreadsheet | ⬜ Pending |
-| **22** | Fichaje: scheduled punches and the state of the day | ✅ Done |
-| **23** | Imputación de horas into the day's projects | ⬜ Pending |
+| **22** | Fichaje: scheduled punches and the state of the day | ❌ Removed |
+| **23** | Imputación de horas into the day's projects | ❌ Dropped with 22 |
 | **24** | The reading log: books read and recommendations | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
@@ -2118,7 +1948,7 @@ Phases 17 and 20 shipped together, and that pairing was not a matter of convenie
 is the phase that proves 17. Half of it —snippets— runs in the turn, and the other half
 —reading the page— is the first tenant of the queue, so shipping one without the other
 would have meant either a search that cannot open a link or a table with nothing in it.
-17 is told in §16, 20 in §17 and 22 in §18. Between them they cost the cron its oldest rule, that no
+17 is told in §16 and 20 in §17. Between them they cost the cron its oldest rule, that no
 proactive message goes through the model, and the tool contract one new optional field.
 
 Phase 13 shipped right after 24 and out of order too, and it is the one phase here that
@@ -2126,12 +1956,27 @@ was unblocked by something already built rather than by a decision: it needs a m
 `tool_call_logs` to have anything to count, and that table has been filling up since phase
 2. It is told in §12, with the rest of the cron.
 
+**Phase 22 was built, deployed, and taken out again**, which is why it is the only row here
+that says removed. It worked in the sense that it read the portal, understood the page and
+knew which stage came next; it never once managed to write. `registro.asp` answers 500 to
+the submit and 200 to everything else, with a body compared byte for byte against the one a
+browser sends and found identical, and the same headers, and the same session. What is left
+between the request that is accepted and the request that is refused is not something a
+Worker can hold: the portal wants a real browser, which is what the tool that does work
+against it uses. So the code came out rather than staying as a feature that fails four times
+a day, and the two tables came out of the schema with it. The lesson is worth more than the
+feature: **an integration that cannot be reproduced outside a browser is not an HTTP
+integration**, and the place to find that out is before the retry logic, not after it.
+
+Phase 23 goes with it. It is the other half of the same portal and would submit the same
+kind of form, so it starts blocked on the same wall.
+
 **Phase 24 broke the order of this list and it is worth saying why.** It is not the next
 number, it is not blocked on anything and it was asked for out loud, which is the only
 reason a phase jumps the queue here: the list is a plan, not a contract. It also cost
 nothing that was competing with anything else —no provider, no cron job, no external
 call, three tools and a table— so nothing it might have delayed was delayed. It is told
-in §19.
+in §18.
 
 ### Phase 11 — Audio replies (TTS)
 
@@ -2200,24 +2045,23 @@ categories, the queries and the reports, which is the `tasks` pattern again for 
 lesson. The sheet **is** the report, and it is one the user can pivot without teaching
 Jarvis anything about pivots.
 
-### Phase 23 — Imputación de horas
+### Phase 23 — Imputación de horas (dropped with 22)
 
-The other half of the same portal, and the reason the schema already carries `imputations`
-and `project_cache` with nothing reading them yet: they were written with phase 22 because
-the tables are the cheap part and a second migration is not.
+The other half of the same portal, and it went out with the punching for the same reason:
+the submit is a form on an ASP page that answers 500 to everything that is not a browser.
+The design is still the right one and is kept here in case that ever changes.
 
-The shape is decided and it is not the shape of phase 22. Punching is one button; imputing
+The shape was decided and it is not the shape of a punch. Punching is one button; imputing
 is a project picked out of the day's table, a number of hours and a **mandatory** comment,
 which means the model has to choose a row and the user has to confirm before anything is
-written. So: the tick scrapes the day's table into `project_cache` —a login plus a scrape
-does not fit in a turn next to three model rounds— the turn reads the cache, the
-confirmation goes through `tools/pending.ts` like every other irreversible write, and the
-submit itself becomes a job (§16), because unlike a punch nobody is waiting for it to land
-on a particular minute.
+written. So: the tick scrapes the day's table into a cache —a login plus a scrape does not
+fit in a turn next to three model rounds— the turn reads the cache, the confirmation goes
+through `tools/pending.ts` like every other irreversible write, and the submit itself becomes
+a job (§16), because nobody is waiting for it to land on a particular minute.
 
-Two things it has to get right, both learned from phase 22: the date the row lands on is the
-one the **site** reports after submitting, not the one we asked for —a full day rolls over to
-the next— and hours go in as digits with a comma, never "3h".
+Two things it would have to get right: the date the row lands on is the one the **site**
+reports after submitting, not the one we asked for —a full day rolls over to the next— and
+hours go in as digits with a comma, never "3h".
 
 ### Ideas with no phase assigned
 

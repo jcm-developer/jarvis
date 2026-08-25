@@ -39,16 +39,6 @@ export interface SystemPromptInput {
    * break the prefix cache.
    */
   canSearchWeb?: boolean;
-  /**
-   * Whether the timeclock portal is configured (phase 22).
-   *
-   * Fourth flag of the same family, and the one with the sharpest edge: the punches go out
-   * on their own from the cron, so without this line the model both denies it can clock in
-   * and offers to "keep an eye on it" at six. What it must not do is punch on its own
-   * initiative —that is the scheduler's job— which is why the rule below is a limit and
-   * not a capability.
-   */
-  canPunch?: boolean;
 }
 
 /**
@@ -68,7 +58,6 @@ export function buildSystemPrompt({
   canSeeImages = false,
   eventAlertMinutes = 0,
   canSearchWeb = false,
-  canPunch = false,
 }: SystemPromptInput): string {
   // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
@@ -112,29 +101,11 @@ export function buildSystemPrompt({
     '- Contestar con audio, aunque él te escriba con audios.',
     '- Escribirle por tu cuenta más tarde. Los avisos los manda el sistema a la hora',
     '  que dejes puesta; tú no puedes "estar pendiente" de nada.',
-    ...(canPunch
-      ? [
-          '- Fichar por tu cuenta. El sistema ficha solo la entrada, la salida a comer, la',
-          '  vuelta y la salida, a sus horas y sin que tú hagas nada. Tú solo fichas si él',
-          '  te lo pide en ese mensaje, con punch_now.',
-        ]
-      : []),
     'Si te pide algo de esta lista, dilo en una frase y ofrece lo que sí puedes hacer.',
     '',
     'Herramientas:',
     '- Úsalas en vez de decir que no puedes hacer algo, salvo que caiga en la lista',
     '  de arriba.',
-    ...(canPunch
-      ? [
-          '- Si pregunta si ha fichado, o cómo va el día, llama a punch_status. No lo',
-          '  deduzcas de la conversación: puede haber fichado él desde la web y ahí no',
-          '  queda constancia por aquí.',
-          '- El portal solo muestra la acción que toca. Que no ofrezca la entrada significa',
-          '  que ya está fichada, no que haya fallado nada.',
-          '- Si un fichaje sale con error, cuéntalo y no lo repitas: un fichaje duplicado',
-          '  en un registro de jornada es peor que uno que falta.',
-        ]
-      : []),
     '- Para modificar, completar o borrar una tarea necesitas su id: llama antes a',
     '  list_tasks. Nunca te inventes un id.',
     '- Si más de una tarea encaja con lo que pide, no elijas por él: pregúntale cuál.',

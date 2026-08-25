@@ -8,7 +8,7 @@ Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
 "what should I do now?" that crosses the agenda with the task list, things that repeat,
 web search that looks things up in the conversation and reads the links you send it in a
-message of its own, the workday's punches on their own schedule, a reading log that
+message of its own, a reading log that
 recommends from what you have actually read, and a Sunday review that says what you have
 been putting off.
 
@@ -316,7 +316,7 @@ with a 7-day TTL as a stopgap; phase 4 moved it to Supabase.
 **Readable errors.** Exhausted quota, an invalid key or a timeout reach Telegram as a
 clear sentence, not as silence and not as a stack dump.
 
-Commands: `/ping`, `/test`, `/punch`, `/reset`, `/help`. Everything else goes to the model. `/ping`
+Commands: `/ping`, `/test`, `/reset`, `/help`. Everything else goes to the model. `/ping`
 also reports the briefing's hour and the notice given before appointments.
 Audio is acknowledged but not transcribed until phase 3.
 
@@ -895,111 +895,16 @@ and one search costs one. That is about 33 a day for a single user. The real lim
 tighter and is ours, not theirs — a message allows three model rounds and a search eats
 one, so there is room for one or two searches per message, not five.
 
-## What phase 22 does: it clocks you in
-
-Four times a day, on its own, it logs into ficharweb and presses the button: entry at
-**09:00**, out to lunch at **14:00**, back at **15:00**, out at **18:00**. Monday to Friday,
-each one at its time **plus a random offset of up to five minutes either side** so the
-record does not read like a cron job.
-
-You can ask about it, and ask for it by hand:
-
-> — ¿he fichado?
-> — Sí, la entrada está fichada. El portal ofrece ahora la salida a comer, y la salida de
->   las 18:00 sigue pendiente.
-
-> — fíchame la salida
-> — Fichada la salida del trabajo. El portal lo ha registrado a las 18:03.
-
-### If you punched yourself, it does not touch anything
-
-This is the part worth understanding, because it is where the whole design comes from. The
-portal has a single button and its wording is the phase: "Registrar entrada" while you are
-out, "Registrar salida" while you are in. So there is no need to keep track of what you have
-done — if you clocked in from the web at 09:20, the automation finds no "Registrar entrada"
-and simply waits for the next stage. Quietly: there is nothing to tell you.
-
-Below the button the portal prints "Último movimiento" with the reason and the time to the
-second, and that is what gets read back to you and what a punch is confirmed against.
-
-The same property answers *"have I clocked in?"* honestly. What you get back is the
-**portal's** state, not our log, so a punch you did yourself from the web counts.
-
-### What it will never do
-
-- **Punch twice.** The day is claimed in the database before the request goes out, so two
-  overlapping ticks cannot both fire.
-- **Retry when it does not know what happened.** If the portal answers and "Último
-  movimiento" is not the punch we just sent, it may or may not have registered. It tells you
-  and stops. A retry there is a coin flip on a duplicate line in an attendance record.
-- **Punch on the model's initiative.** The assistant only clocks in when you ask for it in
-  that message; the four scheduled ones are the system's, not the model's.
-
-It does retry the one case where nothing was written: if the portal is down, the day is
-released and the next tick tries again, up to **30 minutes** past the target. After that it
-gives up and says so, once.
-
-Holidays are the honest gap: nobody told it your company's calendar. On a holiday the
-portal does not offer the button, so nothing gets punched — which is the safe direction, but
-it is a coincidence and not a feature.
-
-### Setting it up
-
-| Secret | Value |
-|---|---|
-| `TIMECLOCK_USER` | your ficharweb user |
-| `TIMECLOCK_PASS` | your ficharweb password |
-| `TIMECLOCK_BASE_URL` | optional, the portal's address if it is not the default |
-
-```powershell
-npx wrangler secret put TIMECLOCK_USER
-npx wrangler secret put TIMECLOCK_PASS
-```
-
-Without them the two tools are not offered to the model and the scheduler does nothing:
-everything else works exactly as before.
-
-**One manual step on an existing deploy:** re-run
-[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds `punch_schedules` and
-`punches`; the script is idempotent. The four times seed themselves on the first tick, and
-from then on they live in `punch_schedules` — changing an hour, or turning one off with
-`enabled`, is a row in Supabase and not a deploy.
-
-### `/punch`: the punch, without the model in the middle
-
-`punch_status` and `punch_now` already do both jobs, and both are tools — so the model has
-to decide to call them. The morning the provider started timing out, that left a feature
-that writes to an attendance record reachable only through the one component that was down,
-and a day went by working out from the outside why no punch had gone out.
-
-So the same rule as `/test`: composed in code, no model call anywhere.
-
-```
-/punch              what the portal offers, what it last recorded, what I punched today
-/punch in           entrada al trabajo
-/punch lunch|back   the two ends of lunch
-/punch out          salida del trabajo
-```
-
-Bare `/punch` writes nothing. It also prints what the automation itself registered today,
-labelled as ours and kept apart from the portal's own line: those two answer different
-questions, and merging them is how "you clocked in at 09:00" got said about a punch that
-never happened.
-
-### `/test`: what is slow, when something is slow
+## `/test`: what is slow, when something is slow
 
 The one command whose answer is written entirely in code, which is the point: it works when
-the model is exactly the thing that is broken. It reports four numbers —Supabase,
-ficharweb, a bare model ping and the request as the assistant really sends it— and then
-says what they mean:
+the model is exactly the thing that is broken. It reports three numbers —Supabase, a bare
+model ping and the request as the assistant really sends it— and then says what they mean:
 
 ```
 DIAGNÓSTICO
 
 Base de datos: bien, 0,2 s
-Ficharweb: bien, 2,1 s
-  Ahora mismo puedo fichar: salida a comer.
-
 MODELO — openai, gpt-4.1-mini
   Sin nada: bien, 0,5 s
     12 tokens de entrada (sin prompt y sin herramientas).
@@ -1023,10 +928,6 @@ having a bad minute, the prompt having grown, or the tool schemas being what the
 chokes on. The prompt is about 2.800 tokens and the seventeen schemas take it past 7.900 on
 **every** message, so measuring them separately is the difference between "wait it out",
 "trim the prompt" and "cut down the catalogue".
-
-The ficharweb line is a bonus that pays for itself: it says which punch actions it
-recognised on the page, so a reworded portal shows up when you ask instead of at nine in the
-morning. It reads the page and never presses anything.
 
 It costs two model calls, so it is not free — but it is on demand, and cheaper than reading
 `wrangler tail` with a token counter in the other hand.

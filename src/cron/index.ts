@@ -9,23 +9,18 @@ import { sendEventAlerts } from './event-alerts';
 import { runDueJobs } from './jobs';
 import { sendDueReminders } from './reminders';
 import { sendWeeklyReviewIfDue } from './review';
-import { runScheduledPunches } from './timeclock';
 
 /**
  * What runs on every cron tick (every five minutes, in UTC).
  *
  * This is where the assistant stops being reactive: nobody wrote anything and yet it has
  * to decide whether to act. Most of what happens here does not go through the model at
- * all —reminders and the punches come out of Supabase, the alerts and the briefing out of
+ * all —the reminders come out of Supabase, the alerts and the briefing out of
  * the calendar— which is deliberate: zero tokens, nothing to invent, and no dependency on
  * the provider being up when the alarm goes off.
  *
  * The deferred jobs of phase 17 are the exception and run last, because summarising a page
  * is not something code can compose and it is the only thing here nobody is waiting on.
- *
- * The punches of phase 22 are the other end of the same spectrum and run first: they are
- * the only block that writes to a system outside our control, and at a time that has to be
- * the time it was told.
  *
  * The tick's hour says nothing on its own: the cron runs in UTC and what matters is each
  * user's local time, which `lib/localtime.ts` computes.
@@ -43,7 +38,6 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
   const targets = await listCronTargets(db, config.allowedTelegramIds, config.defaultTimezone);
 
   let reminded = 0;
-  let punched = 0;
   let announced = 0;
   let briefings = 0;
   let reviews = 0;
@@ -68,19 +62,6 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
     } catch (error) {
       failures++;
       console.error(`cron: fallo en recordatorios de ${target.telegramId}:`, error);
-    }
-
-    // First of the outward-facing ones, ahead even of the appointment alerts, and it is
-    // the only block here that writes somewhere outside our control. Everything else in
-    // this tick is a message that can be a minute late without consequence; a punch lands
-    // on a legal record at a given time, so it is not going to queue behind a calendar
-    // read that may eat the budget. It costs nothing on the other 284 ticks of the day:
-    // with no schedule due it is one query.
-    try {
-      punched += await runScheduledPunches({ env, db, telegram, target, now, deadline });
-    } catch (error) {
-      failures++;
-      console.error(`cron: fallo en los fichajes de ${target.telegramId}:`, error);
     }
 
     // Between the reminders and the briefing on purpose: this is the only job of the
@@ -155,7 +136,6 @@ export async function runScheduled(env: Env, config: Config, deadline: Deadline)
       event: 'cron_run',
       targets: targets.length,
       reminded_tasks: reminded,
-      punches_sent: punched,
       events_announced: announced,
       briefings_sent: briefings,
       reviews_sent: reviews,

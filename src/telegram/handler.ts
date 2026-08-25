@@ -8,14 +8,13 @@ import {
 import type { Config } from '../config';
 import { describeError } from '../core/errors';
 import type { Principal } from '../core/principal';
-import { runPunchCommand } from '../punch';
 import type { Deadline } from '../lib/deadline';
 import { seesImages } from '../llm';
 import { createTranscriber } from '../stt';
 import { SttError } from '../stt/provider';
 import { takePending } from '../tools/pending';
 import { parseSnooze } from '../tools/snooze';
-import { runPageDump, runSelfTest } from '../selftest';
+import { runSelfTest } from '../selftest';
 import type {
   Env,
   TelegramCallbackQuery,
@@ -426,10 +425,7 @@ async function handleCommand(
         'Comandos:',
         '',
         '/ping — estado y configuración',
-        '/test — mide qué va lento: base de datos, ficharweb y el modelo',
-        '/test html — enseña la página de ficharweb tal como llega',
-        '/punch — cómo va el fichaje de hoy, sin fichar nada',
-        '/punch in | lunch | back | out — ficha eso ahora',
+        '/test — mide qué va lento: la base de datos y el modelo',
         '/reset — olvidar la conversación reciente',
         '/help — esto',
         '',
@@ -448,21 +444,6 @@ async function handleCommand(
       return 'Hecho, he olvidado la conversación reciente. Lo que sé de ti sigue ahí.';
 
     case 'test': {
-      // `/test html` dumps the timeclock page instead of measuring: when the parsing is
-      // what is broken, the page itself is the only useful answer.
-      const html = /\bhtml\b[ ]*(.*)$/i.exec(text.trim());
-      if (html) {
-        const at = html[1]!.trim();
-        return withTyping(ctx, () =>
-          runPageDump({
-            env: ctx.env,
-            config: ctx.config,
-            db: createDb(ctx.env),
-            deadline: ctx.deadline,
-            timezone: ctx.config.defaultTimezone,
-          }, at || undefined),
-        );
-      }
       return withTyping(ctx, () =>
         runSelfTest({
           env: ctx.env,
@@ -471,23 +452,6 @@ async function handleCommand(
           deadline: ctx.deadline,
           timezone: ctx.config.defaultTimezone,
         }),
-      );
-    }
-
-    case 'punch': {
-      // Everything after the command word, so "/punch lunch" arrives with its argument.
-      const arg = text.trim().slice(text.trim().indexOf(command) + command.length).trim();
-      return withTyping(ctx, () =>
-        runPunchCommand(
-          {
-            env: ctx.env,
-            config: ctx.config,
-            deadline: ctx.deadline,
-            chatId: ctx.actor.chatId,
-            from: asPrincipal(message.from),
-          },
-          arg || undefined,
-        ),
       );
     }
 

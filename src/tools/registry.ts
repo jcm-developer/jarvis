@@ -6,7 +6,6 @@ import { createEvent, deleteEvent, listEvents, updateEvent } from './calendar';
 import { recall, remember } from './memory';
 import { readUrl, searchWeb } from './search';
 import { completeTask, createTask, deleteTask, listTasks, updateTask } from './tasks';
-import { punchNow, punchStatus } from './timeclock';
 import type { ToolDefinition } from './types';
 
 /**
@@ -35,8 +34,6 @@ export const TOOLS: ToolDefinition[] = [
   logBook,
   listBooks,
   deleteBook,
-  punchNow,
-  punchStatus,
 ];
 
 const BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));

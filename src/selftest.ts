@@ -4,8 +4,6 @@ import { createProvider } from './llm';
 import { LLMError } from './llm/provider';
 import type { Deadline } from './lib/deadline';
 import { buildSystemPrompt } from './prompts/system';
-import { createPunchClient, punchConfigured } from './timeclock';
-import { ACTION_NAMES, TimeclockError } from './timeclock/provider';
 import { toolSchemas } from './tools/registry';
 import type { Env } from './types';
 
@@ -33,7 +31,6 @@ import type { Env } from './types';
 
 /** Caps per step. They add up to more than the budget on purpose: what does not fit is skipped. */
 const MAX_DB_MS = 4_000;
-const MAX_PORTAL_MS = 8_000;
 const MAX_PING_MS = 5_000;
 const MAX_PROMPT_MS = 7_000;
 const MAX_LOADED_MS = 9_000;
@@ -64,63 +61,6 @@ export interface SelfTestDeps {
   timezone: string;
 }
 
-/**
- * `/test html`: the register page as it comes, around the part that matters.
- *
- * A window and not the whole page —Telegram caps a message at 4 KB— centred on the first
- * radio, because what has been impossible to guess from outside is how the page ties each
- * option to its text.
- */
-export async function runPageDump(deps: SelfTestDeps, at?: string): Promise<string> {
-  if (!punchConfigured(deps.env)) return 'No hay credenciales de ficharweb configuradas.';
-
-  let page: { url: string; html: string };
-  try {
-    page = await createPunchClient(deps.env).readPage({
-      timeoutMs: deps.deadline.budgetFor(MAX_PORTAL_MS),
-    });
-  } catch (error) {
-    return `No he podido llegar a la página: ${describe(error)}`;
-  }
-
-  const anchor = anchorIndex(page.html, at);
-  if (anchor < 0) return `No encuentro "${at}" en la página (${page.html.length} caracteres).`;
-
-  const from = Math.max(0, anchor - HTML_BEFORE);
-  const window = page.html.slice(from, from + HTML_WINDOW);
-
-  return [
-    page.url,
-    `${page.html.length} caracteres en total; te enseño ${window.length} desde el ${from}.`,
-    `Para seguir: /test html ${from + window.length}`,
-    '',
-    window,
-  ].join('\n');
-}
-
-/**
- * Where to centre the window.
- *
- * With an argument it is a character offset or a word to look for — walking a 25 KB page
- * 1.400 characters at a time is the difference between one deploy and five. Without one,
- * the first radio, then the reason panel, then the top.
- */
-function anchorIndex(html: string, at?: string): number {
-  if (at) {
-    const offset = Number.parseInt(at, 10);
-    if (Number.isSafeInteger(offset) && String(offset) === at.trim()) {
-      return Math.min(Math.max(0, offset), Math.max(0, html.length - 1)) + HTML_BEFORE;
-    }
-    const found = html.toLowerCase().indexOf(at.trim().toLowerCase());
-    return found >= 0 ? found : -1;
-  }
-
-  const radio = /<input\b[^>]*type=['"]?radio/i.exec(html);
-  if (radio) return radio.index;
-  const panel = html.toLowerCase().indexOf('motivo');
-  return panel >= 0 ? panel : 0;
-}
-
 export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
   const { env, config, deadline } = deps;
   const started = Date.now();
@@ -128,9 +68,6 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
   // Cheapest and most deterministic first, so a slow model cannot eat the budget of the
   // steps that would have answered.
   const db = await measure(MAX_DB_MS, deps, () => checkDb(deps));
-  const portal = punchConfigured(env)
-    ? await measure(MAX_PORTAL_MS, deps, () => checkPortal(deps))
-    : notRun('no hay credenciales configuradas');
   // Three calls and not two, and the middle one is the one that earns its place: it carries
   // the system prompt WITHOUT the tool schemas. Two measurements can only say "it is the
   // size"; three say which half of the size, and the two halves have different fixes.
@@ -146,7 +83,6 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
     'DIAGNÓSTICO',
     '',
     ...block('Base de datos', db, MAX_DB_MS),
-    ...block('Ficharweb', portal, MAX_PORTAL_MS),
     '',
     `MODELO — ${config.llmProvider}, ${config.llmModel}`,
     ...block('Sin nada', ping, MAX_PING_MS, 2),
@@ -163,9 +99,9 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
 /**
  * What a step reports back.
  *
- * `verdict` exists because a step can succeed technically and still be bad news: reading the
- * portal fine and not recognising a single action on it came out as "Ficharweb: bien" with a
- * detail underneath saying the opposite. Only the step knows which of the two it is.
+ * `verdict` exists because a step can succeed technically and still be bad news: a database
+ * that answers in 200 ms and has not one user in it came out as "bien" with a detail
+ * underneath saying the opposite. Only the step knows which of the two it is.
  */
 interface StepResult {
   verdict?: string;
@@ -265,55 +201,6 @@ async function checkDb(deps: SelfTestDeps): Promise<StepResult> {
 }
 
 /**
- * The portal, read-only.
- *
- * It doubles as the check that the page is still one the adapter knows how to read, so a
- * reworded portal shows up when you ask instead of at nine in the morning.
- */
-async function checkPortal(deps: SelfTestDeps): Promise<StepResult> {
-  const state = await createPunchClient(deps.env).readState({
-    timeoutMs: deps.deadline.budgetFor(MAX_PORTAL_MS),
-  });
-
-  if (state.available.length > 0) {
-    const names = state.available.map((action) => ACTION_NAMES[action]).join(', ');
-    const details = [`Ahora mismo puedo fichar: ${names}.`];
-    if (state.lastMovement) {
-      const { time, label } = state.lastMovement;
-      details.push(`Lo último que registró el portal: ${label}, a las ${time}.`);
-    } else {
-      // Stated rather than left blank: an absent line reads like a bug, and this one is a
-      // property of the portal — it paints that panel with JavaScript.
-      details.push('El portal no trae el último movimiento en el HTML: lo pinta con JavaScript.');
-    }
-    return { details };
-  }
-
-  // The empty-handed case, over several lines because each shape points somewhere
-  // different and the one-line version was unreadable in the chat.
-  const { url, sawLoginForm, inputs, controls, snippet, trail } = state.diagnosis;
-  const lines = [`Página: ${url}`];
-  // The route, not just the destination: with three hops, which one went wrong is the
-  // whole question.
-  if (trail.length > 0) lines.push(`Ruta: ${trail.join(' -> ')}`);
-
-  if (sawLoginForm) {
-    lines.push('Sigue en el login: o las credenciales no valen, o no he sabido rellenarlo.');
-  } else if (inputs === 0 && controls === 0) {
-    lines.push('No parece la aplicación: no trae ni formulario ni botones.');
-    if (snippet) lines.push(`Dice: "${snippet}"`);
-  } else {
-    lines.push(
-      `Tiene ${plural(inputs, 'campo')} y ${plural(controls, 'botón', 'botones')}, ` +
-        'ninguno con el texto que espero.',
-    );
-    if (state.labels.length > 0) lines.push(`Botones: ${state.labels.slice(0, 6).join(' / ')}`);
-    if (state.reasons.length > 0) lines.push(`Motivos: ${state.reasons.slice(0, 6).join(' / ')}`);
-  }
-  return { verdict: 'NO LA ENTIENDO', details: lines };
-}
-
-/**
  * One model call, with as much or as little of our own baggage as asked for.
  *
  * The three variants are the measurement: nothing, the prompt, and the prompt with the tool
@@ -336,7 +223,6 @@ async function askModel(
               canSeeImages: true,
               eventAlertMinutes: deps.config.eventAlertMinutes,
               canSearchWeb: true,
-              canPunch: punchConfigured(deps.env),
             }),
           },
         ]
@@ -404,12 +290,6 @@ function diagnose(
 function describe(error: unknown): string {
   if (error instanceof LLMError) {
     return `${error.kind}${error.status ? ` ${error.status}` : ''}`;
-  }
-  // The technical message and not `userMessage`: this command IS the technical channel, and
-  // the polite sentence ("the portal does not respond") hid which hop had failed.
-  if (error instanceof TimeclockError) {
-    const route = error.trail.length > 0 ? ` | ruta: ${error.trail.join(' -> ')}` : '';
-    return `${error.kind}: ${error.message}${route}`;
   }
   return error instanceof Error ? error.message.slice(0, 80) : String(error);
 }

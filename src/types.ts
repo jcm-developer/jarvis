@@ -40,13 +40,7 @@ export interface Env {
    */
   JINA_API_KEY?: string;
 
-  /**
-   * ficharweb, the clock-in portal (phase 22). Without them the punch tools are not
-   * offered and the scheduled punches do nothing: the rest of the assistant is untouched.
-   */
-  TIMECLOCK_USER?: string;
-  TIMECLOCK_PASS?: string;
-  /** cbGesPro, the imputation portal (phase 24). A different login from the punch one. */
+  /** cbGesPro, the imputation portal (phase 24). */
   IMPUTE_USR?: string;
   IMPUTE_PASS?: string;
   /**
@@ -63,14 +57,12 @@ export interface Env {
    */
   VOICE_API_TOKEN?: string;
   /**
-   * Base URLs of both portals.
+   * Base URL of the imputation portal.
    *
-   * Secrets and not vars, even though a hostname is not a credential: wrangler.toml is
+   * A secret and not a var, even though a hostname is not a credential: wrangler.toml is
    * read straight off a public repo, and there is no reason to publish which company's
-   * time-tracking system this talks to. Defaults live in src/timeclock/, so an install
-   * without them still works.
+   * time-tracking system this talks to.
    */
-  TIMECLOCK_BASE_URL?: string;
   IMPUTE_BASE_URL?: string;
 
   // --- Vars (wrangler.toml) ---
