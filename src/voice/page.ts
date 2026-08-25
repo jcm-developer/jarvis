@@ -52,19 +52,82 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     overflow: hidden;
   }
-  /* A very slow wash behind everything, so a still screen never looks frozen. */
-  body::before {
-    content: ''; position: fixed; inset: -20%;
-    background:
-      radial-gradient(40% 40% at 22% 28%, rgba(79,110,247,.10), transparent 70%),
-      radial-gradient(38% 38% at 78% 72%, rgba(139,92,246,.09), transparent 70%);
-    animation: wash 24s ease-in-out infinite alternate;
-    pointer-events: none;
+  /* ---------- the room ---------- */
+  /* Two auras, motes and grain. The auras are a solid colour behind a radial mask rather
+     than a gradient, and that is not a detail: background-color interpolates on a
+     transition and a gradient does not, so the whole room cross-fades when the state
+     changes instead of snapping. */
+  .aura {
+    position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
+    filter: blur(70px); opacity: .16;
+    -webkit-mask: radial-gradient(circle, #000 0%, transparent 70%);
+            mask: radial-gradient(circle, #000 0%, transparent 70%);
+    transition: background-color 1.4s ease, opacity 1.4s ease;
   }
-  @keyframes wash { to { transform: translate3d(3%, -3%, 0) scale(1.08); } }
+  #aura1 { width: 620px; height: 620px; top: -14%; left: -10%; background-color: var(--c1);
+           animation: wander1 26s ease-in-out infinite alternate; }
+  #aura2 { width: 560px; height: 560px; bottom: -16%; right: -12%; background-color: var(--c2);
+           animation: wander2 31s ease-in-out infinite alternate; }
+  @keyframes wander1 { to { transform: translate3d(14vw, 10vh, 0) scale(1.18); } }
+  @keyframes wander2 { to { transform: translate3d(-12vw, -9vh, 0) scale(1.12); } }
+  body[data-state="thinking"] .aura { opacity: .26; }
+  body[data-state="speaking"] .aura { opacity: .22; }
+
+  #motes { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
+  .mote {
+    position: absolute; width: 2px; height: 2px; border-radius: 50%;
+    background: var(--c3); opacity: 0;
+    animation: rise linear infinite;
+    transition: background .9s ease;
+  }
+  @keyframes rise {
+    0%   { transform: translate3d(0, 30px, 0); opacity: 0; }
+    12%  { opacity: .55; }
+    82%  { opacity: .35; }
+    100% { transform: translate3d(14px, -102vh, 0); opacity: 0; }
+  }
+
+  /* Film grain, painted into a canvas at load so the page still ships zero assets. */
+  #grain {
+    position: fixed; inset: -60px; pointer-events: none; z-index: 3;
+    opacity: .035; animation: grain 7s steps(5) infinite;
+  }
+  @keyframes grain {
+    0%   { transform: translate3d(0, 0, 0); }
+    20%  { transform: translate3d(-9px, 5px, 0); }
+    40%  { transform: translate3d(7px, -7px, 0); }
+    60%  { transform: translate3d(-5px, -9px, 0); }
+    80%  { transform: translate3d(9px, 7px, 0); }
+  }
 
   /* ---------- the orb ---------- */
-  #stage { position: relative; width: 280px; height: 280px; display: grid; place-items: center; }
+  #stage { position: relative; width: 280px; height: 280px; display: grid; place-items: center; z-index: 2; }
+
+  /* The spectrum. Real frequency data from whichever AnalyserNode is live — the
+     microphone while you talk, the reply while it talks back — so the ring is a reading
+     and not a loop. Mirrored left to right because a symmetric shape reads as a face
+     rather than as a chart. */
+  #bars { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .45s ease; }
+  .bar {
+    position: absolute; left: 50%; top: 50%;
+    width: 3px; height: 26px; margin-left: -1.5px;
+    border-radius: 2px; background: var(--c3);
+    transform-origin: 50% 0; transform: rotate(0deg) translateY(122px) scaleY(0);
+    transition: background .9s ease;
+  }
+  body[data-state="listening"] #bars,
+  body[data-state="speaking"]  #bars { opacity: .8; }
+
+  .ripple {
+    position: absolute; left: 50%; top: 50%; width: 220px; height: 220px;
+    margin: -110px 0 0 -110px; border-radius: 50%;
+    border: 1px solid var(--c3); pointer-events: none;
+    animation: ripple 1.6s cubic-bezier(.16,1,.3,1) forwards;
+  }
+  @keyframes ripple {
+    from { transform: scale(.98); opacity: .55; }
+    to   { transform: scale(2.2); opacity: 0; }
+  }
 
   #halo {
     position: absolute; width: 300px; height: 300px; border-radius: 50%;
@@ -94,10 +157,17 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
   #orb:disabled { cursor: not-allowed; }
+  #orb.pop { animation: pop .55s cubic-bezier(.22,1,.36,1); }
+  @keyframes pop { 35% { transform: scale(1.13); } }
   #orb:focus-visible { outline: 2px solid var(--c3); outline-offset: 6px; }
 
-  #skin { position: absolute; inset: 0; animation: breathe 6s ease-in-out infinite; }
+  #skin {
+    position: absolute; inset: 0;
+    animation: breathe 6s ease-in-out infinite, hue 28s linear infinite;
+  }
   @keyframes breathe { 50% { transform: scale(1.05); } }
+  /* A drift small enough that you never catch it moving, only notice it moved. */
+  @keyframes hue { 50% { filter: hue-rotate(18deg) saturate(1.15); } }
 
   .blob { position: absolute; inset: -35%; border-radius: 50%; filter: blur(26px); mix-blend-mode: screen; }
   .b1 { background: radial-gradient(circle at 34% 32%, var(--c1), transparent 58%); animation: drift 11s ease-in-out infinite; }
@@ -110,6 +180,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     66%  { transform: rotate(240deg) translate3d(-5%, 6%, 0)   scale(.92); }
     100% { transform: rotate(360deg) translate3d(0, 0, 0)      scale(1); }
   }
+  #gloss {
+    position: absolute; inset: -25%; border-radius: 50%; pointer-events: none;
+    background: conic-gradient(from 0deg, transparent 0 68%, rgba(255,255,255,.12) 80%, transparent 90%);
+    animation: spin 16s linear infinite;
+  }
+
   /* The glass: a highlight up top and a dark rim, so it reads as a sphere and not a disc. */
   #sheen {
     position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
@@ -134,7 +210,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   /* ---------- chrome ---------- */
   #status {
     margin-top: 30px; min-height: 22px; font-size: 14px; color: var(--dim);
-    letter-spacing: .01em; text-align: center; transition: color .3s ease;
+    letter-spacing: .01em; text-align: center;
+    transition: color .3s ease, opacity .16s ease, transform .16s ease;
   }
   body[data-state="error"] #status { color: #fb7185; }
 
@@ -146,7 +223,8 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     color: #fda4af; font: inherit; font-size: 12px; cursor: pointer;
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
-  #wake.on { display: flex; }
+  #wake.on { display: flex; animation: pillglow 3.2s ease-in-out infinite; }
+  @keyframes pillglow { 50% { box-shadow: 0 0 24px -5px rgba(244,63,94,.55); } }
   #wake i { width: 7px; height: 7px; border-radius: 50%; background: #f43f5e; animation: blink 1.6s infinite; }
   @keyframes blink { 50% { opacity: .2; } }
 
@@ -157,6 +235,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     transition: color .25s ease;
   }
   #dots:hover { color: var(--dim); }
+  #dots span {
+    display: inline-block; width: 4px; height: 4px; margin: 0 3px;
+    border-radius: 50%; background: currentColor;
+    animation: bob 1.9s ease-in-out infinite;
+  }
+  #dots span:nth-child(2) { animation-delay: .16s; }
+  #dots span:nth-child(3) { animation-delay: .32s; }
+  @keyframes bob { 50% { transform: translateY(-5px); } }
 
   /* ---------- panel ---------- */
   /* The panel covers the bottom of the screen, and the button that opens it lives there
@@ -190,6 +276,17 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     transition: transform .38s cubic-bezier(.22,1,.36,1);
   }
   #panel.open { transform: translateY(0); }
+  /* The panel's sections arrive one after another instead of all at once. */
+  #panel.open #panelInner > * { animation: rise-in .5s cubic-bezier(.22,1,.36,1) backwards; }
+  #panel.open #panelInner > *:nth-child(1) { animation-delay: .05s; }
+  #panel.open #panelInner > *:nth-child(2) { animation-delay: .09s; }
+  #panel.open #panelInner > *:nth-child(3) { animation-delay: .13s; }
+  #panel.open #panelInner > *:nth-child(4) { animation-delay: .17s; }
+  #panel.open #panelInner > *:nth-child(5) { animation-delay: .21s; }
+  #panel.open #panelInner > *:nth-child(6) { animation-delay: .25s; }
+  #panel.open #panelInner > *:nth-child(7) { animation-delay: .29s; }
+  #panel.open #panelInner > *:nth-child(8) { animation-delay: .33s; }
+  @keyframes rise-in { from { opacity: 0; transform: translateY(16px); } }
   #panelInner { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
   #panel h2 {
     margin: 0 0 6px; font-size: 10px; font-weight: 600; letter-spacing: .14em;
@@ -225,6 +322,14 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     background: rgba(255,255,255,.04); color: var(--fg);
     transition: background .2s, border-color .2s;
   }
+  .btn { position: relative; overflow: hidden; }
+  /* A light sweeping across the button on hover. Transform only, so it costs nothing. */
+  .btn::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(105deg, transparent 32%, rgba(255,255,255,.13) 50%, transparent 68%);
+    transform: translateX(-130%); transition: transform .65s cubic-bezier(.22,1,.36,1);
+  }
+  .btn:hover::after { transform: translateX(130%); }
   .btn:hover { background: rgba(255,255,255,.08); }
   .btn.yes { border-color: rgba(52,211,153,.4); }
   .btn.no  { border-color: rgba(244,63,94,.35); }
@@ -245,6 +350,9 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     transform: translateY(12px) scale(.98); transition: transform .3s cubic-bezier(.22,1,.36,1);
   }
   #confirm.open #confirmBox { transform: none; }
+  #confirm.open #confirmBox > * { animation: rise-in .45s cubic-bezier(.22,1,.36,1) backwards; }
+  #confirm.open #confirmBox > *:nth-child(2) { animation-delay: .06s; }
+  #confirm.open #confirmBox > *:nth-child(3) { animation-delay: .12s; }
   #confirmText { margin: 0 0 18px; white-space: pre-wrap; }
   #confirmBox .field { gap: 10px; }
   #confirmBox .btn { flex: 1; }
@@ -256,12 +364,18 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   .hidden { display: none !important; }
 
   @media (prefers-reduced-motion: reduce) {
-    body::before, #skin, .blob, #ring { animation: none !important; }
-    #orb, #halo { transition: none; }
+    *, *::before, *::after { animation: none !important; }
+    #orb, #halo, .bar { transition: none !important; }
+    #motes, #grain, #gloss { display: none; }
   }
 </style>
 </head>
 <body data-state="idle">
+
+<div class="aura" id="aura1"></div>
+<div class="aura" id="aura2"></div>
+<div id="motes"></div>
+<div id="grain"></div>
 
 <div id="setup" class="hidden">
   <h1 style="margin:0;font-size:17px;font-weight:600">Jarvis</h1>
@@ -274,11 +388,13 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   <div id="stage">
     <div id="halo"></div>
     <div id="ring"></div>
+    <div id="bars"></div>
     <button id="orb" aria-label="Hablar">
       <div id="skin">
         <span class="blob b1"></span><span class="blob b2"></span>
         <span class="blob b3"></span><span class="blob b4"></span>
       </div>
+      <span id="gloss"></span>
       <span id="sheen"></span>
     </button>
   </div>
@@ -287,7 +403,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
 <button id="wake"><i></i><span id="wakeLabel">Escuchando · di «oye Jarvis»</span></button>
 
-<button id="dots" class="hidden" aria-label="Detalles">···</button>
+<button id="dots" class="hidden" aria-label="Detalles"><span></span><span></span><span></span></button>
 
 <div id="panelBack"></div>
 
@@ -360,12 +476,127 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   var recordStartedAt = 0, lastRecordMs = 0, heardSomething = false, localText = '';
   var pendingToken = '';
 
+  // ---- decor ------------------------------------------------------------
+  // Built in code rather than written into the markup: 16 motes and 56 bars are 72 lines
+  // of HTML nobody would ever read, and the only thing that varies between them is a
+  // number.
+  var NBARS = 56, bars = [];
+
+  (function buildDecor() {
+    var motes = $('motes');
+    for (var i = 0; i < 16; i++) {
+      var mote = document.createElement('span');
+      mote.className = 'mote';
+      mote.style.left = (Math.random() * 100) + '%';
+      mote.style.bottom = '-10px';
+      mote.style.animationDuration = (26 + Math.random() * 26) + 's';
+      mote.style.animationDelay = (-Math.random() * 40) + 's';
+      motes.appendChild(mote);
+    }
+
+    var ring = $('bars');
+    for (var b = 0; b < NBARS; b++) {
+      var bar = document.createElement('span');
+      bar.className = 'bar';
+      bar.dataset.angle = String((360 / NBARS) * b);
+      ring.appendChild(bar);
+      bars.push(bar);
+    }
+
+    // Grain painted once into a canvas. A texture that ships as an asset would be the
+    // only file this page needs; a texture it draws itself is not a file at all.
+    try {
+      var canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 96;
+      var g = canvas.getContext('2d');
+      var img = g.createImageData(96, 96);
+      for (var d = 0; d < img.data.length; d += 4) {
+        var v = 190 + Math.random() * 65;
+        img.data[d] = img.data[d + 1] = img.data[d + 2] = v;
+        img.data[d + 3] = 26;
+      }
+      g.putImageData(img, 0, 0);
+      $('grain').style.backgroundImage = 'url(' + canvas.toDataURL() + ')';
+    } catch (e) { $('grain').style.display = 'none'; }
+  })();
+
+  function setBars(values) {
+    for (var i = 0; i < NBARS; i++) {
+      bars[i].style.transform =
+        'rotate(' + bars[i].dataset.angle + 'deg) translateY(122px) scaleY(' + values[i].toFixed(3) + ')';
+    }
+  }
+  function resetBars() { setBars(new Array(NBARS).fill(0)); }
+
+  /** A ring pushed outwards from the orb. Removes itself; nothing accumulates. */
+  function ripple() {
+    var node = document.createElement('div');
+    node.className = 'ripple';
+    $('stage').appendChild(node);
+    setTimeout(function () { node.remove(); }, 1700);
+  }
+
+  // ---- spectrum ---------------------------------------------------------
+  // One loop for both ends of a turn. Whichever analyser is live drives the ring, so the
+  // microphone and the reply are drawn by exactly the same code.
+  var liveAnalyser = null, spectrumRaf = 0, spectrumBuf = null, smoothed = new Array(NBARS).fill(0);
+
+  function driveSpectrum(analyser) {
+    liveAnalyser = analyser;
+    spectrumBuf = new Uint8Array(analyser.frequencyBinCount);
+    if (!spectrumRaf) spectrumRaf = requestAnimationFrame(spectrumTick);
+  }
+
+  function stopSpectrum() {
+    liveAnalyser = null;
+    cancelAnimationFrame(spectrumRaf);
+    spectrumRaf = 0;
+    smoothed = new Array(NBARS).fill(0);
+    resetBars();
+  }
+
+  function spectrumTick() {
+    if (!liveAnalyser) { spectrumRaf = 0; return; }
+    liveAnalyser.getByteFrequencyData(spectrumBuf);
+    var half = NBARS / 2;
+    var usable = Math.floor(spectrumBuf.length * 0.55);
+    var next = new Array(NBARS);
+    for (var i = 0; i < NBARS; i++) {
+      // Mirrored, and biased towards the low end: voice lives in the first bins and a
+      // linear map would leave two thirds of the ring flat.
+      var k = Math.min(i, NBARS - 1 - i) / half;
+      var bin = Math.min(usable - 1, Math.floor(Math.pow(k, 1.55) * usable));
+      var target = spectrumBuf[bin] / 255;
+      // Rising fast and falling slow is what makes it read as a voice and not as noise.
+      var previous = smoothed[i];
+      smoothed[i] = target > previous ? target : previous * 0.82 + target * 0.18;
+      next[i] = 0.08 + smoothed[i] * 1.5;
+    }
+    setBars(next);
+    spectrumRaf = requestAnimationFrame(spectrumTick);
+  }
+
   // ---- state ------------------------------------------------------------
   // One place decides what the orb looks like and what the line under it says. Every
   // path through the app ends here, which is why there is no state the user cannot name.
+  var lastState = '';
   function setState(state, text) {
+    var changed = state !== lastState;
+    lastState = state;
     document.body.dataset.state = state;
-    if (text !== undefined) $('status').textContent = text;
+    if (text === undefined) return;
+
+    var status = $('status');
+    // The counter while thinking rewrites this line ten times a second. Cross-fading
+    // that would be a strobe, so only a real change of state gets the transition.
+    if (!changed) { status.textContent = text; return; }
+    status.style.opacity = '0';
+    status.style.transform = 'translateY(5px)';
+    setTimeout(function () {
+      status.textContent = text;
+      status.style.opacity = '';
+      status.style.transform = '';
+    }, 150);
   }
   function level(value) {
     document.body.style.setProperty('--l', String(Math.max(0, Math.min(1, value))));
@@ -467,6 +698,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       source.connect(micAnalyser);
     } catch (e) { micAnalyser = null; heardSomething = true; return; }
 
+    driveSpectrum(micAnalyser);
     var read = reader(micAnalyser);
     var startedAt = Date.now(), noise = 0, samples = 0, threshold = 0.02;
     var lastLoud = Date.now();
@@ -495,6 +727,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 
   function stopMeter() {
     clearInterval(meterTimer); meterTimer = null; micAnalyser = null;
+    stopSpectrum();
     if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; }
     level(0);
   }
@@ -547,6 +780,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     recording = true;
     recordStartedAt = Date.now();
     startMeter();
+    ripple();
     setState('listening', mode === 'hold' ? 'Te escucho…' : 'Te escucho… calla y lo envío');
   }
 
@@ -710,6 +944,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
         cancelAnimationFrame(raf);
         URL.revokeObjectURL(url);
         if (ctx) { try { ctx.close(); } catch (e) {} }
+        stopSpectrum();
         level(0);
       }
       function done() {
@@ -722,6 +957,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       audio.onerror = function () { cleanup(); setState('error', 'El audio no se pudo reproducir.'); setTimeout(idle, 2600); resolve(); };
 
       setState('speaking', 'Hablando…');
+      ripple();
       audio.play().then(function () {
         try {
           var Ctx = window.AudioContext || window.webkitAudioContext;
@@ -730,6 +966,7 @@ export const VOICE_TEST_PAGE = `<!doctype html>
           analyser.fftSize = 512;
           ctx.createMediaElementSource(audio).connect(analyser);
           analyser.connect(ctx.destination);
+          driveSpectrum(analyser);
           var read = reader(analyser);
           var tick = function () { level(read() * 4.5); raf = requestAnimationFrame(tick); };
           tick();
@@ -869,6 +1106,12 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     // abort() and not stop(): stop() waits for a final result, and by then the first word
     // of the actual request is already gone.
     try { recognition.abort(); } catch (e) {}
+    // The pop is the receipt for the wake word: you said the name and something happened,
+    // before any text has had time to appear.
+    $('orb').classList.remove('pop');
+    void $('orb').offsetWidth;
+    $('orb').classList.add('pop');
+    setTimeout(function () { $('orb').classList.remove('pop'); }, 600);
     start();
   }
 
