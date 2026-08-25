@@ -88,7 +88,15 @@ export function norm(text: string): string {
     .trim();
 }
 
-const TAG_ATTRS = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+/**
+ * Attributes, with or without a value.
+ *
+ * The value is optional and that is not tidiness: `checked`, `selected` and `disabled` are
+ * written bare in real HTML, and this page writes the checked radio exactly that way. With
+ * a regex that demanded `=`, the selected option was invisible — so the state we posted back
+ * was missing the very field the page had already chosen.
+ */
+const TAG_ATTRS = /([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 
 function attributes(tag: string): Record<string, string> {
   const attrs: Record<string, string> = {};
@@ -170,10 +178,63 @@ function phaseOf(attrs: Record<string, string>): { phase?: 'S' | 'E' } {
   return { phase: call[1]!.trim().toLowerCase() === 'send' ? 'S' : 'E' };
 }
 
-export function parseForm(html: string): ParsedForm {
-  const formTag = /<form\b[^>]*>/i.exec(html);
-  const action = formTag ? (attributes(formTag[0])['action'] ?? null) : null;
+/**
+ * The page's forms, tag and contents, in document order.
+ *
+ * Forms do not nest, so a non-greedy match between the open and close tags is exact. A form
+ * left unclosed —which happens— takes the rest of the document, which is what a browser
+ * does with it too.
+ */
+interface FormBlock {
+  tag: string;
+  body: string;
+  from: number;
+  to: number;
+}
 
+function formBlocks(html: string): FormBlock[] {
+  const blocks: FormBlock[] = [];
+  for (const match of html.matchAll(/<form\b[^>]*>/gi)) {
+    const from = match.index + match[0].length;
+    const close = html.toLowerCase().indexOf('</form', from);
+    const to = close < 0 ? html.length : close;
+    blocks.push({ tag: match[0], body: html.slice(from, to), from, to });
+  }
+  return blocks;
+}
+
+/**
+ * Which form the page means, and it is not always the first one.
+ *
+ * A browser posts the fields of the form that contains the button that was pressed, to that
+ * form's own action. This code used to take the first `<form>` on the page for its action
+ * and every `<input>` in the document for its body, which is the same thing only while
+ * there is exactly one form. The register page is not that page: it carries the punch form
+ * plus whatever the layout around it puts there, so the punch was being posted to another
+ * form's endpoint carrying another form's fields.
+ *
+ * The order is the order of what we came for: the form with the punch buttons, then the one
+ * with the password, then the first one there is.
+ */
+function pickForm(blocks: FormBlock[]): FormBlock | null {
+  if (blocks.length === 0) return null;
+  const punch = blocks.find((block) => /name\s*=\s*['"]?bmotivo/i.test(block.body));
+  if (punch) return punch;
+  const login = blocks.find((block) => /<input\b[^>]*type\s*=\s*['"]?password/i.test(block.body));
+  return login ?? blocks[0]!;
+}
+
+export function parseForm(html: string): ParsedForm {
+  const blocks = formBlocks(html);
+  const chosen = pickForm(blocks);
+  const action = chosen ? (attributes(chosen.tag)['action'] ?? null) : null;
+
+  // Controls are read from the whole document and fields only from the chosen form, and the
+  // asymmetry is deliberate. A button that submits through `$("#fr").submit()` does not have
+  // to live inside `#fr` —that call is precisely how a page submits a form from outside it—
+  // so scoping the buttons would risk losing the one we came to press. A field outside the
+  // form, on the other hand, is a field a browser would never send.
+  const inside = (at: number): boolean => !chosen || (at >= chosen.from && at < chosen.to);
   const inputs: FormInput[] = [];
   const controls: FormControl[] = [];
 
@@ -198,6 +259,7 @@ export function parseForm(html: string): ParsedForm {
 
     // Unnamed inputs are decoration: the browser would not send them either.
     if (!name) continue;
+    if (!inside(match.index)) continue;
 
     // Unchecked boxes and unselected radios are not sent by a browser, so sending them
     // would be inventing a state the user never chose.
@@ -247,7 +309,7 @@ export function parseForm(html: string): ParsedForm {
     });
   }
 
-  return { hasForm: formTag !== null, action, inputs, controls, radios: parseRadios(html) };
+  return { hasForm: chosen !== null, action, inputs, controls, radios: parseRadios(html) };
 }
 
 /**
