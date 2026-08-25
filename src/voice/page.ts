@@ -1,19 +1,21 @@
 /**
- * The test client, served as one inline string.
+ * The voice client, served as one inline string.
  *
- * No build step, no framework, no dependency: a page that needs `npm run build` to answer
- * "where do the seconds go" is a page that will be out of date the first time it matters.
+ * No build step, no framework, no CDN: the page is a `<style>` and a `<script>` inside a
+ * template literal, and that is a decision rather than laziness. A Tailwind CDN was tried
+ * on paper and dropped for the obvious reason — a page whose only job is to talk to this
+ * Worker should not stop looking like itself because someone else's host is down.
  *
- * Two ways in, and the default is the comfortable one: press once and talk, and the
- * recorder cuts itself after about a second and a half of silence. Hold-to-talk is still
- * there for a noisy room, where that detector is the thing getting in the way.
+ * The screen is one orb and nothing else. Everything that used to be on it —transcript,
+ * reply, per-stage times, the mode switch, the text box— still exists, one tap away behind
+ * the dots. That split is the whole design: the orb is for using it, the panel is for
+ * finding out why it did something odd, and the second job must not tax the first.
  *
- * It is an instrument and not a demo. Everything on screen is a reading — the transcript
- * so a bad answer can be blamed on the STT instead of the model, the reply text so a
- * failed synthesis still leaves something to read, and the per-stage times because that is
- * the deliverable of this phase. `red` is the interesting one and it is derived, not
- * reported: the client's total minus the server's total is everything that happened on the
- * wire, which is precisely the number a hosted STT/TTS is being judged on.
+ * The orb is driven by real numbers, never by a decorative loop. While recording it scales
+ * with the microphone's RMS, and while answering it scales with the RMS of the audio being
+ * played through an AnalyserNode. So "is it hearing me" and "is it still talking" are
+ * answered by the same shape, and a dead microphone shows up as an orb that does not move —
+ * which is exactly the failure that cost an afternoon.
  *
  * The token is never in here. It is typed once by a person and kept in that browser's
  * localStorage, so this file can be served to anyone: without a token, /voice answers 401.
@@ -23,232 +25,336 @@ export const VOICE_TEST_PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Jarvis — voz</title>
+<title>Jarvis</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #07080c;
+    --fg: #e8eaf0;
+    --dim: #6b7280;
+    --line: rgba(255,255,255,.07);
+    --c1: #4f6ef7; --c2: #8b5cf6; --c3: #22d3ee;
+  }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
   body {
-    margin: 0; min-height: 100vh; padding: 24px 16px 40px;
-    background: #0f1115; color: #e6e8ec;
-    font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    display: flex; flex-direction: column; align-items: center; gap: 20px;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    overflow: hidden;
   }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; color: #8b93a7; letter-spacing: .04em; }
-  .wrap { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 16px; }
-  #talk {
-    width: 100%; padding: 34px 16px; border-radius: 14px; border: 1px solid #2a2f3a;
-    background: #171b23; color: #e6e8ec; font: inherit; font-size: 17px; font-weight: 600;
-    cursor: pointer; touch-action: none; user-select: none; transition: background .12s, border-color .12s;
+  /* A very slow wash behind everything, so a still screen never looks frozen. */
+  body::before {
+    content: ''; position: fixed; inset: -20%;
+    background:
+      radial-gradient(40% 40% at 22% 28%, rgba(79,110,247,.10), transparent 70%),
+      radial-gradient(38% 38% at 78% 72%, rgba(139,92,246,.09), transparent 70%);
+    animation: wash 24s ease-in-out infinite alternate;
+    pointer-events: none;
   }
-  #talk:disabled { opacity: .4; cursor: not-allowed; }
-  #talk.rec { background: #3a1620; border-color: #7d2437; }
-  #status { display: flex; align-items: center; gap: 10px; font-size: 14px; color: #8b93a7; min-height: 22px; }
-  #dot { width: 9px; height: 9px; border-radius: 50%; background: #4b5263; flex: none; }
-  #dot.rec { background: #e0415f; animation: pulse 1s infinite; }
-  #dot.busy { background: #d99b28; animation: pulse 1s infinite; }
-  #dot.play { background: #3ba55d; }
-  #dot.err { background: #e0415f; }
-  @keyframes pulse { 50% { opacity: .25; } }
-  .card { border: 1px solid #232833; border-radius: 12px; padding: 12px 14px; background: #12151c; }
-  .card h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-             letter-spacing: .09em; color: #6b7386; }
-  .card p { margin: 0; white-space: pre-wrap; word-break: break-word; }
-  .muted { color: #6b7386; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  @keyframes wash { to { transform: translate3d(3%, -3%, 0) scale(1.08); } }
+
+  /* ---------- the orb ---------- */
+  #stage { position: relative; width: 280px; height: 280px; display: grid; place-items: center; }
+
+  #halo {
+    position: absolute; width: 300px; height: 300px; border-radius: 50%;
+    background: radial-gradient(circle, var(--c1) 0%, transparent 62%);
+    opacity: .30; filter: blur(46px);
+    transform: scale(calc(1 + var(--l, 0) * .45));
+    transition: transform .1s ease-out, opacity .5s ease, background .8s ease;
+  }
+
+  #ring {
+    position: absolute; width: 248px; height: 248px; border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0 62%, var(--c3) 78%, transparent 92%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+            mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+    opacity: 0; transition: opacity .45s ease;
+    animation: spin 1.5s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #orb {
+    position: relative; width: 220px; height: 220px; border-radius: 50%;
+    border: 0; padding: 0; cursor: pointer; overflow: hidden;
+    background: #0b0d13;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 24px 60px -20px rgba(0,0,0,.9);
+    transform: scale(calc(1 + var(--l, 0) * .17));
+    transition: transform .1s cubic-bezier(.22,1,.36,1);
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  #orb:disabled { cursor: not-allowed; }
+  #orb:focus-visible { outline: 2px solid var(--c3); outline-offset: 6px; }
+
+  #skin { position: absolute; inset: 0; animation: breathe 6s ease-in-out infinite; }
+  @keyframes breathe { 50% { transform: scale(1.05); } }
+
+  .blob { position: absolute; inset: -35%; border-radius: 50%; filter: blur(26px); mix-blend-mode: screen; }
+  .b1 { background: radial-gradient(circle at 34% 32%, var(--c1), transparent 58%); animation: drift 11s ease-in-out infinite; }
+  .b2 { background: radial-gradient(circle at 68% 40%, var(--c2), transparent 56%); animation: drift 15s ease-in-out infinite reverse; }
+  .b3 { background: radial-gradient(circle at 46% 74%, var(--c3), transparent 54%); animation: drift 19s ease-in-out infinite; }
+  .b4 { background: radial-gradient(circle at 74% 70%, var(--c1), transparent 50%); animation: drift 23s ease-in-out infinite reverse; opacity: .75; }
+  @keyframes drift {
+    0%   { transform: rotate(0deg)   translate3d(0, 0, 0)      scale(1); }
+    33%  { transform: rotate(120deg) translate3d(7%, -5%, 0)   scale(1.12); }
+    66%  { transform: rotate(240deg) translate3d(-5%, 6%, 0)   scale(.92); }
+    100% { transform: rotate(360deg) translate3d(0, 0, 0)      scale(1); }
+  }
+  /* The glass: a highlight up top and a dark rim, so it reads as a sphere and not a disc. */
+  #sheen {
+    position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+    background:
+      radial-gradient(58% 46% at 34% 22%, rgba(255,255,255,.16), transparent 60%),
+      radial-gradient(100% 100% at 50% 120%, rgba(0,0,0,.55), transparent 62%);
+  }
+
+  /* ---------- states ---------- */
+  body[data-state="listening"] { --c1: #22d3ee; --c2: #3b82f6; --c3: #34d399; }
+  body[data-state="thinking"]  { --c1: #f59e0b; --c2: #ec4899; --c3: #a78bfa; }
+  body[data-state="speaking"]  { --c1: #34d399; --c2: #22d3ee; --c3: #60a5fa; }
+  body[data-state="error"]     { --c1: #f43f5e; --c2: #fb7185; --c3: #f59e0b; }
+
+  body[data-state="thinking"] #ring { opacity: .9; }
+  body[data-state="thinking"] #skin { animation-duration: 2.6s; }
+  body[data-state="listening"] #halo { opacity: .5; }
+  body[data-state="speaking"]  #halo { opacity: .5; }
+  body[data-state="error"] #orb { animation: shake .45s ease; }
+  @keyframes shake { 25% { transform: translateX(-7px); } 75% { transform: translateX(7px); } }
+
+  /* ---------- chrome ---------- */
+  #status {
+    margin-top: 30px; min-height: 22px; font-size: 14px; color: var(--dim);
+    letter-spacing: .01em; text-align: center; transition: color .3s ease;
+  }
+  body[data-state="error"] #status { color: #fb7185; }
+
+  #dots {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    border: 0; background: none; color: #333947; cursor: pointer;
+    font-size: 20px; line-height: 1; letter-spacing: 3px; padding: 10px 16px;
+    transition: color .25s ease;
+  }
+  #dots:hover { color: var(--dim); }
+
+  /* ---------- panel ---------- */
+  #panel {
+    position: fixed; inset: auto 0 0 0; z-index: 5;
+    max-height: 82vh; overflow-y: auto;
+    padding: 22px 20px 28px;
+    background: rgba(10,12,17,.92);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--line);
+    border-radius: 20px 20px 0 0;
+    transform: translateY(101%);
+    transition: transform .38s cubic-bezier(.22,1,.36,1);
+  }
+  #panel.open { transform: translateY(0); }
+  #panelInner { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+  #panel h2 {
+    margin: 0 0 6px; font-size: 10px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: #4b5263;
+  }
+  #panel p { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+  .empty { color: #e8a33d; font-style: italic; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; color: #9aa1b1; }
   td { padding: 3px 0; }
-  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
   td.slow { color: #e8a33d; }
-  .row { display: flex; gap: 10px; }
-  .row button {
-    flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #2a2f3a;
-    background: #171b23; color: #e6e8ec; font: inherit; cursor: pointer;
+
+  .seg { display: flex; gap: 6px; }
+  .seg button {
+    flex: 1; padding: 9px; font: inherit; font-size: 13px; cursor: pointer;
+    border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--dim);
+    transition: color .2s, border-color .2s, background .2s;
   }
-  .row button.yes { border-color: #2f6b45; }
-  .row button.no  { border-color: #6b2f3a; }
+  .seg button.on { color: var(--fg); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.04); }
+
   input {
-    width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid #2a2f3a;
-    background: #0b0d12; color: #e6e8ec; font: inherit;
+    width: 100%; padding: 12px 14px; font: inherit; font-size: 14px;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: rgba(255,255,255,.03); color: var(--fg); outline: none;
+    transition: border-color .2s;
   }
-  .log { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow-y: auto; }
-  .turn { display: flex; flex-direction: column; gap: 2px; }
-  .turn b { font-size: 10px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; }
-  .turn.me b { color: #5b8dd9; }
-  .turn.bot b { color: #4a9d6b; }
-  .turn.me span, .turn.bot span { white-space: pre-wrap; word-break: break-word; }
-  .turn.empty span { color: #e8a33d; font-style: italic; }
-  .composer { display: flex; gap: 8px; }
-  .composer input { flex: 1; }
-  .composer button { padding: 11px 16px; border-radius: 10px; border: 1px solid #2a2f3a;
-                     background: #171b23; color: #e6e8ec; font: inherit; cursor: pointer; }
-  .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .head button { border: 0; background: none; color: #4b5263; font: inherit; font-size: 11px;
-                 cursor: pointer; padding: 0; }
-  .modes { display: flex; gap: 8px; }
-  .modes button {
-    flex: 1; padding: 9px; border-radius: 9px; border: 1px solid #232833;
-    background: #12151c; color: #6b7386; font: inherit; font-size: 13px; cursor: pointer;
+  input:focus { border-color: rgba(255,255,255,.2); }
+  .field { display: flex; gap: 8px; }
+  .field input { flex: 1; }
+  .btn {
+    padding: 12px 18px; font: inherit; font-size: 14px; cursor: pointer;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: rgba(255,255,255,.04); color: var(--fg);
+    transition: background .2s, border-color .2s;
   }
-  .modes button.on { border-color: #3d4657; color: #e6e8ec; background: #171b23; }
-  #level { height: 4px; border-radius: 2px; background: #1a1e26; overflow: hidden; }
-  #levelFill { height: 100%; width: 0; background: #3ba55d; transition: width .08s linear; }
-  .hidden { display: none; }
-  footer { font-size: 12px; color: #4b5263; text-align: center; }
-  footer a { color: #6b7386; }
+  .btn:hover { background: rgba(255,255,255,.08); }
+  .btn.yes { border-color: rgba(52,211,153,.4); }
+  .btn.no  { border-color: rgba(244,63,94,.35); }
+  .link { border: 0; background: none; color: #4b5263; font: inherit; font-size: 12px; cursor: pointer; padding: 0; }
+  .link:hover { color: var(--dim); }
+
+  /* ---------- confirmation ---------- */
+  #confirm {
+    position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+    padding: 24px; background: rgba(5,6,9,.72);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    opacity: 0; pointer-events: none; transition: opacity .3s ease;
+  }
+  #confirm.open { opacity: 1; pointer-events: auto; }
+  #confirmBox {
+    width: 100%; max-width: 420px; padding: 22px;
+    border-radius: 18px; border: 1px solid var(--line); background: #0d1017;
+    transform: translateY(12px) scale(.98); transition: transform .3s cubic-bezier(.22,1,.36,1);
+  }
+  #confirm.open #confirmBox { transform: none; }
+  #confirmText { margin: 0 0 18px; white-space: pre-wrap; }
+  #confirmBox .field { gap: 10px; }
+  #confirmBox .btn { flex: 1; }
+
+  /* ---------- token gate ---------- */
+  #setup { width: 100%; max-width: 380px; padding: 0 20px; display: flex; flex-direction: column; gap: 12px; }
+  #setup p { margin: 0; font-size: 13px; color: var(--dim); }
+
+  .hidden { display: none !important; }
+
+  @media (prefers-reduced-motion: reduce) {
+    body::before, #skin, .blob, #ring { animation: none !important; }
+    #orb, #halo { transition: none; }
+  }
 </style>
 </head>
-<body>
-<div class="wrap">
-  <h1>JARVIS · CANAL DE VOZ</h1>
+<body data-state="idle">
 
-  <div id="setup" class="card hidden">
-    <h2>Token</h2>
-    <p class="muted" style="margin-bottom:8px">Se guarda solo en este navegador. No viaja en la URL.</p>
-    <input id="token" type="password" autocomplete="off" placeholder="VOICE_API_TOKEN">
-    <div class="row" style="margin-top:10px"><button id="save">Guardar</button></div>
+<div id="setup" class="hidden">
+  <h1 style="margin:0;font-size:17px;font-weight:600">Jarvis</h1>
+  <p>Pega el token. Se guarda solo en este navegador y no viaja en la URL.</p>
+  <input id="token" type="password" autocomplete="off" placeholder="VOICE_API_TOKEN">
+  <button class="btn" id="save">Entrar</button>
+</div>
+
+<div id="app" class="hidden">
+  <div id="stage">
+    <div id="halo"></div>
+    <div id="ring"></div>
+    <button id="orb" aria-label="Hablar">
+      <div id="skin">
+        <span class="blob b1"></span><span class="blob b2"></span>
+        <span class="blob b3"></span><span class="blob b4"></span>
+      </div>
+      <span id="sheen"></span>
+    </button>
   </div>
+  <div id="status">Toca para hablar</div>
+</div>
 
-  <div id="app" class="hidden">
-    <div class="modes">
-      <button id="modeToggle">Pulsar y hablar</button>
-      <button id="modeHold">Mantener pulsado</button>
+<button id="dots" class="hidden" aria-label="Detalles">···</button>
+
+<div id="panel">
+  <div id="panelInner">
+    <div>
+      <h2>Te he oído</h2>
+      <p id="heard" class="empty">—</p>
     </div>
-    <button id="talk">Pulsa para hablar</button>
-    <div id="level"><div id="levelFill"></div></div>
-    <div id="status"><span id="dot"></span><span id="statusText">Listo.</span></div>
-
-    <div id="confirm" class="card hidden">
-      <h2>Necesita confirmación</h2>
-      <p id="confirmText"></p>
-      <div class="row" style="margin-top:10px">
-        <button class="yes" id="yes">Confirmar</button>
-        <button class="no" id="no">Cancelar</button>
+    <div>
+      <h2>Respuesta</h2>
+      <p id="said" class="empty">—</p>
+    </div>
+    <div id="noticeBox" class="hidden">
+      <h2>Aviso</h2>
+      <p id="notice" style="color:#e8a33d">—</p>
+    </div>
+    <div id="timesBox" class="hidden">
+      <h2>Tiempos</h2>
+      <table id="times"></table>
+    </div>
+    <div>
+      <h2>Modo</h2>
+      <div class="seg">
+        <button id="modeToggle">Tocar y hablar</button>
+        <button id="modeHold">Mantener pulsado</button>
       </div>
     </div>
-
-    <div class="composer">
-      <input id="say" type="text" autocomplete="off" placeholder="…o escríbelo aquí y pulsa Enter">
-      <button id="send">Enviar</button>
+    <div>
+      <h2>Escribir en vez de hablar</h2>
+      <div class="field">
+        <input id="say" type="text" autocomplete="off" placeholder="Escríbelo y pulsa Enter">
+        <button class="btn" id="send">Enviar</button>
+      </div>
     </div>
-
-    <div id="logCard" class="card hidden">
-      <div class="head"><h2>Conversación</h2><button id="clearLog">limpiar vista</button></div>
-      <div id="log" class="log"></div>
-    </div>
-
-    <div id="noticeCard" class="card hidden"><h2>Aviso</h2><p id="notice" class="muted"></p></div>
-    <div id="timesCard" class="card hidden"><h2>Tiempos</h2><table id="times"></table></div>
+    <button class="link" id="forget">Olvidar el token de este navegador</button>
   </div>
-
-  <footer>La barra espaciadora hace lo mismo que el botón.<br>Los tiempos también quedan en <code>wrangler tail</code>.</footer>
 </div>
+
+<div id="confirm">
+  <div id="confirmBox">
+    <h2 style="margin:0 0 8px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#4b5263">Confirma</h2>
+    <p id="confirmText"></p>
+    <div class="field">
+      <button class="btn no" id="no">Cancelar</button>
+      <button class="btn yes" id="yes">Confirmar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
   var KEY = 'jarvis.voice.token';
+  var MODE_KEY = 'jarvis.voice.mode';
   var $ = function (id) { return document.getElementById(id); };
-  var token = '';
+
+  var token = '', mode = 'toggle';
   var recorder = null, chunks = [], stream = null, recording = false, busy = false;
-  var recordStartedAt = 0, lastRecordMs = 0;
+  var recordStartedAt = 0, lastRecordMs = 0, heardSomething = false, localText = '';
+  var pendingToken = '';
+
+  // ---- state ------------------------------------------------------------
+  // One place decides what the orb looks like and what the line under it says. Every
+  // path through the app ends here, which is why there is no state the user cannot name.
+  function setState(state, text) {
+    document.body.dataset.state = state;
+    if (text !== undefined) $('status').textContent = text;
+  }
+  function level(value) {
+    document.body.style.setProperty('--l', String(Math.max(0, Math.min(1, value))));
+  }
 
   // ---- token ------------------------------------------------------------
-  try { token = localStorage.getItem(KEY) || ''; } catch (e) { token = ''; }
-  showToken(!token);
+  try { token = localStorage.getItem(KEY) || ''; } catch (e) {}
+  gate(!token);
   $('save').onclick = function () {
     var value = $('token').value.trim();
     if (!value) return;
     token = value;
     try { localStorage.setItem(KEY, value); } catch (e) {}
     $('token').value = '';
-    showToken(false);
+    gate(false);
   };
-  function showToken(needed) {
+  $('token').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); $('save').click(); }
+    e.stopPropagation();
+  });
+  $('forget').onclick = function () { closePanel(); forgetToken(); };
+
+  function gate(needed) {
     $('setup').classList.toggle('hidden', !needed);
     $('app').classList.toggle('hidden', needed);
+    $('dots').classList.toggle('hidden', needed);
   }
   function forgetToken() {
     token = '';
     try { localStorage.removeItem(KEY); } catch (e) {}
-    showToken(true);
+    gate(true);
   }
 
-  // ---- conversation log -------------------------------------------------
-  // The transcript of every turn, kept on screen. It is the answer to the question this
-  // page exists for: when the assistant says it has nothing to note down, the only way to
-  // tell a bad recording from a bad answer is to read what it actually heard.
-  //
-  // It survives a reload because the interesting case —"it has been doing this all
-  // afternoon"— is exactly the one you lose by refreshing. It is a VIEW: clearing it
-  // clears the screen and not the conversation, which lives in Supabase and is shared with
-  // Telegram. /reset over Telegram is what forgets it for real.
-  var LOG_KEY = 'jarvis.voice.log';
-  var LOG_MAX = 40;
-  var log = [];
-  try { log = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) { log = []; }
-  if (!Array.isArray(log)) log = [];
-  renderLog();
+  // ---- panel ------------------------------------------------------------
+  $('dots').onclick = function () { $('panel').classList.toggle('open'); };
+  function closePanel() { $('panel').classList.remove('open'); }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closePanel(); hideConfirm(); }
+  });
 
-  $('clearLog').onclick = function () {
-    log = [];
-    try { localStorage.removeItem(LOG_KEY); } catch (e) {}
-    renderLog();
-  };
-
-  function pushTurn(who, text) {
-    log.push({ who: who, text: text || '', at: Date.now() });
-    if (log.length > LOG_MAX) log = log.slice(-LOG_MAX);
-    try { localStorage.setItem(LOG_KEY, JSON.stringify(log)); } catch (e) {}
-    renderLog();
-  }
-
-  // Built with createElement and textContent, never innerHTML: half of what goes in here
-  // is written by a model and the other half by whatever the STT thought it heard.
-  function renderLog() {
-    var box = $('log');
-    box.textContent = '';
-    log.forEach(function (turn) {
-      var empty = !turn.text;
-      var row = document.createElement('div');
-      row.className = 'turn ' + (turn.who === 'me' ? 'me' : 'bot') + (empty ? ' empty' : '');
-      var who = document.createElement('b');
-      var when = new Date(turn.at);
-      who.textContent = (turn.who === 'me' ? 'Tú' : 'Jarvis') + ' · ' +
-        String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
-      var body = document.createElement('span');
-      body.textContent = empty ? '(vacío — no se transcribió nada)' : turn.text;
-      row.appendChild(who);
-      row.appendChild(body);
-      box.appendChild(row);
-    });
-    $('logCard').classList.toggle('hidden', log.length === 0);
-    box.scrollTop = box.scrollHeight;
-  }
-
-  // ---- status -----------------------------------------------------------
-  var ticker = null;
-  function status(text, kind) {
-    $('statusText').textContent = text;
-    $('dot').className = kind || '';
-  }
-  function busyFrom(startedAt) {
-    clearInterval(ticker);
-    ticker = setInterval(function () {
-      status('Pensando… ' + ((Date.now() - startedAt) / 1000).toFixed(1) + ' s', 'busy');
-    }, 100);
-  }
-  function stopTicker() { clearInterval(ticker); ticker = null; }
-
-  function show(id, cardId, text) {
-    $(id).textContent = text || '';
-    $(cardId).classList.toggle('hidden', !text);
-  }
-
-  // ---- modes ------------------------------------------------------------
-  // Two ways in, because holding a button is fine at a desk and miserable anywhere else.
-  // 'toggle' is the default and it does not even need the second press: the recorder cuts
-  // itself when you stop talking. 'hold' stays for a noisy room, where that detector is
-  // precisely the thing getting in the way.
-  var MODE_KEY = 'jarvis.voice.mode';
-  var mode = 'toggle';
+  // ---- mode -------------------------------------------------------------
   try { mode = localStorage.getItem(MODE_KEY) || 'toggle'; } catch (e) {}
   setMode(mode);
   $('modeToggle').onclick = function () { setMode('toggle'); };
@@ -258,75 +364,79 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
     $('modeToggle').classList.toggle('on', mode === 'toggle');
     $('modeHold').classList.toggle('on', mode === 'hold');
-    label();
+    if (!recording && !busy) idle();
   }
-  function label() {
-    $('talk').textContent = recording
-      ? (mode === 'hold' ? 'Suelta para enviar' : 'Pulsa para parar')
-      : (mode === 'hold' ? 'Mantén pulsado para hablar' : 'Pulsa para hablar');
+  function idle() {
+    setState('idle', mode === 'hold' ? 'Mantén pulsado para hablar' : 'Toca para hablar');
+    level(0);
   }
 
-  // ---- level and silence ------------------------------------------------
+  // ---- microphone level and silence -------------------------------------
   // An RMS over the raw samples, with the room's own noise measured during the first
   // quarter second instead of a fixed threshold: a fixed one works on the desk it was
-  // tuned on and nowhere else. The bar is not decoration either — "is it hearing me" is
-  // the first question when nothing comes back, and this answers it without a round trip.
+  // tuned on and nowhere else.
   var SILENCE_MS = 1400;
   var CALIBRATE_MS = 250;
-  // Nothing is cut before this. Without it, a pause for breath right after the first word
-  // sends half a sentence, which comes back as an answer to a question nobody asked.
   var MIN_RECORD_MS = 900;
   var MAX_RECORD_MS = 30000;
-  var audioCtx = null, analyser = null, meterTimer = null;
+  var micCtx = null, micAnalyser = null, meterTimer = null;
 
   function startMeter() {
     var Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
+    if (!Ctx) { heardSomething = true; return; }
     try {
-      audioCtx = new Ctx();
-      var source = audioCtx.createMediaStreamSource(stream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-    } catch (e) { analyser = null; return; }
+      micCtx = new Ctx();
+      var source = micCtx.createMediaStreamSource(stream);
+      micAnalyser = micCtx.createAnalyser();
+      micAnalyser.fftSize = 1024;
+      source.connect(micAnalyser);
+    } catch (e) { micAnalyser = null; heardSomething = true; return; }
 
-    var floats = typeof analyser.getFloatTimeDomainData === 'function';
-    var buf = floats ? new Float32Array(analyser.fftSize) : new Uint8Array(analyser.fftSize);
+    var read = reader(micAnalyser);
     var startedAt = Date.now(), noise = 0, samples = 0, threshold = 0.02;
-    var spoke = false, lastLoud = Date.now();
+    var lastLoud = Date.now();
 
     meterTimer = setInterval(function () {
-      if (!recording || !analyser) return;
+      if (!recording || !micAnalyser) return;
+      var rms = read();
+      var elapsed = Date.now() - startedAt;
+      level(rms * 5);
+
+      if (elapsed < CALIBRATE_MS) { noise += rms; samples++; return; }
+      if (samples) { threshold = Math.max(0.02, (noise / samples) * 3 + 0.008); samples = 0; }
+
+      if (rms > threshold) { heardSomething = true; lastLoud = Date.now(); }
+      // The hard cap applies in both modes: a recorder nobody stopped is how you get a
+      // 413 and a bill instead of an answer.
+      if (elapsed > MAX_RECORD_MS) { stop(); return; }
+      // Cutting on silence only makes sense when there is no finger on the button, and
+      // never before MIN_RECORD_MS: a pause for breath after the first word would send
+      // half a sentence, which comes back as an answer to a question nobody asked.
+      if (mode === 'toggle' && heardSomething && elapsed > MIN_RECORD_MS &&
+          Date.now() - lastLoud > SILENCE_MS) stop();
+    }, 70);
+  }
+
+  function stopMeter() {
+    clearInterval(meterTimer); meterTimer = null; micAnalyser = null;
+    if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; }
+    level(0);
+  }
+
+  /** One RMS reader, whichever of the two APIs this browser has. */
+  function reader(analyser) {
+    var floats = typeof analyser.getFloatTimeDomainData === 'function';
+    var buf = floats ? new Float32Array(analyser.fftSize) : new Uint8Array(analyser.fftSize);
+    return function () {
       if (floats) analyser.getFloatTimeDomainData(buf);
       else analyser.getByteTimeDomainData(buf);
-
       var sum = 0;
       for (var i = 0; i < buf.length; i++) {
         var v = floats ? buf[i] : (buf[i] - 128) / 128;
         sum += v * v;
       }
-      var rms = Math.sqrt(sum / buf.length);
-      var elapsed = Date.now() - startedAt;
-      $('levelFill').style.width = Math.min(100, Math.round(rms * 600)) + '%';
-
-      if (elapsed < CALIBRATE_MS) { noise += rms; samples++; return; }
-      if (samples) { threshold = Math.max(0.02, (noise / samples) * 3 + 0.008); samples = 0; }
-
-      if (rms > threshold) { spoke = true; lastLoud = Date.now(); }
-      // The hard cap applies in both modes: a recorder nobody stopped is how you get a
-      // 413 and a bill instead of an answer.
-      if (elapsed > MAX_RECORD_MS) { stop(); return; }
-      // Cutting on silence only makes sense when there is no finger on the button.
-      if (mode === 'toggle' && spoke && elapsed > MIN_RECORD_MS && Date.now() - lastLoud > SILENCE_MS) stop();
-    }, 80);
-  }
-
-  function stopMeter() {
-    clearInterval(meterTimer);
-    meterTimer = null;
-    analyser = null;
-    $('levelFill').style.width = '0%';
-    if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
+      return Math.sqrt(sum / buf.length);
+    };
   }
 
   // ---- recording --------------------------------------------------------
@@ -344,129 +454,118 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   async function start() {
     if (busy || recording || !token) return;
     if (!navigator.mediaDevices || !window.MediaRecorder) {
-      status('Este navegador no graba audio.', 'err');
+      setState('error', 'Este navegador no graba audio.');
       return;
     }
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
-      status('Sin permiso de micrófono.', 'err');
+      setState('error', 'Sin permiso de micrófono.');
       return;
     }
     var mime = pickMime();
     recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     chunks = [];
+    heardSomething = false;
     recorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = function () { send(new Blob(chunks, { type: recorder.mimeType })); };
     recorder.start();
     recording = true;
     recordStartedAt = Date.now();
-    $('talk').classList.add('rec');
-    label();
     startMeter();
-    status(mode === 'toggle' ? 'Grabando… se corta sola al callar.' : 'Grabando…', 'rec');
+    setState('listening', mode === 'hold' ? 'Te escucho…' : 'Te escucho… calla y lo envío');
   }
 
   function stop() {
     if (!recording) return;
     recording = false;
     lastRecordMs = Date.now() - recordStartedAt;
-    $('talk').classList.remove('rec');
     stopMeter();
-    label();
     try { recorder.stop(); } catch (e) {}
   }
 
   // ---- the turn ---------------------------------------------------------
   async function send(blob) {
-    if (!blob.size) { status('No se grabó nada.', 'err'); return; }
+    // Nothing above the noise floor means a muted microphone, and sending it anyway is
+    // worse than useless: Whisper answers silence with the subtitle credits it was
+    // trained on, and the assistant then replies to a sentence nobody said.
+    if (!heardSomething || !blob.size) {
+      setState('error', 'No he oído nada. ¿Está el micrófono encendido?');
+      setTimeout(idle, 2600);
+      return;
+    }
     localText = '';
-    busy = true;
-    $('talk').disabled = true;
-    $('confirm').classList.add('hidden');
-    var startedAt = Date.now();
-    busyFrom(startedAt);
-    try {
-      var response = await fetch('/voice', {
+    await turn(function () {
+      return fetch('/voice', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': blob.type || 'audio/webm' },
         body: blob
       });
-      await handle(response, Date.now() - startedAt, blob.size);
-    } catch (e) {
-      stopTicker();
-      status('No se pudo llegar al servidor.', 'err');
-    } finally {
-      busy = false;
-      $('talk').disabled = false;
-    }
+    }, blob.size);
   }
 
-  async function confirm(action) {
-    busy = true;
-    $('confirm').classList.add('hidden');
-    var startedAt = Date.now();
-    busyFrom(startedAt);
-    try {
-      var response = await fetch('/voice/confirm', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: pendingToken, action: action })
-      });
-      await handle(response, Date.now() - startedAt, 0);
-    } catch (e) {
-      stopTicker();
-      status('No se pudo llegar al servidor.', 'err');
-    } finally { busy = false; }
-  }
-
-  var pendingToken = '';
-  // What we know we sent. On a spoken turn it stays empty —only the STT knows— and on a
-  // typed one it is what rescues the log when the request never comes back.
-  var localText = '';
-
-  // A typed turn takes the microphone out of the loop. Same endpoint, same history, same
-  // agent: the only thing that changes is that there is no STT to blame.
   async function sendText() {
     var text = $('say').value.trim();
     if (!text || busy) return;
     $('say').value = '';
     localText = text;
-    busy = true;
-    $('talk').disabled = true;
-    $('confirm').classList.add('hidden');
-    var startedAt = Date.now();
-    busyFrom(startedAt);
-    try {
-      var response = await fetch('/voice', {
+    closePanel();
+    await turn(function () {
+      return fetch('/voice', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: text })
       });
-      await handle(response, Date.now() - startedAt, 0);
+    }, 0);
+  }
+
+  async function confirmPending(action) {
+    hideConfirm();
+    await turn(function () {
+      return fetch('/voice/confirm', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: pendingToken, action: action })
+      });
+    }, 0);
+  }
+
+  /** Everything that is the same for a spoken turn, a typed one and a confirmation. */
+  async function turn(request, bytes) {
+    busy = true;
+    $('orb').disabled = true;
+    var startedAt = Date.now();
+    var ticker = setInterval(function () {
+      setState('thinking', 'Pensando… ' + ((Date.now() - startedAt) / 1000).toFixed(1) + ' s');
+      // A slow wander while the model works, so the orb never looks stuck.
+      level(0.25 + Math.sin(Date.now() / 420) * 0.12);
+    }, 90);
+    setState('thinking', 'Pensando…');
+
+    try {
+      var response = await request();
+      clearInterval(ticker);
+      await handle(response, Date.now() - startedAt, bytes);
     } catch (e) {
-      stopTicker();
-      pushTurn('me', text);
-      status('No se pudo llegar al servidor.', 'err');
+      clearInterval(ticker);
+      setState('error', 'No se pudo llegar al servidor.');
+      setTimeout(idle, 2600);
     } finally {
       busy = false;
-      $('talk').disabled = false;
+      $('orb').disabled = false;
     }
   }
 
-  $('send').onclick = sendText;
-  $('say').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); sendText(); }
-    // Otherwise the space bar inside the box would start recording.
-    e.stopPropagation();
-  });
-
   async function handle(response, clientMs, bytes) {
-    stopTicker();
-    if (response.status === 401) { forgetToken(); status('Token rechazado.', 'err'); return; }
+    if (response.status === 401) {
+      forgetToken();
+      setState('error', 'Token rechazado.');
+      return;
+    }
     if (!response.ok) {
-      var problem = await response.json().catch(function () { return { error: 'Error ' + response.status }; });
-      status(problem.error || ('Error ' + response.status), 'err');
+      var problem = await response.json().catch(function () { return {}; });
+      setState('error', problem.error || ('Error ' + response.status));
+      setTimeout(idle, 3200);
       return;
     }
 
@@ -474,42 +573,105 @@ export const VOICE_TEST_PAGE = `<!doctype html>
       var raw = response.headers.get(name);
       try { return raw ? decodeURIComponent(raw) : ''; } catch (e) { return raw || ''; }
     };
-    // The user's turn goes in even when it is empty: a blank line labelled as such is the
-    // whole diagnosis when the answer is "no tengo nada que apuntar".
-    pushTurn('me', response.headers.has('X-Jarvis-Transcript') ? header('X-Jarvis-Transcript') : localText);
-    pushTurn('bot', header('X-Jarvis-Reply'));
-    show('notice', 'noticeCard', header('X-Jarvis-Notice'));
 
-    var server = parseTiming(response.headers.get('Server-Timing'));
-    renderTimes(server, clientMs, bytes);
+    var heard = response.headers.has('X-Jarvis-Transcript') ? header('X-Jarvis-Transcript') : localText;
+    var reply = header('X-Jarvis-Reply');
+    var notice = header('X-Jarvis-Notice');
+    fill('heard', heard, '(vacío — no se transcribió nada)');
+    fill('said', reply, '(sin respuesta)');
+    $('noticeBox').classList.toggle('hidden', !notice);
+    $('notice').textContent = notice;
+    renderTimes(parseTiming(response.headers.get('Server-Timing')), clientMs, bytes);
 
     pendingToken = response.headers.get('X-Jarvis-Confirm-Token') || '';
-    if (response.headers.get('X-Jarvis-Kind') === 'confirm' && pendingToken) {
-      $('confirmText').textContent = header('X-Jarvis-Reply');
-      $('confirm').classList.remove('hidden');
-    }
+    var needsConfirm = response.headers.get('X-Jarvis-Kind') === 'confirm' && pendingToken;
 
     var type = response.headers.get('Content-Type') || '';
     if (type.indexOf('audio') === 0) {
-      var url = URL.createObjectURL(await response.blob());
-      var audio = new Audio(url);
-      audio.onended = function () { URL.revokeObjectURL(url); status('Listo.', ''); };
-      audio.onerror = function () { URL.revokeObjectURL(url); status('El audio no se pudo reproducir.', 'err'); };
-      status('Hablando…', 'play');
-      audio.play().catch(function () { status('Pulsa para reproducir (el navegador bloqueó el audio).', 'err'); });
+      await play(await response.blob(), needsConfirm, reply);
     } else {
-      status('Respuesta sin audio.', 'err');
+      // No audio: the reply survives on screen, and the panel opens itself because that
+      // is the only place it is legible.
+      setState('error', notice || 'Respuesta sin audio. Mira los detalles.');
+      $('panel').classList.add('open');
+      if (needsConfirm) showConfirm(reply);
     }
   }
 
+  function fill(id, text, fallback) {
+    var node = $(id);
+    node.textContent = text || fallback;
+    node.classList.toggle('empty', !text);
+  }
+
+  // ---- playback ---------------------------------------------------------
+  // The audio is routed through an AnalyserNode so the orb moves with the actual voice
+  // instead of a canned animation. It is the same reader the microphone uses, so both
+  // ends of a turn are measured the same way.
+  function play(blob, needsConfirm, reply) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      var ctx = null, raf = 0;
+
+      function cleanup() {
+        cancelAnimationFrame(raf);
+        URL.revokeObjectURL(url);
+        if (ctx) { try { ctx.close(); } catch (e) {} }
+        level(0);
+      }
+      function done() {
+        cleanup();
+        if (needsConfirm) showConfirm(reply); else idle();
+        resolve();
+      }
+
+      audio.onended = done;
+      audio.onerror = function () { cleanup(); setState('error', 'El audio no se pudo reproducir.'); setTimeout(idle, 2600); resolve(); };
+
+      setState('speaking', 'Hablando…');
+      audio.play().then(function () {
+        try {
+          var Ctx = window.AudioContext || window.webkitAudioContext;
+          ctx = new Ctx();
+          var analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          ctx.createMediaElementSource(audio).connect(analyser);
+          analyser.connect(ctx.destination);
+          var read = reader(analyser);
+          var tick = function () { level(read() * 4.5); raf = requestAnimationFrame(tick); };
+          tick();
+        } catch (e) { /* Without the analyser it still plays; it just does not dance. */ }
+      }).catch(function () {
+        cleanup();
+        setState('error', 'El navegador bloqueó el audio. Toca la pantalla y repite.');
+        setTimeout(idle, 3200);
+        resolve();
+      });
+    });
+  }
+
+  // ---- confirmation -----------------------------------------------------
+  // The one thing that is never decided by voice alone. It is a modal and not a line in
+  // a panel on purpose: nothing destructive should be one careless tap away.
+  function showConfirm(text) {
+    $('confirmText').textContent = text;
+    $('confirm').classList.add('open');
+    setState('idle', 'Esperando tu confirmación');
+  }
+  function hideConfirm() { $('confirm').classList.remove('open'); }
+  $('yes').onclick = function () { confirmPending('ok'); };
+  $('no').onclick = function () { confirmPending('cancel'); };
+
+  // ---- timings ----------------------------------------------------------
   // "stt;dur=1240, agent;dur=2980" -> { stt: 1240, agent: 2980 }
   function parseTiming(raw) {
     var out = {};
     if (!raw) return out;
     raw.split(',').forEach(function (part) {
-      var bits = part.trim().split(';');
+      var name = part.trim().split(';')[0];
       var value = /dur=([0-9.]+)/.exec(part);
-      if (bits[0] && value) out[bits[0].trim()] = Math.round(parseFloat(value[1]));
+      if (name && value) out[name.trim()] = Math.round(parseFloat(value[1]));
     });
     return out;
   }
@@ -517,57 +679,59 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   function renderTimes(server, clientMs, bytes) {
     var rows = [
       ['transcripción', server.stt],
-      ['agente (modelo + tools)', server.agent],
+      ['agente', server.agent],
       ['síntesis de voz', server.tts],
-      ['servidor, total', server.total],
-      // Everything the server did not spend: upload, download and the two TLS handshakes.
+      ['servidor', server.total],
+      // Everything the server did not spend: upload, download and the handshakes.
       // Derived and not reported, because it is the only tramo the Worker cannot see.
-      ['red (ida y vuelta)', server.total !== undefined ? clientMs - server.total : undefined],
-      ['cliente, total', clientMs]
+      ['red', server.total !== undefined ? clientMs - server.total : undefined],
+      ['total', clientMs]
     ];
     var html = '';
     rows.forEach(function (row) {
       if (row[1] === undefined || isNaN(row[1])) return;
-      var slow = row[1] > 4000 ? ' class="slow"' : '';
-      html += '<tr><td>' + row[0] + '</td><td' + slow + '>' + row[1] + ' ms</td></tr>';
+      html += '<tr><td>' + row[0] + '</td><td' + (row[1] > 4000 ? ' class="slow"' : '') + '>' + row[1] + ' ms</td></tr>';
     });
     if (bytes) {
-      // Duration and size together, because separately neither says much: 8 s in 3 KB is a
-      // microphone that captured silence, and 0.4 s is the auto-stop cutting too early.
-      html += '<tr><td>audio grabado</td><td>' + (lastRecordMs / 1000).toFixed(1) + ' s · ' +
+      // Duration and size together, because separately neither says much: 7 s in 2 KB is
+      // a microphone that captured silence.
+      html += '<tr><td>audio</td><td>' + (lastRecordMs / 1000).toFixed(1) + ' s · ' +
               Math.round(bytes / 1024) + ' KB</td></tr>';
     }
     $('times').innerHTML = html;
-    $('timesCard').classList.toggle('hidden', !html);
+    $('timesBox').classList.toggle('hidden', !html);
   }
 
-  // ---- push to talk -----------------------------------------------------
-  // Pointer events cover mouse, touch and pen at once. pointerleave matters: dragging
-  // off the button while holding must stop the recorder, or it runs until the tab closes.
+  // ---- input ------------------------------------------------------------
   // Pointer events cover mouse, touch and pen at once. In hold mode pointerleave matters:
-  // dragging off the button while holding must stop the recorder, or it runs to the cap.
-  var talk = $('talk');
+  // dragging off the orb while holding must stop the recorder, or it runs to the cap.
+  var orb = $('orb');
   function press() { if (mode === 'hold') start(); else if (recording) stop(); else start(); }
   function release() { if (mode === 'hold') stop(); }
 
-  talk.addEventListener('pointerdown', function (e) { e.preventDefault(); press(); });
-  talk.addEventListener('pointerup', function (e) { e.preventDefault(); release(); });
-  talk.addEventListener('pointerleave', release);
-  talk.addEventListener('pointercancel', release);
-  talk.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  orb.addEventListener('pointerdown', function (e) { e.preventDefault(); press(); });
+  orb.addEventListener('pointerup', function (e) { e.preventDefault(); release(); });
+  orb.addEventListener('pointerleave', release);
+  orb.addEventListener('pointercancel', release);
+  orb.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  // Space bar does whatever the button does, for testing with both hands free.
   document.addEventListener('keydown', function (e) {
-    if (e.code !== 'Space' || e.repeat || document.activeElement === $('token')) return;
+    if (e.code !== 'Space' || e.repeat) return;
+    if (document.activeElement === $('say') || document.activeElement === $('token')) return;
     e.preventDefault();
     press();
   });
   document.addEventListener('keyup', function (e) {
-    if (e.code === 'Space') { e.preventDefault(); release(); }
+    if (e.code === 'Space' && document.activeElement !== $('say')) { e.preventDefault(); release(); }
   });
 
-  $('yes').onclick = function () { confirm('ok'); };
-  $('no').onclick = function () { confirm('cancel'); };
+  $('send').onclick = sendText;
+  $('say').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); sendText(); }
+    e.stopPropagation();
+  });
+
+  idle();
 })();
 </script>
 </body>
