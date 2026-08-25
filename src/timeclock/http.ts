@@ -111,6 +111,26 @@ const ORDINARY: ReadonlySet<PunchAction> = new Set<PunchAction>(['clock_in', 'cl
 /** What "Último movimiento" says after each action landed. The confirmation to look for. */
 const MOVEMENT_LABEL: Record<PunchAction, string[]> = REASON_RADIO;
 
+/**
+ * What we say we are, and it is not honesty that decides this one.
+ *
+ * The portal classifies the client into PC, MOBILE or UNKNOWN and gates punching on it. Its
+ * own script does it like this, and there is no reason to think the server does it
+ * differently, since it is the server that hands the script the two permissions it checks:
+ *
+ *     const movilRegex = /android|iphone|ipad|huawei|blackberry|opera mini|windows phone|ipod|webos/i;
+ *     const pcRegex = /windows|linux|macintosh|cros/i;
+ *
+ * `Mozilla/5.0 (compatible; jarvis)` matches neither, which lands on UNKNOWN — a case
+ * nothing on the page handles and the likeliest reason `registro.asp` answers 500 to a POST
+ * it answers perfectly well to a GET. So we present as the desktop this actually punches
+ * from. It is also what the Playwright version of this that does work presents as: a real
+ * Chromium on Windows.
+ */
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/128.0.0.0 Safari/537.36';
+
 /** Words on the login button, in the order they are worth trying. */
 const LOGIN_LABELS = ['entrar', 'acceder', 'iniciar sesion', 'login', 'enviar'];
 
@@ -309,7 +329,15 @@ export class HttpPunchClient implements PunchClient {
       target,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          // Where the form was: a browser always sends these two on a form post, and this
+          // one goes to a page whose own script decides what it is allowed to do by looking
+          // at the client. Cheap to send, and the absence of them is a difference from a
+          // real browser that we cannot see from outside.
+          Referer: page.url,
+          Origin: new URL(page.url).origin,
+        },
         body: body.toString(),
       },
       jar,
@@ -341,7 +369,8 @@ export class HttpPunchClient implements PunchClient {
           redirect: 'manual',
           headers: {
             Accept: 'text/html,application/xhtml+xml',
-            'User-Agent': 'Mozilla/5.0 (compatible; jarvis)',
+            'Accept-Language': 'es-ES,es;q=0.9',
+            'User-Agent': DESKTOP_UA,
             ...jar.header(),
             ...(request.headers as Record<string, string> | undefined),
           },
