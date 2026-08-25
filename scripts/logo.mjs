@@ -113,7 +113,7 @@ function svg(dots, { disc, weight, ink = '#ffffff', tight = false }) {
     }>`,
     // A favicon is never read out and never has a tooltip: the title is weight with no job.
     tight ? '' : '<title>Jarvis</title>',
-    disc ? `<circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2}" fill="${BG}"/>` : '',
+    disc ? `<circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2}" fill="${disc === true ? BG : disc}"/>` : '',
     `<g fill="${ink}">`,
     body,
     '</g>',
@@ -150,7 +150,14 @@ writeFileSync('assets/logo-ink.svg', svg(700, { disc: false, ink: BG, weight: FU
 // cloud is a grey smudge and the honest sphere is one drawn with fewer, brighter dots.
 //
 // Regenerate with `node scripts/logo.mjs` — do not hand-edit src/voice/icon.ts.
-const icon = svg(70, { disc: true, tight: true, weight: { size: 2.4, floor: 0.32 } });
+// The favicon is the mark inverted, and that was not a stylistic choice. A dark disc with
+// white dots is the page and it is also, at 16 px, a black circle: the dots land on a pixel
+// each, the disc is the only thing with area left, and Chrome's tab bar is dark too. So the
+// small mark keeps the shape and swaps what carries it — the ball is the page's own accent
+// and the dots are the holes in it, which is the one version that survives the tab bar in
+// both themes.
+const ICON = { disc: '#8f9bb3', ink: BG, tight: true, weight: { size: 5, floor: 0.55 } };
+const icon = svg(60, ICON);
 writeFileSync(
   'src/voice/icon.ts',
   [
