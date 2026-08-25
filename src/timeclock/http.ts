@@ -325,6 +325,28 @@ export class HttpPunchClient implements PunchClient {
   ): Promise<Page> {
     const target = new URL(page.form.action || page.url, page.url).toString();
     const body = new URLSearchParams({ ...formState(page.form), ...fields });
+
+    // What we sent, on the way out of a failure. Field names only and never their values:
+    // this string reaches a chat, and one of these fields is the comment box. It exists
+    // because "the portal answered 500" is a symptom of our request that says nothing about
+    // our request, and the difference between it and what a browser sends is the whole bug.
+    try {
+      return await this.postAndRead(target, body, jar, clock, page);
+    } catch (error) {
+      if (error instanceof TimeclockError) {
+        error.trail.push(`POST ${new URL(target).pathname} [${[...body.keys()].join(',')}]`);
+      }
+      throw error;
+    }
+  }
+
+  private async postAndRead(
+    target: string,
+    body: URLSearchParams,
+    jar: Jar,
+    clock: Clock,
+    page: Page,
+  ): Promise<Page> {
     return this.request(
       target,
       {
