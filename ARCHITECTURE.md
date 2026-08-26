@@ -1952,6 +1952,10 @@ moves to `done`, it leaves the injected index, and what was built stays queryabl
 | **24** | The reading log: books read and recommendations | ✅ Done |
 | **25** | The voice channel: a web page you talk to | ✅ Done |
 | **26** | The project register: what he is building, with its links | ✅ Done |
+| **27** | People: who he talks about, and where they fit | ⬜ Pending |
+| **28** | The weekly routine: what a normal week looks like | ⬜ Pending |
+| **29** | Places: home, the office, and the address of each | ⬜ Pending |
+| **30** | A decision log hanging off the projects | ⬜ Pending |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -2042,6 +2046,21 @@ per turn and a handful of tokens in the prompt, which is why the shape of the in
 —active projects only, one line each, cut at 160 characters— got more argument in §19 than
 the three tools did.
 
+**Phases 27 to 30 are one idea in four sizes, and it is not the idea the rest of this list
+is about.** Every phase up to here gave Jarvis another verb: book this, remind me of that,
+read that page. These four give it nouns —who the people in his life are, what his week
+normally looks like, where the places he goes to are, why the things he built ended up like
+that— and none of them answers a question on its own. What they change is every other
+answer, which is the property phase 26 already had and the reason it is the model for all
+four: an index in the prompt, the detail behind a tool.
+
+Their order is by how visible the failure is today. 27 goes first because a name turns up
+inside the other three domains and is unknown in all of them. 29 is next because it is the
+cheapest thing on this page and phase 18 is already waiting on it. 28 fixes an answer that
+is actively wrong rather than merely thin —the slot search offering nine at night on a
+Friday— but it needs a shape decided first. 30 comes last because it is the only one of
+the four with nothing broken to point at yet.
+
 ### Phase 11 — Audio replies (TTS)
 
 Answering a voice note with a voice note. It is the detail that stops it feeling like a
@@ -2127,8 +2146,94 @@ Two things it would have to get right: the date the row lands on is the one the 
 reports after submitting, not the one we asked for —a full day rolls over to the next— and
 hours go in as digits with a comma, never "3h".
 
+### Phase 27 — People: who he talks about, and where they fit
+
+Names are everywhere in the other domains and nowhere in the schema. "Llamar a David" is a
+task, "comida con Marta" is an appointment and the client of a project is a line in its
+notes; in all three the model reads a name it has never been introduced to. Today that
+lives as loose `memories` rows with keys like `jefe`, which works for four people and stops
+working at fifteen —the injection is capped at 30 rows by recency, and people are exactly
+the kind of fact that would fill it.
+
+- **A domain of its own, not a better memory key.** Name, relation, one line of context and
+  an optional birthday. The birthday is what earns the table: it is the only field here the
+  cron can act on, and a date buried in a free-text value is a date nothing can query.
+- **Injected like the projects, and for the same reason (§19).** A person is named by their
+  first name in the middle of a sentence about something else, so a tool the model does not
+  know to call is a tool that never gets called. Name and relation travel; the notes stay
+  behind `list_people`.
+- **What it must not fake.** Birthdays are a cron line the day the column exists. "Hace tres
+  meses que no hablas con X" is not: nothing in the schema knows when he last spoke to
+  anybody, and inferring it from the Telegram history would be measuring the one channel
+  where they do not talk.
+- The same matching problem as the projects, and worse: a first name said twice is far more
+  ambiguous than a project nickname. When more than one person fits, none is chosen —the
+  failure is not a wrong answer, it is a second row for somebody who is already there.
+
+### Phase 28 — The weekly routine: what a normal week looks like
+
+`find_free_slots` reads the calendar and nothing else, so an empty Friday at nine in the
+evening looks exactly like a Tuesday at eleven. The calendar records what is booked; what
+nobody writes down anywhere is the hours that were never available in the first place.
+
+- **A handful of rows, not a second calendar.** Weekday, from, to, and what it is: working
+  hours, the gym, the stretch that does not get touched. These are not events that happen,
+  they are the background the events are placed on, which is why repeating tasks (phase 16)
+  are not the answer here.
+- **It goes into `lib/slots.ts`, not into the prompt as prose.** The arithmetic already
+  lives there, and the prompt rule that the model never works out overlaps by itself is the
+  same rule read from the other side.
+- **Two things that already exist get better for free**: `what_now` stops proposing deep
+  work at eleven at night, and the briefing can say what is different about today instead
+  of reading the day out flat.
+- **Degrade to today's behaviour.** With no routine stored, the slot search answers exactly
+  as it answers now.
+
+### Phase 29 — Places: home, the office, and the address of each
+
+The cheapest thing on this page and the one another phase is already waiting on: phase 18
+says outright that home as a memory is the cheap answer for where a trip starts. A place is
+a label, an address and, once resolved, its coordinates.
+
+- **It is the missing half of the travel-time alert.** Calendar events carry `location`;
+  what is never on the calendar is where he is leaving from.
+- **Labels are how they get referred to**, so the upsert-by-label contract of the project
+  links applies unchanged: "la oficina" said twice is one row, not two.
+- **Coordinates are resolved once and stored, never at message time.** A geocoding call
+  inside a turn spends deadline budget on something that changes once a year.
+- It is also the one of these four that does not need to be injected: a place is asked for
+  by name when it is needed, and the alert that uses it runs in the cron.
+
+### Phase 30 — A decision log hanging off the projects
+
+The register (§19) holds what he is building. What it does not hold is why it ended up like
+that: which option was rejected and what it was rejected for. This file is that log for
+this repo, and it is the reason a change here starts from what was already tried instead of
+from scratch.
+
+- **A row per decision on a project**: what was decided, what was rejected, one line of why,
+  and the date it was taken.
+- **Read on demand, never injected**, unlike 27 and 28. A decision is asked about out loud
+  —"¿por qué dejamos X?"— so the model knows when to go looking, and a log grows without
+  limit while the prompt does not.
+- **Written unprompted, like the memories, but the failure is worse.** A decision he never
+  took, stored and then read back as fact months later, is the invented url of this domain:
+  not visibly wrong until it matters.
+
 ### Ideas with no phase assigned
 
+- **His professional profile, written down.** What he does, who for, and the stack he works
+  in. It needs no code at all —four `remember` calls— and it sharpens every answer at once:
+  fewer explanations of things he already knows, searches and book recommendations aimed at
+  his level. It is on this list only so that it does not get mistaken for a feature waiting
+  to be built.
+- **Memories that say how old they are.** The table has `updated_at` and the prompt throws
+  it away, so a fact from last year reads exactly as current as one from this morning, and
+  two rows that contradict each other look identical. Injecting the date is a one-line
+  change; what has to be decided first is what the model should do with an old fact,
+  because "esto es viejo, ignóralo" ages badly on things like where somebody works. Worth
+  pairing with the other half of the same problem: the injection takes the 30 most recently
+  touched rows, so the day it fills up, facts start dropping out of context silently.
 - **Gmail triage.** Worth knowing before starting: the service account cannot read a
   personal inbox —that needs domain-wide delegation, which is a Workspace thing— so it
   means OAuth with consent and a refresh token kept as a secret. And the shape that
