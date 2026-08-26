@@ -16,7 +16,7 @@ export interface SystemPromptInput {
   now: Date;
   memories?: MemoryFact[];
   /**
-   * The projects in progress, name and one line each (phase 25).
+   * The projects in progress, name and one line each (phase 26).
    *
    * They are injected for the same reason memories are and not fetched like books: what
    * this domain exists to fix is the model not knowing that "el de la web" is a thing

@@ -34,11 +34,11 @@ export interface TaskRow {
 /**
  * The kinds of work the queue knows how to do.
  *
- * `read_url` was the first tenant (phase 17) and `impute_hours` joins it for the same
- * reason: a login plus a form submit against somebody else's ASP.NET site is seconds of
- * their latency, and the turn has 27 s to cover the model rounds as well.
+ * One again, since phase 22 went out and took `impute_hours` with it. The reason the
+ * queue exists at all is phase 17's: somebody else's latency does not fit in a turn that
+ * has 27 s to cover the model rounds as well.
  */
-export type JobKind = 'read_url' | 'impute_hours';
+export type JobKind = 'read_url';
 
 /** A deferred job (phase 17). `payload` shape depends on `kind`. */
 export interface JobRow {
@@ -91,7 +91,7 @@ export interface ProjectLink {
 }
 
 /**
- * Something the user is building (phase 25).
+ * Something the user is building (phase 26).
  *
  * It is context, not work: the tasks and the appointments about a project come and go,
  * the project stays, and what it is for is that "el de la web" resolves to a name, a

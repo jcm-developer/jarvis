@@ -1869,7 +1869,7 @@ this domain that gets caught for certain — at the bookshop.
 
 ## 19. The project register: context, not a task list
 
-Phase 25, and it is the second domain that is not about time. What it fixes is a small
+Phase 26, and it is the second domain that is not about time. What it fixes is a small
 thing that happens every week: the user says "el de la web" and the model has never heard
 of it, so the answer either asks who that is or invents it. A project is what tasks belong
 to and it outlives every one of them, which is why it could never be a task.
@@ -1950,7 +1950,8 @@ moves to `done`, it leaves the injected index, and what was built stays queryabl
 | **22** | Fichaje: scheduled punches and the state of the day | ❌ Removed |
 | **23** | Imputación de horas into the day's projects | ❌ Dropped with 22 |
 | **24** | The reading log: books read and recommendations | ✅ Done |
-| **25** | The project register: what he is building, with its links | ✅ Done |
+| **25** | The voice channel: a web page you talk to | ✅ Done |
+| **26** | The project register: what he is building, with its links | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -2033,7 +2034,7 @@ nothing that was competing with anything else —no provider, no cron job, no ex
 call, three tools and a table— so nothing it might have delayed was delayed. It is told
 in §18.
 
-**Phase 25 jumped the queue for the same reason and one more.** It was asked for, it needs
+**Phase 26 jumped the queue for the same reason and one more.** It was asked for, it needs
 no provider and no cron, and unlike 24 it makes every message that follows it slightly
 better instead of only the ones about its own domain: it is the first phase since the
 memories whose output is context rather than an answer. What it cost is the third query

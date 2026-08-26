@@ -4,7 +4,7 @@ A personal assistant over Telegram, running on Cloudflare Workers with Supabase 
 
 Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Status: phase 25** — tasks, memory, voice notes, photos with vision, history in
+**Status: phase 26** — tasks, memory, voice notes, photos with vision, history in
 Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
 "what should I do now?" that crosses the agenda with the task list, things that repeat,
 web search that looks things up in the conversation and reads the links you send it in a
@@ -1047,7 +1047,7 @@ that gets caught for certain, at the bookshop.
 the script is idempotent, so re-running the whole thing is safe. No new secrets and no new
 vars.
 
-## What phase 25 does: it knows what you are building
+## What phase 26 does: it knows what you are building
 
 Tell it about a project once and it stops asking:
 
@@ -1095,6 +1095,25 @@ for it. Deleting is for what was written down wrong.
 [supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds the `projects`
 table; the script is idempotent, so re-running the whole thing is safe. No new secrets and
 no new vars.
+
+### Leftovers from the fichaje phases
+
+Phases 22 and 23 were built and taken out again, and four tables outlived them. The
+schema script no longer creates them, but it does not drop them either — a `drop` inside a
+file that exists to be re-run is a loaded gun. Removing them is a one-off query:
+
+```sql
+drop table if exists punches;
+drop table if exists punch_schedules;
+drop table if exists project_cache;
+drop table if exists imputations;   -- the record of hours actually submitted: keep it if you want the history
+```
+
+The first three held a schedule and a cache and are pure garbage. `imputations` is the
+only one with anything worth a second thought in it: it is the log of what was sent to the
+portal while the phase was alive. There are also three secrets nothing reads any more —
+`IMPUTE_USR`, `IMPUTE_PASS`, `IMPUTE_BASE_URL` — which can be deleted from the Cloudflare
+dashboard.
 
 ## Several things in one message
 

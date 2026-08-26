@@ -4,7 +4,7 @@ import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { ToolValidationError, optionalInt, optionalString, requireString } from './types';
 
 /**
- * The project register (phase 25).
+ * The project register (phase 26).
  *
  * It is the second domain that is not about time, and unlike the books one it is not
  * read on demand: the whole point is that "el de la web" resolves without asking. So the

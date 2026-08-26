@@ -76,7 +76,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     loadMemories(db, identity.userId),
     // Third query, and it is worth one: what it loads goes into every message, so
     // fetching it on demand would mean a round trip the model has to decide to spend,
-    // for the thing it is least likely to know it needs (phase 25).
+    // for the thing it is least likely to know it needs (phase 26).
     loadActiveProjects(db, identity.userId),
   ]);
 
