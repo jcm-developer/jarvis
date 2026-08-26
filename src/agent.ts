@@ -13,6 +13,7 @@ import { LLMError } from './llm/provider';
 import { buildSystemPrompt } from './prompts/system';
 import { searchConfigured } from './search';
 import { loadMemories } from './tools/memory';
+import { loadActiveProjects } from './tools/projects';
 import type { PendingAction } from './tools/pending';
 import { savePending } from './tools/pending';
 import { getTool, toolSchemas } from './tools/registry';
@@ -70,9 +71,13 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
 
   const identity = await resolveIdentity(env, db, input.from, input.chatId, config.defaultTimezone);
   // Two independent queries: in parallel they cost whatever the slower one costs.
-  const [history, memories] = await Promise.all([
+  const [history, memories, projects] = await Promise.all([
     loadHistory(db, identity.conversationId, config.historyWindow),
     loadMemories(db, identity.userId),
+    // Third query, and it is worth one: what it loads goes into every message, so
+    // fetching it on demand would mean a round trip the model has to decide to spend,
+    // for the thing it is least likely to know it needs (phase 25).
+    loadActiveProjects(db, identity.userId),
   ]);
 
   const toolCtx: ToolContext = {
@@ -111,6 +116,10 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         timezone: identity.timezone,
         now: new Date(),
         memories: memories.map((memory) => ({ key: memory.key, value: memory.value })),
+        projects: projects.map((project) => ({
+          name: project.name,
+          description: project.description,
+        })),
         // Asked of the provider that is going to answer, not of the config: the list of
         // limits must not promise what this model cannot do, and with a text-only one the
         // prompt has to keep saying it cannot see photos.

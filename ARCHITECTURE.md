@@ -1867,7 +1867,61 @@ this domain that gets caught for certain — at the bookshop.
 
 ---
 
-## 19. Roadmap
+## 19. The project register: context, not a task list
+
+Phase 25, and it is the second domain that is not about time. What it fixes is a small
+thing that happens every week: the user says "el de la web" and the model has never heard
+of it, so the answer either asks who that is or invents it. A project is what tasks belong
+to and it outlives every one of them, which is why it could never be a task.
+
+**It is injected, and that is the decision the whole phase turns on.** The books shelf is
+read on demand —§18— and that is right for books, because the model knows when a
+conversation is about books. Here it does not: a project is mentioned by a nickname in the
+middle of a sentence about something else, and a tool the model does not know to call is a
+tool that never gets called. So the register follows the memories pattern instead: an
+index in the prompt, the detail behind `list_projects`.
+
+**What is injected is the name and one line, of the ACTIVE ones only.** Not the links, not
+the notes, not the finished ones. That split is the price of the previous paragraph: the
+index has to be cheap enough to pay for on every message —a dozen projects at 160
+characters is about 400 tokens— and everything that is asked for rather than assumed can
+cost a round. The line is cut in `prompts/system.ts` and not in the column, because what
+bounds the cost is how it is read, not how it was written.
+
+**Links are jsonb and they are upserted by label.** A link is a label and a url, always
+read back whole with its project and never queried by, so a table of its own would buy
+nothing —the same reasoning as `topics` in the books— and the label as key is what makes
+"el repo ahora está en GitLab" a normal sentence instead of a delete and a re-add. It is
+the `remember` contract applied to a field: same key, new value, one row.
+
+**A url the model invented is the worst thing this table can hold.** It is not visibly
+wrong until somebody clicks it, and by then it has been read back as fact for weeks. So
+anything that does not parse as http(s) goes back to the model as an error, and the prompt
+says outright that a url not returned by `list_projects` does not exist.
+
+**Names are matched by words, not by characters.** The books tool compares titles by
+substring from six characters up, which is right for a title said twice; a project is
+called "Jarvis" and mentioned as "el Jarvis", so what has to match is one set of words
+containing the other. By characters, "web" would match "la web de Codegenia" and every
+other project with "web" in it. Words of one or two letters do not count towards a match,
+or "la web" and "el de la tienda" become the same project.
+
+**When more than one project fits, none is chosen.** The tool comes back with the
+candidates and the model asks. Guessing here does not produce a wrong answer, it produces
+a second row for a project that already exists, and from then on half the links live in
+each — the one failure in this domain that nobody notices until they go looking for a url
+that is in the other copy.
+
+Three things it deliberately does not do. Tasks are not linked to projects: it would mean
+a column, a filter and a rule in the prompt for a question —"¿qué tengo pendiente de la
+web?"— that the task title already answers. A single link cannot be removed, only
+corrected by label or dropped with the project, which is the honest trade for not adding a
+fourth tool to a domain that has three. And a finished project is not deleted: `status`
+moves to `done`, it leaves the injected index, and what was built stays queryable.
+
+---
+
+## 20. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1896,6 +1950,7 @@ this domain that gets caught for certain — at the bookshop.
 | **22** | Fichaje: scheduled punches and the state of the day | ❌ Removed |
 | **23** | Imputación de horas into the day's projects | ❌ Dropped with 22 |
 | **24** | The reading log: books read and recommendations | ✅ Done |
+| **25** | The project register: what he is building, with its links | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.
@@ -1977,6 +2032,14 @@ reason a phase jumps the queue here: the list is a plan, not a contract. It also
 nothing that was competing with anything else —no provider, no cron job, no external
 call, three tools and a table— so nothing it might have delayed was delayed. It is told
 in §18.
+
+**Phase 25 jumped the queue for the same reason and one more.** It was asked for, it needs
+no provider and no cron, and unlike 24 it makes every message that follows it slightly
+better instead of only the ones about its own domain: it is the first phase since the
+memories whose output is context rather than an answer. What it cost is the third query
+per turn and a handful of tokens in the prompt, which is why the shape of the injection
+—active projects only, one line each, cut at 160 characters— got more argument in §19 than
+the three tools did.
 
 ### Phase 11 — Audio replies (TTS)
 

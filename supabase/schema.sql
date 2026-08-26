@@ -238,6 +238,35 @@ create table if not exists books (
 create index if not exists books_user_status_idx
   on books (user_id, status, rating desc nulls last);
 
+-- Domain: projects (phase 25) ------------------------------------------------
+-- What the user is building, so the model knows what "el de la web" means without
+-- being told again every week. It is context, not a task list: a project is the thing
+-- tasks belong to, and it outlives all of them.
+--
+-- `links` is jsonb and not a table of its own: a link is a label and a url written by
+-- the model, always read back whole with its project, and never queried by. It is
+-- upserted by label —"repo", "docs", "staging"— which is what makes correcting a wrong
+-- url a normal sentence instead of a delete.
+--
+-- No unique constraint on the name: matching is done in the handler with the name
+-- normalised, and a raw-text unique would neither catch "Jarvis" against "jarvis" nor
+-- give the model anything it could fix when it fired.
+create table if not exists projects (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references users(id) on delete cascade,
+  name         text not null,
+  description  text,
+  status       text not null default 'active'
+                 check (status in ('active','paused','done','idea')),
+  links        jsonb not null default '[]'::jsonb,
+  notes        text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+-- The index the injected context reads: the active ones, most recently touched first.
+create index if not exists projects_user_status_idx
+  on projects (user_id, status, updated_at desc);
+
 -- Observability --------------------------------------------------------------
 -- Without this, understanding why the agent did something odd is impossible.
 create table if not exists tool_call_logs (

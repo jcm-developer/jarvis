@@ -83,6 +83,33 @@ export interface BookRow {
   updated_at: string;
 }
 
+/** A link hanging off a project: a short label and where it points. */
+export interface ProjectLink {
+  /** 'repo', 'docs', 'staging'. It is the key: sending it again corrects the url. */
+  label: string;
+  url: string;
+}
+
+/**
+ * Something the user is building (phase 25).
+ *
+ * It is context, not work: the tasks and the appointments about a project come and go,
+ * the project stays, and what it is for is that "el de la web" resolves to a name, a
+ * description and a repo without the user explaining it again.
+ */
+export interface ProjectRow {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  /** 'idea' not started, 'active' in progress, 'paused' parked, 'done' finished. */
+  status: 'active' | 'paused' | 'done' | 'idea';
+  links: ProjectLink[];
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * A history row. `tool_calls` stores the provider's structure verbatim, so the model's
  * context can be rebuilt without transforming it.

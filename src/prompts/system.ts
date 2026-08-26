@@ -5,10 +5,25 @@ export interface MemoryFact {
   value: string;
 }
 
+/** One line of the project index: what is injected, and all that is injected. */
+export interface ProjectFact {
+  name: string;
+  description: string | null;
+}
+
 export interface SystemPromptInput {
   timezone: string;
   now: Date;
   memories?: MemoryFact[];
+  /**
+   * The projects in progress, name and one line each (phase 25).
+   *
+   * They are injected for the same reason memories are and not fetched like books: what
+   * this domain exists to fix is the model not knowing that "el de la web" is a thing
+   * with a name, and a tool it does not know to call does not fix it. The links and the
+   * notes stay behind `list_projects` — those are asked for, this is assumed.
+   */
+  projects?: ProjectFact[];
   /**
    * Whether the configured model reads images.
    *
@@ -55,6 +70,7 @@ export function buildSystemPrompt({
   timezone,
   now,
   memories = [],
+  projects = [],
   canSeeImages = false,
   eventAlertMinutes = 0,
   canSearchWeb = false,
@@ -75,6 +91,7 @@ export function buildSystemPrompt({
     // reminders it had never scheduled.
     'Lo que puedes hacer: gestionar sus tareas, gestionar las citas de su calendario,',
     'llevar la cuenta de los libros que lee y recomendarle otros,',
+    'llevar el registro de sus proyectos con sus enlaces,',
     canSearchWeb
       ? 'recordar datos suyos y buscar en internet, con las herramientas que tienes.'
       : 'y recordar datos suyos, con las herramientas que tienes.',
@@ -236,6 +253,23 @@ export function buildSystemPrompt({
         ]),
     '- Recomendar no es apuntar. Solo llama a log_book si dice que quiere leerlo, con',
     '  status="pending".',
+    '',
+    // The register's failure mode is not forgetting to write, it is writing the wrong
+    // thing: a project is what a task belongs to, and a model with a create_task in front
+    // of it will happily turn "la web de Codegenia" into a pending item. Hence the line
+    // about what a project is NOT, which is the one rule here that earns its tokens.
+    'Proyectos:',
+    '- Los que tiene en marcha te llegan más abajo con una línea de cada uno. Con eso',
+    '  basta para hablar de ellos; para un enlace, sus notas, o los parados y terminados,',
+    '  llama a list_projects.',
+    '- Nunca te inventes una url ni la deduzcas del nombre. La que no te haya dado',
+    '  list_projects no la tienes: dilo y pídesela.',
+    '- Un proyecto no es una tarea. "Acabar el login" se apunta con create_task; el',
+    '  proyecto es aquello de lo que forma parte y sigue ahí cuando la tarea está hecha.',
+    '- Cuando empiece algo, te pase un enlace de algo suyo o cuente en qué punto está,',
+    '  guárdalo con save_project sin que te lo pida, igual que con remember.',
+    '- Cuando lo termine o lo aparque, cámbiale el status; no lo borres. Borrar es solo',
+    '  para lo que se apuntó mal.',
   ];
 
   // Photos are the capture route: a letter, a poster, a receipt, a whiteboard. The rules
@@ -292,6 +326,26 @@ export function buildSystemPrompt({
       '',
       'Lo que sabes de él:',
       ...memories.map((memory) => `- ${memory.key}: ${memory.value}`),
+    );
+  }
+
+  // Right next to the memories and for the same reason: it is what he takes for granted
+  // that you know. Only the name and the line —the links are a tool call away, and thirty
+  // urls on every message is the mistake §11 is about.
+  if (projects.length > 0) {
+    sections.push(
+      '',
+      'Proyectos que tiene en marcha:',
+      ...projects.map((project) => {
+        // Cut here and not in the column: the description is written once and read on
+        // every single message, so what bounds its cost is this line, not the tool's
+        // limit. A dozen projects at this length is about 400 tokens, which is the most
+        // this feature is worth paying per message.
+        const line = project.description?.replace(/\s+/g, ' ').trim() ?? '';
+        if (!line) return `- ${project.name}`;
+        return `- ${project.name}: ${line.length > 160 ? `${line.slice(0, 157)}...` : line}`;
+      }),
+      '(Los parados y los terminados, sus enlaces y sus notas: list_projects.)',
     );
   }
 

@@ -4,13 +4,14 @@ A personal assistant over Telegram, running on Cloudflare Workers with Supabase 
 
 Full design and technical decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-**Status: phase 24** — tasks, memory, voice notes, photos with vision, history in
+**Status: phase 25** — tasks, memory, voice notes, photos with vision, history in
 Supabase, proactive cron alerts, a full read/write Google Calendar, free-slot search, a
 "what should I do now?" that crosses the agenda with the task list, things that repeat,
 web search that looks things up in the conversation and reads the links you send it in a
 message of its own, a reading log that
-recommends from what you have actually read, and a Sunday review that says what you have
-been putting off.
+recommends from what you have actually read, a register of what you are building so it
+knows what "el de la web" is, and a Sunday review that says what you have been putting
+off.
 
 The bot talks Spanish: everything it says in the chat, the system prompt and the tool
 descriptions are written in Spanish on purpose. The code and the docs are in English.
@@ -1046,6 +1047,55 @@ that gets caught for certain, at the bookshop.
 the script is idempotent, so re-running the whole thing is safe. No new secrets and no new
 vars.
 
+## What phase 25 does: it knows what you are building
+
+Tell it about a project once and it stops asking:
+
+```
+Estoy con la web de Codegenia, el repo es https://github.com/codegenia/web
+```
+
+```
+Apuntado. Web de Codegenia, con su repo.
+```
+
+From then on the name and one line of every project you have **in progress** travel in
+the context of every message, so *"¿qué tenía pendiente de la web?"* or *"pásame el repo
+del Jarvis"* work without you saying which web or which Jarvis. That is the whole
+feature, and it is why this one is injected instead of looked up: a project gets
+mentioned by its nickname in the middle of a sentence about something else, and a lookup
+the model has to decide to do is a lookup it does not do.
+
+What travels is the name and the line, nothing else. The links, the notes and the
+projects that are parked or finished stay in the table and come out with `list_projects`
+when the conversation actually needs them — the same trade as the reading log, for the
+same reason.
+
+Links are stored with a short label, and the label is the key:
+
+```
+El repo del Jarvis se ha movido a GitLab
+```
+
+sends `repo` again with the new url and corrects the one that was there, instead of
+leaving you with two. A url that does not parse is refused rather than saved, and the bot
+is told plainly that a link it has not been given does not exist: an invented url is not
+visibly wrong until somebody clicks it.
+
+Three tools: `save_project`, `list_projects` and `delete_project`. Names are matched by
+words, so *"el jarvis"* finds *Jarvis* — and when a name fits more than one project it
+asks which one instead of guessing, because guessing here does not give a wrong answer,
+it gives you a second copy of the project with half the links in it.
+
+When something is done, it is not deleted: *"la web ya está entregada"* moves it to
+`done`, it drops out of what travels in every message, and it is still there when you ask
+for it. Deleting is for what was written down wrong.
+
+**One manual step on an existing deploy:** re-run
+[supabase/schema.sql](supabase/schema.sql) in the SQL editor. It adds the `projects`
+table; the script is idempotent, so re-running the whole thing is safe. No new secrets and
+no new vars.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
@@ -1054,10 +1104,8 @@ comprar pan y revisar el podcast"* creates all three tasks at once.
 
 ## Next
 
-**Imputación de horas**: the other half of the same portal — hours and a mandatory comment
-against the day's projects, which needs a confirmation step because it is a choice and not
-a button. Then **audio replies**: answering a voice note with a voice note. Behind it, a weekly review
-that says what you have been postponing — and now that there is a queue for work nobody
-is waiting on, that review has somewhere to live. Then the weather and the travel time
-inside the appointment alerts. The full list is at the end of
+**Audio replies**: answering a voice note with a voice note, which is the detail that
+stops it feeling like a bot. Then the weather and the travel time inside the appointment
+alerts, a watchlist that speaks first when a price crosses a line you set, and expenses
+dictated into a spreadsheet. The full list is at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md).

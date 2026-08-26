@@ -4,6 +4,7 @@ import { findFreeSlots, whatNow } from './agenda';
 import { deleteBook, listBooks, logBook } from './books';
 import { createEvent, deleteEvent, listEvents, updateEvent } from './calendar';
 import { recall, remember } from './memory';
+import { deleteProject, listProjects, saveProject } from './projects';
 import { readUrl, searchWeb } from './search';
 import { completeTask, createTask, deleteTask, listTasks, updateTask } from './tasks';
 import type { ToolDefinition } from './types';
@@ -34,6 +35,9 @@ export const TOOLS: ToolDefinition[] = [
   logBook,
   listBooks,
   deleteBook,
+  saveProject,
+  listProjects,
+  deleteProject,
 ];
 
 const BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
