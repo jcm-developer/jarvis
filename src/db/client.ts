@@ -121,6 +121,12 @@ export class Db {
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
+    // The verb and the table go into every DbError, and that is not decoration: what the
+    // user reads is "lo tienes en los logs", and a line that only says "Supabase 404" does
+    // not say which of the four queries a turn makes was the one that broke. The query
+    // string is cut off — it carries filters, and those carry ids.
+    const where = `${init.method ?? 'GET'} ${path.split('?')[0]}`;
+
     let response: Response;
     try {
       response = await fetch(`${this.restUrl}/${path}`, {
@@ -135,12 +141,15 @@ export class Db {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new DbError(`no se pudo alcanzar Supabase: ${detail}`);
+      throw new DbError(`${where}: no se pudo alcanzar Supabase: ${detail}`);
     }
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new DbError(`Supabase ${response.status}: ${detail.slice(0, 300)}`, response.status);
+      throw new DbError(
+        `${where}: Supabase ${response.status}: ${detail.slice(0, 300)}`,
+        response.status,
+      );
     }
 
     // DELETE and PATCH without representation return an empty body.
@@ -150,7 +159,7 @@ export class Db {
     try {
       return JSON.parse(text) as T;
     } catch {
-      throw new DbError('Supabase devolvió algo que no era JSON');
+      throw new DbError(`${where}: Supabase devolvió algo que no era JSON`);
     }
   }
 }
