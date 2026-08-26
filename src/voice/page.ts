@@ -31,8 +31,9 @@ import { VOICE_ICON } from './icon';
  *
  * The wake word is the one thing here that talks to somebody else. Chrome's speech
  * recognition runs on Google's servers, so while that switch is on, everything the
- * microphone hears leaves the machine. It is off by default and says so on screen the
- * whole time it is on, which is why the pill is red rather than tasteful.
+ * microphone hears leaves the machine. It is off by default, and while it is on the line
+ * under the orb reads «di oye Jarvis» instead of the usual hint, so the screen never
+ * claims to be idle while Google is listening.
  *
  * The token is never in here. It is typed once by a person and kept in that browser's
  * localStorage, so this file can be served to anyone: without a token, /voice answers 401.
@@ -167,19 +168,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     transition: color .3s ease, opacity .16s ease, transform .16s ease;
   }
   body[data-state="error"] #status { color: #fb7185; }
-
-  #wake {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    display: none; align-items: center; gap: 9px;
-    padding: 7px 15px 7px 12px; border-radius: 999px;
-    border: 1px solid rgba(244,63,94,.32); background: rgba(244,63,94,.09);
-    color: #fda4af; font: inherit; font-size: 12px; cursor: pointer; z-index: 6;
-    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  }
-  #wake.on { display: flex; animation: pillglow 3.2s ease-in-out infinite; }
-  @keyframes pillglow { 50% { box-shadow: 0 0 24px -5px rgba(244,63,94,.55); } }
-  #wake i { width: 7px; height: 7px; border-radius: 50%; background: #f43f5e; animation: blink 1.6s infinite; }
-  @keyframes blink { 50% { opacity: .2; } }
 
   #dots {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -337,8 +325,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   </div>
   <div id="status">Toca para hablar</div>
 </div>
-
-<button id="wake"><i></i><span id="wakeLabel">Escuchando · di «oye Jarvis»</span></button>
 
 <button id="dots" class="hidden" aria-label="Detalles"><span></span><span></span><span></span></button>
 
@@ -1167,7 +1153,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     wakeOn = on;
     wakeTurns = 0;
     try { localStorage.setItem(WAKE_KEY, on ? '1' : '0'); } catch (e) {}
-    $('wake').classList.toggle('on', on);
     $('wakeToggle').classList.toggle('on', on);
     $('wakeToggle').textContent = on ? 'Activada' : 'Desactivada';
 
@@ -1182,7 +1167,6 @@ export const VOICE_TEST_PAGE = `<!doctype html>
   }
 
   $('wakeToggle').onclick = function () { setWake(!wakeOn); };
-  $('wake').onclick = function () { setWake(false); };
   if (!wakeSupported()) {
     $('wakeToggle').disabled = true;
     $('wakeHint').textContent = 'Este navegador no tiene reconocimiento de voz. Hace falta Chrome.';
