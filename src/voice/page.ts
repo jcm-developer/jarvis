@@ -1016,6 +1016,55 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     $('timesBox').classList.toggle('hidden', !html);
   }
 
+  // ---- the wake chirp ---------------------------------------------------
+  // With the listener on you are usually not looking at the screen, so the pop on the orb
+  // is a receipt nobody reads. Two tones say the same thing from across the room: the name
+  // was heard and the microphone is open.
+  //
+  // One context for the whole session. An AudioContext built outside a gesture starts
+  // suspended, and the chirp that matters is the first one, so any tap or key unlocks it.
+  var cueCtx = null;
+
+  function unlockCue() {
+    if (cueCtx && cueCtx.state === 'running') return;
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      if (!cueCtx) cueCtx = new Ctx();
+      if (cueCtx.state === 'suspended') cueCtx.resume();
+    } catch (e) { cueCtx = null; }
+  }
+
+  ['pointerdown', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, unlockCue, true);
+  });
+
+  /** A rising two-note blip. Returns how long it lasts, or 0 if nothing sounded. */
+  function chirp() {
+    unlockCue();
+    if (!cueCtx || cueCtx.state !== 'running') return 0;
+    try {
+      var now = cueCtx.currentTime;
+      [[880, 0], [1320, 0.07]].forEach(function (note) {
+        var osc = cueCtx.createOscillator();
+        var gain = cueCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = note[0];
+        // Ramps and not a gain switched on and off: a square edge on the envelope is an
+        // audible click, and a click sounds like something broke.
+        var at = now + note[1];
+        gain.gain.setValueAtTime(0, at);
+        gain.gain.linearRampToValueAtTime(0.14, at + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.09);
+        osc.connect(gain);
+        gain.connect(cueCtx.destination);
+        osc.start(at);
+        osc.stop(at + 0.1);
+      });
+      return 170;
+    } catch (e) { return 0; }
+  }
+
   // ---- wake word --------------------------------------------------------
   // Chrome's SpeechRecognition is used ONLY to spot the phrase. What you then say is
   // recorded and transcribed by our own pipeline, exactly like a tapped turn: the two are
@@ -1091,13 +1140,18 @@ export const VOICE_TEST_PAGE = `<!doctype html>
     // abort() and not stop(): stop() waits for a final result, and by then the first word
     // of the actual request is already gone.
     try { recognition.abort(); } catch (e) {}
-    // The pop is the receipt for the wake word: you said the name and something happened,
-    // before any text has had time to appear.
+    // The chirp is the receipt for the wake word and the pop is the same receipt for
+    // whoever is watching: you said the name and something happened, before any text has
+    // had time to appear.
+    var wait = chirp();
     $('orb').classList.remove('pop');
     void $('orb').offsetWidth;
     $('orb').classList.add('pop');
     setTimeout(function () { $('orb').classList.remove('pop'); }, 650);
-    start();
+    // Recording waits for the tones to finish. The first quarter second of a take is what
+    // calibrates the noise floor, and calibrating it against our own speaker leaves the
+    // threshold too high for the voice that comes next.
+    if (wait) setTimeout(start, wait); else start();
   }
 
   async function setWake(on) {
