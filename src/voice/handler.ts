@@ -39,6 +39,12 @@ export interface VoiceContext {
   env: Env;
   config: Config;
   deadline: Deadline;
+  /**
+   * Always 'voice', and it is what the turn is for: it opens the prompt on the right
+   * channel and puts `send_to_telegram` in the catalogue, so "pásamelo por Telegram"
+   * stops being answered with "ya estamos en Telegram".
+   */
+  channel: 'voice';
   /** The Telegram chat this shares a conversation row with. See `voiceIdentity`. */
   chatId: number;
   principal: Principal;

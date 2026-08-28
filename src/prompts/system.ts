@@ -1,4 +1,5 @@
 import { isoLocal, localNow, localTomorrow } from '../lib/localtime';
+import type { Channel } from '../types';
 
 export interface MemoryFact {
   key: string;
@@ -54,6 +55,21 @@ export interface SystemPromptInput {
    * break the prefix cache.
    */
   canSearchWeb?: boolean;
+  /**
+   * Which surface the conversation is on. 'telegram' by default.
+   *
+   * The odd one out of this family: the other three are constant for a deployment, this
+   * one alternates message by message, so it does break the prefix cache when he moves
+   * from the phone to the page. It is worth it and it is not really avoidable — the first
+   * line of the prompt says where the conversation is happening, and on the voice page
+   * that line was simply false. What it cost was not a wrong nuance: asked to pass
+   * something over Telegram, the model answered that they were already there, which from
+   * inside the prompt was the correct reading.
+   *
+   * It stays at the top all the same. Moving it to the end to save the cache would put
+   * the sentence that frames every rule below it after all the rules.
+   */
+  channel?: Channel;
 }
 
 /**
@@ -74,7 +90,9 @@ export function buildSystemPrompt({
   canSeeImages = false,
   eventAlertMinutes = 0,
   canSearchWeb = false,
+  channel = 'telegram',
 }: SystemPromptInput): string {
+  const byVoice = channel === 'voice';
   // ORDER MATTERS: everything stable first, whatever changes at the end.
   //
   // OpenAI automatically caches the common prefix of consecutive requests and charges
@@ -84,7 +102,15 @@ export function buildSystemPrompt({
   //
   // Our load is ~97% input tokens, so this is not a minor detail.
   const sections = [
-    'Eres Jarvis, el asistente personal de un desarrollador. Hablas con él por Telegram.',
+    'Eres Jarvis, el asistente personal de un desarrollador.',
+    ...(byVoice
+      ? [
+          'Ahora mismo te está hablando por voz desde el navegador: lo que contestes se lo',
+          'leo en voz alta, no lo lee escrito. Su Telegram sigue ahí, en el móvil, y es la',
+          'misma conversación: lo que hablasteis por escrito lo recuerdas, y puedes',
+          'mandarle cosas allí con send_to_telegram.',
+        ]
+      : ['Hablas con él por Telegram.']),
     '',
     // Declaring the limits in writing is cheaper than fixing a broken promise: without
     // this list the model offered to search the internet and to "keep an eye on"
@@ -115,10 +141,25 @@ export function buildSystemPrompt({
     '- Cambiar la hora de una serie entera de citas. Puedes mover una repetición suelta;',
     '  para reprogramar la serie tiene que hacerlo él desde su app de calendario.',
     '- Entrar en su correo ni en ninguna otra aplicación.',
-    '- Contestar con audio, aunque él te escriba con audios.',
+    // Only true on Telegram: on the voice page the reply is synthesised and played back,
+    // so keeping the line there would have it denying what it is doing as it speaks.
+    ...(byVoice ? [] : ['- Contestar con audio, aunque él te escriba con audios.']),
     '- Escribirle por tu cuenta más tarde. Los avisos los manda el sistema a la hora',
     '  que dejes puesta; tú no puedes "estar pendiente" de nada.',
     'Si te pide algo de esta lista, dilo en una frase y ofrece lo que sí puedes hacer.',
+    ...(byVoice
+      ? [
+          '',
+          'Hablando por voz:',
+          '- Lo tuyo se escucha, así que va todavía más corto: una o dos frases, sin listas',
+          '  numeradas y sin deletrear enlaces ni códigos en alto.',
+          '- Cuando te pida que se lo pases por Telegram, por escrito o "para copiarlo", y',
+          '  también cuando lo que toca decir no sirve dicho —un enlace, un comando, un',
+          '  iban, una dirección, una lista larga—, mándaselo con send_to_telegram. NO le',
+          '  contestes que ya estáis hablando por Telegram: ahora mismo no lo estáis.',
+          '- De viva voz, después, solo dile que ya lo tiene allí. No lo repitas entero.',
+        ]
+      : []),
     '',
     'Herramientas:',
     '- Úsalas en vez de decir que no puedes hacer algo, salvo que caiga en la lista',

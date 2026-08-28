@@ -89,7 +89,7 @@ export async function runSelfTest(deps: SelfTestDeps): Promise<string> {
     ...block('Con el prompt', prompted, MAX_PROMPT_MS, 2),
     ...block('Con prompt y herramientas', loaded, MAX_LOADED_MS, 2),
     '',
-    `CONCLUSIÓN: ${diagnose(ping, prompted, loaded, toolSchemas(env).length)}`,
+    `CONCLUSIÓN: ${diagnose(ping, prompted, loaded, toolSchemas(env, 'telegram').length)}`,
     '',
     `Comprobado en ${secs(Date.now() - started)} s de los 27 que tiene un mensaje; ` +
       `quedaban ${secs(deadline.remainingMs())} s.`,
@@ -211,7 +211,9 @@ async function askModel(
   deps: SelfTestDeps,
   carry: { prompt: boolean; tools: boolean },
 ): Promise<StepResult> {
-  const schemas = carry.tools ? toolSchemas(deps.env) : undefined;
+  // 'telegram' and not the deployment's other channel: /test is a Telegram command, and
+  // what it measures has to weigh what a real message there weighs.
+  const schemas = carry.tools ? toolSchemas(deps.env, 'telegram') : undefined;
   const messages = [
     ...(carry.prompt
       ? [

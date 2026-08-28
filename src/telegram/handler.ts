@@ -33,6 +33,8 @@ export interface HandlerContext {
   telegram: TelegramClient;
   actor: Actor;
   deadline: Deadline;
+  /** Always 'telegram'. It is here because this context is the agent's `AgentDeps`. */
+  channel: 'telegram';
 }
 
 /**

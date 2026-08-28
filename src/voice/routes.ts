@@ -250,7 +250,14 @@ function enabledConfig(env: Env): Config | null {
 function contextFor(env: Env, config: Config): VoiceContext {
   const id = [...config.allowedTelegramIds][0]!;
   const principal: Principal = { id };
-  return { env, config, deadline: Deadline.in(VOICE_BUDGET_MS), chatId: id, principal };
+  return {
+    env,
+    config,
+    deadline: Deadline.in(VOICE_BUDGET_MS),
+    chatId: id,
+    principal,
+    channel: 'voice',
+  };
 }
 
 function authorized(request: Request, env: Env): boolean {

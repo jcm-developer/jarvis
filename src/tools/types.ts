@@ -1,12 +1,26 @@
 import type { Config } from '../config';
 import type { Db } from '../db/client';
 import type { Deadline } from '../lib/deadline';
-import type { Env } from '../types';
+import type { Channel, Env } from '../types';
 
 export interface ToolContext {
   userId: string;
   conversationId: string;
   timezone: string;
+  /**
+   * The Telegram chat behind this conversation, voice turns included: the voice channel
+   * borrows the same chat id (see `voice/routes.ts`). Arrived with `send_to_telegram`,
+   * the first tool whose whole job is to write somewhere the answer is not going.
+   */
+  chatId: number;
+  /**
+   * Which channel the turn came in on.
+   *
+   * A tool reads it for the same reason `available` does: what makes sense to offer
+   * changes with the surface. Nothing else in the context does — `userId` and
+   * `conversationId` are deliberately the same on both.
+   */
+  channel: Channel;
   db: Db;
   /**
    * Secrets and bindings. Arrived with create_event, the first tool to talk to an
@@ -66,8 +80,13 @@ export interface ToolDefinition {
    * would leave the model reading a contradiction —a tool it has just been told it does
    * not have. It is a function of the env and not of a provider instance, because
    * asking must not require the key to exist.
+   *
+   * It also gets the channel, which arrived with `send_to_telegram`: passing the text of
+   * a reply to Telegram is the whole point of the tool on the voice page and pure noise
+   * inside Telegram itself. Offering a tool the model must never use is the same mistake
+   * as describing a tool it does not have.
    */
-  available?: (env: Env) => boolean;
+  available?: (env: Env, channel: Channel) => boolean;
   /**
    * The sentence shown when asking for confirmation. It is async and receives the
    * context so it can hit the database: asking "delete 'Comprar pan'?" is far safer

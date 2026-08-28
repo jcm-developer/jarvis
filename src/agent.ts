@@ -20,7 +20,7 @@ import { getTool, toolSchemas } from './tools/registry';
 import { applySnooze } from './tools/snooze';
 import type { ToolContext, ToolResult } from './tools/types';
 import { ToolValidationError } from './tools/types';
-import type { Env } from './types';
+import type { Channel, Env } from './types';
 
 /**
  * A photo attached to the message.
@@ -52,6 +52,15 @@ export interface AgentDeps {
   env: Env;
   config: Config;
   deadline: Deadline;
+  /**
+   * Which surface the turn arrived through.
+   *
+   * It is in the deps and not in the input because it is a property of the transport, not
+   * of the message: the same is true of a button press, where there is no input at all.
+   * It decides two things and no more —which tools are offered and how the prompt opens—
+   * so both channels keep sharing one conversation, one history and one set of rules.
+   */
+  channel: Channel;
 }
 
 /** Margin reserved for sending the reply before we get cut off. */
@@ -84,6 +93,8 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     userId: identity.userId,
     conversationId: identity.conversationId,
     timezone: identity.timezone,
+    chatId: input.chatId,
+    channel: deps.channel,
     db,
     env,
     config,
@@ -131,6 +142,10 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // (`toolSchemas`), so the prompt has to go back to saying it cannot search.
         // Both readings come from the same place or they drift apart.
         canSearchWeb: searchConfigured(env),
+        // And the fourth of the family, this one not constant for the deployment: the
+        // prompt opens by saying where the conversation is happening, and on the voice
+        // page that sentence was a lie the model then defended out loud.
+        channel: deps.channel,
       }),
     },
     ...toLLMMessages(history),
@@ -145,7 +160,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     },
   ];
 
-  const schemas = toolSchemas(env);
+  const schemas = toolSchemas(env, deps.channel);
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration++) {
     // Before starting another round, check there is time. Launching it knowing it does
@@ -349,6 +364,8 @@ export async function executeConfirmed(
     userId: identity.userId,
     conversationId: identity.conversationId,
     timezone: identity.timezone,
+    chatId: input.chatId,
+    channel: deps.channel,
     db,
     env: deps.env,
     config: deps.config,

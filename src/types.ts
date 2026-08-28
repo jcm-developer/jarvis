@@ -1,4 +1,15 @@
 /**
+ * Where the conversation is happening.
+ *
+ * Not the same question as `messages.source`, which says how one message arrived (typed,
+ * dictated, a photo): both channels produce 'text' and 'voice' rows. This says who is on
+ * the other end of the turn, and it exists because that changes what the assistant can do
+ * — on the voice channel the reply is read out loud and Telegram is a second screen it can
+ * write to, which is exactly the thing it cannot do while it IS Telegram.
+ */
+export type Channel = 'telegram' | 'voice';
+
+/**
  * Bindings, secrets and vars available to the Worker.
  * Secrets are injected with `wrangler secret put`; vars come from wrangler.toml.
  */

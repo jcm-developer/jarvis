@@ -16,6 +16,14 @@ export interface InlineKeyboardButton {
 export interface SendMessageOptions {
   replyToMessageId?: number;
   inlineKeyboard?: InlineKeyboardButton[][];
+  /**
+   * Cap for this call, when the caller has a budget of its own.
+   *
+   * Absent everywhere the bot answers a message —there the reply IS the work and the 8 s
+   * default is the right number— and set by `send_to_telegram`, which sends from inside a
+   * turn that still has to synthesise audio afterwards.
+   */
+  timeoutMs?: number;
 }
 
 export class TelegramError extends Error {
@@ -78,7 +86,7 @@ export class TelegramClient {
     if (options.inlineKeyboard) {
       payload['reply_markup'] = { inline_keyboard: options.inlineKeyboard };
     }
-    return this.call<unknown>('sendMessage', payload);
+    return this.call<unknown>('sendMessage', payload, options.timeoutMs);
   }
 
   /** Shows "typing…". It expires after 5 s or when the message is sent. */

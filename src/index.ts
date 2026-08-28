@@ -111,7 +111,7 @@ app.post('/webhook', async (c) => {
   const deadline = Deadline.in(TOTAL_BUDGET_MS);
 
   c.executionCtx.waitUntil(
-    handleUpdate(update, { env, config, telegram, actor, deadline })
+    handleUpdate(update, { env, config, telegram, actor, deadline, channel: 'telegram' })
       .catch(async (error: unknown) => {
         console.error('fallo procesando update', update.update_id, error);
         const text =

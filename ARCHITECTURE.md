@@ -116,6 +116,7 @@ jarvis/
 │  │  ├─ memory.ts             # remember, recall
 │  │  ├─ books.ts              # log_book, list_books, delete_book
 │  │  ├─ search.ts             # search_web (in the turn), read_url (queued)
+│  │  ├─ telegram.ts           # send_to_telegram: the voice channel writing to the phone
 │  │  ├─ snooze.ts             # postponing straight from the alert's buttons
 │  │  └─ pending.ts            # actions awaiting confirmation (KV)
 │  │
@@ -442,7 +443,7 @@ export interface ToolDefinition {
   parameters: JSONSchema;
   mutates: boolean;                 // does it write? on a photo, everything that does waits
   requiresConfirmation: boolean;    // destructive actions → human confirmation
-  available?: (env) => boolean;     // can this deployment run it? absent means always
+  available?: (env, channel) => boolean;  // can this deployment, on this surface, run it?
   confirmationPrompt?: (args, ctx) => Promise<string>;   // the sentence the user reads
   handler: (args: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -451,6 +452,8 @@ export interface ToolContext {
   userId: string;
   conversationId: string;
   timezone: string;
+  chatId: number;                   // the Telegram chat, voice turns included
+  channel: 'telegram' | 'voice';    // which surface the turn came in on
   db: Db;                           // our own PostgREST client, not the SDK
   env: Env;                         // secrets and bindings
   config: Config;                   // env already parsed: the day's window, among others
@@ -482,6 +485,7 @@ export type ToolResult =
 | `recall` | Searches the memories. | No |
 | `search_web` | Searches the internet and returns a handful of results with a snippet each. Not offered when there is no key. | No |
 | `read_url` | Queues the reading of a page. Returns nothing to read: the summary arrives later, in its own message. | No |
+| `send_to_telegram` | Writes a message to his Telegram chat, so what cannot be dictated —a link, a command, something to copy— ends up somewhere it can be read. Only offered on the voice channel. | No |
 
 The tool descriptions and the `error` strings stay in Spanish: they are read by the
 model and end up shaping what reaches the chat, so they are product rather than code.
@@ -493,6 +497,17 @@ cannot search, next to a tool for searching— and that is exactly the kind of t
 resolves by promising a search it cannot run. `getTool` still resolves the name, so a
 model that asks anyway gets the configuration error instead of "that tool does not
 exist", which is the truth.
+
+It takes the **channel** as well, and that arrived with `send_to_telegram`. Both surfaces
+resolve to the same row in `conversations` on purpose (phase 25, in `voice/`), so from
+inside the model there was nothing to tell them apart: asked over the voice page to "pass
+me that on Telegram" it answered that they were already there, and by its own prompt —
+which opens by saying it talks over Telegram— it was right. `ToolContext.channel` is what
+gives it the distinction, and it decides exactly two things: the tool is in the catalogue
+on the voice page and out of it inside Telegram, where it would be the assistant writing
+to the same screen it is already answering on, and the prompt's first line says which
+surface this turn is on. Everything else —the history, the memories, the rules— stays
+shared, which is the whole point of the two channels sharing one conversation.
 
 ### The date rule
 
