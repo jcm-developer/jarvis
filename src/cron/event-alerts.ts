@@ -68,7 +68,7 @@ export async function sendEventAlerts(deps: EventAlertDeps): Promise<number> {
   try {
     const client = createCalendarClient(env);
     events = await client.listEvents(
-      { from: now.toISOString(), to: until.toISOString(), query: null, limit: EVENT_LIMIT },
+      { from: now.toISOString(), to: until.toISOString(), limit: EVENT_LIMIT },
       budget,
     );
   } catch (error) {

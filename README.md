@@ -492,6 +492,12 @@ ways, and **before changing or deleting one it asks which**: that day only, or e
 occurrence. The confirmation button's text says so, because between skipping a birthday
 and deleting it forever there is no way back.
 
+It also answers about the past. *"¿Cuándo fui al peluquero?"* searches a year back and
+half a year ahead, and the words do not have to match the title: "peluquero" finds
+"Peluquería", "cumple de Marta" finds "Cumpleaños Marta". An empty search is reported as
+what it is —nothing with those words in those dates— not as "you have no such
+appointment".
+
 To change or delete anything it needs the id, so it looks the calendar up first and acts
 afterwards. Deleting asks for button confirmation, like deleting a task, and the question
 carries the appointment's title so you know what you are confirming.

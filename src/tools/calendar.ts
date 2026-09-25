@@ -11,6 +11,7 @@ import {
   zonedInstant,
 } from '../lib/localtime';
 import { REPEAT_FREQUENCIES, repeatPhrase } from '../lib/recurrence';
+import { matchesQuery, parseQuery } from '../lib/text-match';
 import type { Interval } from '../lib/slots';
 import { overlaps } from '../lib/slots';
 import { OFFSET_HINT, cleanTitle, honourUserInstant, resolveOffset } from './guardrails';
@@ -65,6 +66,29 @@ const DEFAULT_DURATION_MINUTES = 60;
 
 /** `list_events` window when no specific day is requested. */
 const DEFAULT_SEARCH_DAYS = 7;
+
+/**
+ * Window of a search by name with no day: a year back, half a year ahead.
+ *
+ * Back is the long side because that is what a name search with no date is usually
+ * about —"the last time I went"—, and what is ahead he mostly already knows.
+ */
+const SEARCH_BACK_DAYS = 365;
+const SEARCH_AHEAD_DAYS = 180;
+
+/**
+ * Events read from Google for a search by name, to be filtered here.
+ *
+ * A year and a half of a personal calendar with a weekly series or two fits well under
+ * this. It is not higher because every one of them is parsed on the free plan's 10 ms
+ * of CPU.
+ */
+const SEARCH_FETCH_LIMIT = 1000;
+
+/** Longest explicit range `list_events` accepts: "what did I have in March" and more. */
+const MAX_RANGE_DAYS = 366;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Cap on a multi-day event. More than that smells like a model error. */
 const MAX_SPAN_DAYS = 90;
@@ -220,7 +244,6 @@ async function overlappingEvents(
       {
         from: new Date(slot.start).toISOString(),
         to: new Date(slot.end).toISOString(),
-        query: null,
         limit: CONFLICT_LIMIT,
       },
       ctx.deadline.budgetFor(CONFLICT_MAX_MS),
@@ -488,6 +511,7 @@ export const createEvent: ToolDefinition = {
               {
                 id: event.id,
                 title,
+                location: null,
                 startAt: null,
                 endAt: null,
                 startDate,
@@ -525,28 +549,33 @@ export const createEvent: ToolDefinition = {
 export const listEvents: ToolDefinition = {
   name: 'list_events',
   description:
-    'Consulta las citas del calendario del usuario en un rango de días. Úsala cuando ' +
-    'pregunte qué tiene un día ("¿qué tengo el jueves?", "¿estoy libre mañana por la ' +
-    'tarde?") y SIEMPRE antes de modificar o borrar una cita, porque necesitas su id ' +
-    'exacto y no puedes inventarlo.',
+    'Consulta las citas del calendario del usuario, las que vienen y las que ya pasaron. ' +
+    'Úsala cuando pregunte qué tiene un día ("¿qué tengo el jueves?", "¿estoy libre ' +
+    'mañana por la tarde?"), cuándo fue o cuándo es algo ("¿cuándo fui al peluquero?", ' +
+    '"¿cuándo tengo el dentista?") y SIEMPRE antes de modificar o borrar una cita, ' +
+    'porque necesitas su id exacto y no puedes inventarlo.',
   parameters: {
     type: 'object',
     properties: {
       day: {
         type: 'string',
         description:
-          'Día por el que empezar, en formato YYYY-MM-DD. Si no lo mandas, busca desde ' +
-          'ahora en los próximos 7 días.',
+          'Día por el que empezar, en formato YYYY-MM-DD; puede ser pasado. Sin day y sin ' +
+          `query mira los próximos ${DEFAULT_SEARCH_DAYS} días; sin day y con query busca ` +
+          `desde hace ${SEARCH_BACK_DAYS} días hasta dentro de ${SEARCH_AHEAD_DAYS}. Si ` +
+          'buscas una cita por su nombre y no sabes el día exacto, NO lo mandes.',
       },
       days: {
         type: 'integer',
-        description: 'Cuántos días mirar a partir de "day". Por defecto 1.',
+        description: `Cuántos días mirar a partir de "day". Por defecto 1, máximo ${MAX_RANGE_DAYS}.`,
       },
       query: {
         type: 'string',
         description:
-          'Texto para filtrar por título o sitio ("dentista", "Marta"). Útil cuando el ' +
-          'usuario se refiere a una cita concreta y no sabes qué día es.',
+          'Palabras para encontrar una cita por su título o su sitio. No hace falta que ' +
+          'coincidan exactas: "peluquero" encuentra "Peluquería". Manda en la misma ' +
+          'llamada las formas en que pudo apuntarlo, separadas por comas ' +
+          '("peluquería, barbero, corte de pelo"): encaja si coincide cualquiera.',
       },
       limit: { type: 'integer', description: 'Máximo de citas a devolver. Por defecto 20.' },
     },
@@ -556,16 +585,32 @@ export const listEvents: ToolDefinition = {
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
     const day = optionalString(args, 'day', 10);
-    const days = optionalInt(args, 'days', 1, 62) ?? 1;
+    const days = optionalInt(args, 'days', 1, MAX_RANGE_DAYS) ?? 1;
+    const query = optionalString(args, 'query', 200);
+    const limit = optionalInt(args, 'limit', 1, 50) ?? 20;
 
+    const alternatives = query === null ? [] : parseQuery(query);
+    if (query !== null && alternatives.length === 0) {
+      return {
+        ok: false,
+        error:
+          `"${query}" no tiene ninguna palabra que distinga una cita. Manda el nombre de la ` +
+          'cita, la persona o el sitio ("dentista", "Marta"), o busca por días sin query.',
+      };
+    }
+    const searching = alternatives.length > 0;
+
+    const now = new Date();
     let from: Date;
     let to: Date;
 
     if (day === null) {
-      // With no day, from now on: asking "what do I have?" is not asking about what
-      // already happened this morning.
-      from = new Date();
-      to = new Date(from.getTime() + DEFAULT_SEARCH_DAYS * 24 * 60 * 60 * 1000);
+      // With no day and nothing to look for, from now on: asking "what do I have?" is not
+      // asking about what already happened this morning. Looking for something by name is
+      // different: "¿cuándo fui al peluquero?" is about the past, and a search that only
+      // looked ahead answered it with a confident "there is no such appointment".
+      from = searching ? new Date(now.getTime() - SEARCH_BACK_DAYS * DAY_MS) : now;
+      to = new Date(now.getTime() + (searching ? SEARCH_AHEAD_DAYS : DEFAULT_SEARCH_DAYS) * DAY_MS);
     } else {
       const range = localDayRange(day, days, ctx.timezone);
       if (range === null) {
@@ -577,22 +622,61 @@ export const listEvents: ToolDefinition = {
     const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
     if (budget < MIN_CALENDAR_MS) return NO_TIME;
 
+    // A search reads the whole range and filters it here, so what is fetched is a page big
+    // enough for a year of a personal calendar, not what the model asked to see.
+    const fetchLimit = searching ? SEARCH_FETCH_LIMIT : limit;
     const client = createCalendarClient(ctx.env);
-    const events = await client.listEvents(
-      {
-        from: from.toISOString(),
-        to: to.toISOString(),
-        query: optionalString(args, 'query', 100),
-        limit: optionalInt(args, 'limit', 1, 50) ?? 20,
-      },
+    const fetched = await client.listEvents(
+      { from: from.toISOString(), to: to.toISOString(), limit: fetchLimit },
       budget,
     );
+    // Google orders by start, so a full page means the end of the range was cut off.
+    const truncated = fetched.length >= fetchLimit;
+
+    let events = searching
+      ? fetched.filter((event) =>
+          matchesQuery(alternatives, `${event.title} ${event.location ?? ''}`),
+        )
+      : fetched;
+    if (events.length > limit) {
+      // A name that matches too much ("reunión") is cut down to the ones nearest to now,
+      // on both sides: the last time and the next time are what gets asked about, not the
+      // first one of last October.
+      events = [...events]
+        .sort((a, b) => distanceFrom(now, a, ctx.timezone) - distanceFrom(now, b, ctx.timezone))
+        .slice(0, limit)
+        .sort((a, b) => startOf(a, ctx.timezone) - startOf(b, ctx.timezone));
+    }
+
+    const range =
+      `del ${formatDay(from, ctx.timezone)} al ` +
+      formatDay(new Date(to.getTime() - 1), ctx.timezone);
 
     return {
       ok: true,
       data: {
         count: events.length,
+        // The range travels with the answer so an empty one can be told as what it is:
+        // nothing in these dates with these words. Not "it does not exist".
+        searched: searching ? `${range}, con "${query}"` : range,
         events: events.map((event) => describe(event, ctx.timezone)),
+        ...(truncated
+          ? {
+              note:
+                'Hay más citas de las que caben en una consulta y el final del rango se ha ' +
+                'quedado fuera. Si buscas algo más adelante, vuelve a llamar con day y un ' +
+                'days más corto.',
+            }
+          : searching && events.length === 0
+            ? {
+                note:
+                  'Nada con esas palabras en estas fechas. Eso no prueba que no exista: pudo ' +
+                  'apuntarlo con otro nombre. Antes de decirle que no está, prueba con otras ' +
+                  'palabras que pudo usar' +
+                  (day !== null ? ' y sin day, para buscar en todo el año' : '') +
+                  '. Si tampoco sale, dile qué has buscado y en qué fechas.',
+              }
+            : {}),
       },
     };
   },
@@ -955,6 +1039,19 @@ function describe(event: CalendarEventSummary, timezone: string): Record<string,
       ? { category: COLOR_CATEGORIES[event.colorId] }
       : {}),
   };
+}
+
+/** When an event starts, as an instant. An all-day one counts from its local noon. */
+function startOf(event: CalendarEventSummary, timezone: string): number {
+  if (event.startAt !== null) return Date.parse(event.startAt);
+  if (event.startDate !== null) {
+    return zonedInstant(event.startDate, 12, 0, timezone)?.getTime() ?? 0;
+  }
+  return 0;
+}
+
+function distanceFrom(now: Date, event: CalendarEventSummary, timezone: string): number {
+  return Math.abs(startOf(event, timezone) - now.getTime());
 }
 
 /** '14:00 a 15:30' — names what an appointment clashes with, without repeating the day. */

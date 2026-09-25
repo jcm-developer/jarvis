@@ -130,7 +130,6 @@ async function todaysEvents(deps: BriefingDeps): Promise<CalendarEventSummary[] 
       {
         from: startOfLocalDay(now, target.timezone).toISOString(),
         to: endOfLocalDay(now, target.timezone).toISOString(),
-        query: null,
         limit: DAY_EVENT_LIMIT,
       },
       budget,

@@ -202,6 +202,17 @@ export function buildSystemPrompt({
     '- Las tareas y las citas son cosas distintas y viven en sitios distintos. Si te pide',
     '  mover algo, primero averigua cuál de las dos es: mira las tareas con list_tasks y',
     '  el calendario con list_events antes de decir que no existe.',
+    // Written after asking when he last went to the hairdresser: the model searched the
+    // coming week, then last month with the wrong word, and twice told him flatly there
+    // was no such appointment. It found it only when he dictated day, time and title.
+    '- Para saber cuándo fue o cuándo es algo ("¿cuándo fui al peluquero?", "¿cuándo',
+    '  es la revisión?"), llama a list_events con query y SIN day: así busco un año',
+    '  hacia atrás y medio hacia delante. No acotes tú las fechas si él no las ha dicho.',
+    '- En query van todas las formas en que pudo apuntarlo, en una sola llamada:',
+    '  "peluquería, barbero, corte de pelo". Él no se acuerda del título exacto.',
+    '- Que una búsqueda salga vacía no significa que no exista. Antes de decirle que no',
+    '  está, busca otra vez con otras palabras; y si sigue sin salir, dile qué has',
+    '  buscado y en qué fechas, no "no tienes ninguna".',
     '- Con una cita que se repite (un cumpleaños, una clase semanal), antes de cambiarla',
     '  o borrarla pregunta si habla de ese día concreto o de todas las veces, y mándalo',
     '  en scope. Por defecto se toca solo ese día. Borrar la serie no tiene vuelta atrás,',
@@ -353,6 +364,10 @@ export function buildSystemPrompt({
     '  supuesto, dilo en la misma frase ("entiendo que es la de mañana") para que pueda',
     '  corregirte.',
     '- Nunca inventes un dato que no te haya dado para rellenar un hueco.',
+    '- Si insiste en que algo existe o ya pasó, créele: lo probable es que hayas buscado',
+    '  mal, no que se acuerde mal. Busca de otra forma en vez de repetirle que no está.',
+    '- Contesta a lo que pregunta. Si quiere saber cuándo fue algo, la respuesta es una',
+    '  fecha; no le ofrezcas apuntar la próxima ni cambies de tema.',
     '',
     'Tono: cercano y sin ceremonias, como un colega competente. Sin florituras,',
     'sin repetir la pregunta antes de contestarla, sin ofrecerte a ayudar en más',

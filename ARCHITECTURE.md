@@ -92,7 +92,8 @@ jarvis/
 │  │  ├─ relative-time.ts      # "en 5 minutos" read from the user's message
 │  │  ├─ recurrence.ts         # frequencies: the next occurrence of what repeats
 │  │  ├─ events.ts             # shared shapes for calendar events
-│  │  └─ slots.ts              # interval arithmetic: busy time and free gaps
+│  │  ├─ slots.ts              # interval arithmetic: busy time and free gaps
+│  │  └─ text-match.ts         # "peluquero" finds "Peluquería": loose name search
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
@@ -1366,6 +1367,33 @@ recognised "el 25 de agosto" but demanded the "el", so "pásalo **al** 25 de ago
 through, and with them the corrector moved the date to today. A day number followed by
 "de \<month\>" is now enough, with the month list spelled out so "el capítulo 12 de la
 serie" is not mistaken for a date.
+
+### Searching by name: the past, and the word he did not use
+
+Asked *"¿cuándo fui al peluquero?"*, the bot said twice that there was no such
+appointment, and found it —"Peluquería", 31 August, 18:30— only when he dictated the
+day, the time and the title. Three failures stacked up:
+
+- **`list_events` with no `day` only looked at the coming week.** Right for "what do I
+  have?", wrong for "when did I go?". A search by `query` with no `day` now covers a year
+  back and half a year ahead. Back is the long side because that is what a dateless name
+  search is usually about.
+- **Google's `q` matches whole words.** "peluquero" does not find "Peluquería", and what
+  he says is never the word he once typed on his phone. The `q` parameter is gone from
+  `CalendarSearch`: the tool fetches the range and matches itself
+  ([src/lib/text-match.ts](src/lib/text-match.ts)), accent-insensitive, on title and
+  location, with two words counted as the same when they share a root of five letters
+  and differ by at most three at the end. "Marta" and "martes" do not. A false positive
+  costs nothing —the model reads the titles— and a miss is what started this.
+- **An empty result read as proof.** The result now carries the range and words it
+  searched, and when it is empty, a note saying that it does not prove the thing does not
+  exist. The query takes comma-separated alternatives so the model can try the synonyms
+  in one call instead of spending the three rounds of §8 one word at a time.
+
+The price is the page size: a search asks Google for up to 1,000 events instead of 20,
+with `fields` trimmed to what is read —the description, which can be a pasted email, is
+most of the weight and all of the CPU. If the page fills, the result says the end of the
+range was cut off.
 
 ### Two limits that code does not fix
 

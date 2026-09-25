@@ -162,7 +162,6 @@ export const findFreeSlots: ToolDefinition = {
       {
         from: new Date(windows[0]!.window.start).toISOString(),
         to: new Date(windows[windows.length - 1]!.window.end).toISOString(),
-        query: null,
         limit: BUSY_EVENT_LIMIT,
       },
       budget,
@@ -329,7 +328,6 @@ async function todaysAgenda(
       {
         from: now.toISOString(),
         to: endOfDay.toISOString(),
-        query: null,
         limit: TODAY_EVENT_LIMIT,
       },
       budget,

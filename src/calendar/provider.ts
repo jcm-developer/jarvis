@@ -65,6 +65,8 @@ export interface CalendarEventSummary extends CalendarEvent {
    * details: there Google returns the occupied slot without its title.
    */
   title: string;
+  /** Where, as typed in the calendar. Searched along with the title. */
+  location: string | null;
   startAt: string | null;
   endAt: string | null;
   /** 'YYYY-MM-DD' when it takes up the whole day. */
@@ -93,8 +95,11 @@ export interface CalendarSearch {
   /** ISO instant to search from. */
   from: string;
   to: string;
-  /** Free text Google searches in title, description and location. */
-  query: string | null;
+  /**
+   * No text filter here on purpose. Google's `q` matches whole words, so "peluquero"
+   * missed "Peluquería"; the tool fetches the range and matches loosely itself (see
+   * lib/text-match.ts). Keeping the field would invite the next caller to use it.
+   */
   limit: number;
 }
 

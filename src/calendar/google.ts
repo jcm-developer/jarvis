@@ -60,8 +60,11 @@ export class GoogleCalendar implements CalendarClient {
       singleEvents: 'true',
       orderBy: 'startTime',
       maxResults: String(search.limit),
+      // A text search reads months of events, and the description —which can be a whole
+      // pasted email— is most of the weight. Parsing it would spend the 10 ms of CPU the
+      // free plan gives on text nobody reads.
+      fields: 'items(id,status,summary,location,start,end,colorId,recurringEventId,htmlLink)',
     });
-    if (search.query) params.set('q', search.query);
 
     const page = await this.call<Record<string, unknown>>(
       { method: 'GET', path: `?${params.toString()}`, body: null, operation: 'calendar' },
@@ -295,6 +298,7 @@ function toSummary(value: unknown): CalendarEventSummary | null {
   return {
     id: raw['id'],
     title: typeof raw['summary'] === 'string' ? raw['summary'] : '',
+    location: typeof raw['location'] === 'string' ? raw['location'] : null,
     startAt: !allDay && typeof start['dateTime'] === 'string' ? start['dateTime'] : null,
     endAt: !allDay && typeof end['dateTime'] === 'string' ? end['dateTime'] : null,
     startDate: allDay && typeof start['date'] === 'string' ? start['date'] : null,
