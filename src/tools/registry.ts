@@ -2,6 +2,7 @@ import type { ToolSchema } from '../llm/provider';
 import type { Channel, Env } from '../types';
 import { findFreeSlots, whatNow } from './agenda';
 import { deleteBook, listBooks, logBook } from './books';
+import { searchHistory } from './history';
 import { createEvent, deleteEvent, listEvents, updateEvent } from './calendar';
 import { recall, remember } from './memory';
 import { deleteProject, listProjects, saveProject } from './projects';
@@ -31,6 +32,7 @@ export const TOOLS: ToolDefinition[] = [
   whatNow,
   remember,
   recall,
+  searchHistory,
   searchWeb,
   readUrl,
   logBook,

@@ -11,7 +11,8 @@ import {
   zonedInstant,
 } from '../lib/localtime';
 import { REPEAT_FREQUENCIES, repeatPhrase } from '../lib/recurrence';
-import { matchesQuery, parseQuery } from '../lib/text-match';
+import { PERIOD_HINT, daysFromToday, periodInstants, relativeDays } from '../lib/periods';
+import { EMPTY_SEARCH_NOTE, matchesQuery, parseQuery } from '../lib/text-match';
 import type { Interval } from '../lib/slots';
 import { overlaps } from '../lib/slots';
 import { OFFSET_HINT, cleanTitle, honourUserInstant, resolveOffset } from './guardrails';
@@ -89,6 +90,19 @@ const SEARCH_FETCH_LIMIT = 1000;
 const MAX_RANGE_DAYS = 366;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Room needed to retry an empty search over the whole year: the call itself plus what
+ * the agent needs afterwards to word the reply. Same sum as CONFLICT_MIN_ROOM_MS, for
+ * the same reason.
+ */
+const WIDEN_MIN_ROOM_MS = MAX_CALENDAR_MS + 5_000;
+
+/** Past times needed before an average gap means anything. Two is one gap, not a habit. */
+const MIN_TIMES_FOR_PATTERN = 3;
+
+/** How far a gap may stray from the average and still be "every N days". */
+const PATTERN_TOLERANCE = 0.4;
 
 /** Cap on a multi-day event. More than that smells like a model error. */
 const MAX_SPAN_DAYS = 90;
@@ -569,6 +583,12 @@ export const listEvents: ToolDefinition = {
         type: 'integer',
         description: `Cuántos días mirar a partir de "day". Por defecto 1, máximo ${MAX_RANGE_DAYS}.`,
       },
+      period: {
+        type: 'string',
+        description:
+          `En vez de day y days, cuando él nombra el rango ("el mes pasado", "esta semana"). ` +
+          PERIOD_HINT,
+      },
       query: {
         type: 'string',
         description:
@@ -586,8 +606,13 @@ export const listEvents: ToolDefinition = {
   handler: async (args, ctx): Promise<ToolResult> => {
     const day = optionalString(args, 'day', 10);
     const days = optionalInt(args, 'days', 1, MAX_RANGE_DAYS) ?? 1;
+    const period = optionalString(args, 'period', 20);
     const query = optionalString(args, 'query', 200);
     const limit = optionalInt(args, 'limit', 1, 50) ?? 20;
+
+    if (day !== null && period !== null) {
+      return { ok: false, error: 'Manda day o period, no los dos.' };
+    }
 
     const alternatives = query === null ? [] : parseQuery(query);
     if (query !== null && alternatives.length === 0) {
@@ -601,22 +626,29 @@ export const listEvents: ToolDefinition = {
     const searching = alternatives.length > 0;
 
     const now = new Date();
-    let from: Date;
-    let to: Date;
+    let range: { from: Date; to: Date };
 
-    if (day === null) {
-      // With no day and nothing to look for, from now on: asking "what do I have?" is not
-      // asking about what already happened this morning. Looking for something by name is
-      // different: "¿cuándo fui al peluquero?" is about the past, and a search that only
-      // looked ahead answered it with a confident "there is no such appointment".
-      from = searching ? new Date(now.getTime() - SEARCH_BACK_DAYS * DAY_MS) : now;
-      to = new Date(now.getTime() + (searching ? SEARCH_AHEAD_DAYS : DEFAULT_SEARCH_DAYS) * DAY_MS);
-    } else {
-      const range = localDayRange(day, days, ctx.timezone);
-      if (range === null) {
+    if (period !== null) {
+      const resolved = periodInstants(period, now, ctx.timezone);
+      if (resolved === null) {
+        return { ok: false, error: `period "${period}" no válido. ${PERIOD_HINT}` };
+      }
+      range = resolved;
+    } else if (day !== null) {
+      const resolved = localDayRange(day, days, ctx.timezone);
+      if (resolved === null) {
         return { ok: false, error: `"${day}" no es una fecha válida. Usa el formato YYYY-MM-DD.` };
       }
-      ({ from, to } = range);
+      range = resolved;
+    } else if (searching) {
+      // Looking for something by name with no dates: "¿cuándo fui al peluquero?" is about
+      // the past, and a search that only looked ahead answered it with a confident "there
+      // is no such appointment".
+      range = searchWindow(now);
+    } else {
+      // Nothing to look for and no day: from now on. Asking "what do I have?" is not
+      // asking about what already happened this morning.
+      range = { from: now, to: new Date(now.getTime() + DEFAULT_SEARCH_DAYS * DAY_MS) };
     }
 
     const budget = ctx.deadline.budgetFor(MAX_CALENDAR_MS);
@@ -626,18 +658,50 @@ export const listEvents: ToolDefinition = {
     // enough for a year of a personal calendar, not what the model asked to see.
     const fetchLimit = searching ? SEARCH_FETCH_LIMIT : limit;
     const client = createCalendarClient(ctx.env);
-    const fetched = await client.listEvents(
-      { from: from.toISOString(), to: to.toISOString(), limit: fetchLimit },
-      budget,
-    );
-    // Google orders by start, so a full page means the end of the range was cut off.
-    const truncated = fetched.length >= fetchLimit;
+    const read = async (window: { from: Date; to: Date }, timeoutMs: number) => {
+      const fetched = await client.listEvents(
+        { from: window.from.toISOString(), to: window.to.toISOString(), limit: fetchLimit },
+        timeoutMs,
+      );
+      return {
+        // Google orders by start, so a full page means the end of the range was cut off.
+        truncated: fetched.length >= fetchLimit,
+        events: searching
+          ? fetched.filter((event) =>
+              matchesQuery(alternatives, `${event.title} ${event.location ?? ''}`),
+            )
+          : fetched,
+      };
+    };
 
-    let events = searching
-      ? fetched.filter((event) =>
-          matchesQuery(alternatives, `${event.title} ${event.location ?? ''}`),
-        )
-      : fetched;
+    let found = await read(range, budget);
+
+    // Dates he gave and a name that is not in them: the dates are the likelier mistake
+    // ("el mes pasado" when it was the one before). Widening here costs one call to
+    // Google; leaving it to the model costs one of its three rounds, and it did not
+    // always spend it — it said "no hay" instead.
+    let widened = false;
+    const explicit = day !== null || period !== null;
+    const empty = searching && explicit && found.events.length === 0;
+    if (empty && ctx.deadline.hasRoomFor(WIDEN_MIN_ROOM_MS)) {
+      try {
+        const wide = searchWindow(now);
+        const second = await read(wide, ctx.deadline.budgetFor(MAX_CALENDAR_MS));
+        if (second.events.length > 0) {
+          range = wide;
+          found = second;
+          widened = true;
+        }
+      } catch {
+        // The first answer stands, with its note. Losing the retry is not worth an error.
+      }
+    }
+
+    // Worked out over every match, before the cut: the last and the next time are exactly
+    // the rows a busy name would lose to it.
+    const summary = searching ? occurrences(found.events, now, ctx.timezone) : {};
+
+    let events = found.events;
     if (events.length > limit) {
       // A name that matches too much ("reunión") is cut down to the ones nearest to now,
       // on both sides: the last time and the next time are what gets asked about, not the
@@ -648,35 +712,33 @@ export const listEvents: ToolDefinition = {
         .sort((a, b) => startOf(a, ctx.timezone) - startOf(b, ctx.timezone));
     }
 
-    const range =
-      `del ${formatDay(from, ctx.timezone)} al ` +
-      formatDay(new Date(to.getTime() - 1), ctx.timezone);
+    const dates = rangePhrase(range.from, new Date(range.to.getTime() - 1), ctx.timezone);
 
     return {
       ok: true,
       data: {
-        count: events.length,
+        count: found.events.length,
         // The range travels with the answer so an empty one can be told as what it is:
         // nothing in these dates with these words. Not "it does not exist".
-        searched: searching ? `${range}, con "${query}"` : range,
+        searched: searching ? `${dates}, con "${query}"` : dates,
+        ...summary,
         events: events.map((event) => describe(event, ctx.timezone)),
-        ...(truncated
+        ...(widened
           ? {
               note:
-                'Hay más citas de las que caben en una consulta y el final del rango se ha ' +
-                'quedado fuera. Si buscas algo más adelante, vuelve a llamar con day y un ' +
-                'days más corto.',
+                'En las fechas que pediste no había nada; lo he encontrado buscando en todo ' +
+                'el año. Díselo así: "no fue entonces, fue el...".',
             }
-          : searching && events.length === 0
+          : found.truncated
             ? {
                 note:
-                  'Nada con esas palabras en estas fechas. Eso no prueba que no exista: pudo ' +
-                  'apuntarlo con otro nombre. Antes de decirle que no está, prueba con otras ' +
-                  'palabras que pudo usar' +
-                  (day !== null ? ' y sin day, para buscar en todo el año' : '') +
-                  '. Si tampoco sale, dile qué has buscado y en qué fechas.',
+                  'Hay más citas de las que caben en una consulta y el final del rango se ha ' +
+                  'quedado fuera. Si buscas algo más adelante, vuelve a llamar con day y un ' +
+                  'days más corto.',
               }
-            : {}),
+            : searching && found.events.length === 0
+              ? { note: `${EMPTY_SEARCH_NOTE} Busqué ${dates}.` }
+              : {}),
       },
     };
   },
@@ -1052,6 +1114,84 @@ function startOf(event: CalendarEventSummary, timezone: string): number {
 
 function distanceFrom(now: Date, event: CalendarEventSummary, timezone: string): number {
   return Math.abs(startOf(event, timezone) - now.getTime());
+}
+
+/**
+ * 'del 1 al 31 de agosto' is not needed; 'del 26 de septiembre de 2025 al 25 de marzo de
+ * 2027' is. The year goes in only when the range crosses one, which a year-long search
+ * always does and where "del 26 de septiembre al 25 de marzo" reads backwards.
+ */
+function rangePhrase(first: Date, last: Date, timezone: string): string {
+  const yearOf = (instant: Date) => localNow(instant, timezone).date.slice(0, 4);
+  if (yearOf(first) === yearOf(last)) {
+    return `del ${formatDay(first, timezone)} al ${formatDay(last, timezone)}`;
+  }
+  return (
+    `del ${formatDay(first, timezone)} de ${yearOf(first)} ` +
+    `al ${formatDay(last, timezone)} de ${yearOf(last)}`
+  );
+}
+
+/** The window of a search by name with no dates: a year back, half a year ahead. */
+function searchWindow(now: Date): { from: Date; to: Date } {
+  return {
+    from: new Date(now.getTime() - SEARCH_BACK_DAYS * DAY_MS),
+    to: new Date(now.getTime() + SEARCH_AHEAD_DAYS * DAY_MS),
+  };
+}
+
+/**
+ * The answer to "¿cuándo fue la última vez?", "¿cuándo me toca?" and "¿cada cuánto?",
+ * worked out here.
+ *
+ * Each of those is date arithmetic over the list, and handing the list to the model and
+ * letting it subtract is what this project stopped doing in phase 1. So the reply carries
+ * the last and the next time with how far they are, and —when there are enough past ones
+ * and they are regular— the usual gap and when the next would fall. "Sueles ir cada cinco
+ * semanas" is only said when it is true: an irregular list gets no pattern at all.
+ */
+function occurrences(
+  events: CalendarEventSummary[],
+  now: Date,
+  timezone: string,
+): Record<string, string> {
+  const sorted = [...events].sort((a, b) => startOf(a, timezone) - startOf(b, timezone));
+  const past = sorted.filter((event) => startOf(event, timezone) < now.getTime());
+  const upcoming = sorted.filter((event) => startOf(event, timezone) >= now.getTime());
+
+  const when = (event: CalendarEventSummary) => {
+    const days = daysFromToday(new Date(startOf(event, timezone)), now, timezone);
+    return `${event.title || 'cita privada'}, ${whenOf(event, timezone)} (${relativeDays(days)})`;
+  };
+
+  const result: Record<string, string> = {};
+  const last = past[past.length - 1];
+  const next = upcoming[0];
+  if (last) result['last'] = when(last);
+  if (next) result['next'] = when(next);
+
+  if (past.length >= MIN_TIMES_FOR_PATTERN) {
+    const gaps: number[] = [];
+    for (let i = 1; i < past.length; i++) {
+      gaps.push((startOf(past[i]!, timezone) - startOf(past[i - 1]!, timezone)) / DAY_MS);
+    }
+    const average = gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length;
+    const regular =
+      average >= 1 && gaps.every((gap) => Math.abs(gap - average) <= average * PATTERN_TOLERANCE);
+
+    result['times'] = `${past.length} veces en las fechas buscadas`;
+    if (regular) {
+      const every = Math.round(average);
+      result['pattern'] = `de media, cada ${every} días`;
+      if (!next && last) {
+        const due = new Date(startOf(last, timezone) + every * DAY_MS);
+        result['due_around'] =
+          `${formatDay(due, timezone)} (${relativeDays(daysFromToday(due, now, timezone))}), ` +
+          'si sigue su costumbre. Es una estimación: dilo así y ofrécele apuntarla.';
+      }
+    }
+  }
+  return result;
 }
 
 /** '14:00 a 15:30' — names what an appointment clashes with, without repeating the day. */

@@ -1,5 +1,7 @@
 import type { TaskRow } from '../db/types';
 import { formatDayAndTime } from '../lib/localtime';
+import { PERIOD_HINT, daysFromToday, periodInstants, relativeDays } from '../lib/periods';
+import { EMPTY_SEARCH_NOTE, MAX_SEARCHED_ROWS, matchesQuery, parseQuery } from '../lib/text-match';
 import {
   REPEAT_FREQUENCIES,
   isRepeatFrequency,
@@ -244,8 +246,10 @@ function significantWords(title: string): string[] {
 export const listTasks: ToolDefinition = {
   name: 'list_tasks',
   description:
-    'Lista las tareas del usuario. Úsala cuando pregunte qué tiene pendiente, y ' +
-    'también antes de modificar, completar o borrar algo, para obtener el id correcto. ' +
+    'Lista las tareas del usuario. Úsala cuando pregunte qué tiene pendiente, cuándo ' +
+    'hizo algo ("¿cuándo pagué la luz?", "¿hice ya lo del seguro?": status="done" y ' +
+    'query) y antes de modificar, completar o borrar algo, para obtener el id correcto. ' +
+    'Las que se repiten siguen pendientes después de hacerlas: mira su last_done. ' +
     'Los avisos no salen aquí salvo que pidas kind="reminder".',
   parameters: {
     type: 'object',
@@ -266,6 +270,18 @@ export const listTasks: ToolDefinition = {
       due_before: {
         type: 'string',
         description: 'Solo tareas con vencimiento anterior a esta fecha ISO 8601.',
+      },
+      query: {
+        type: 'string',
+        description:
+          'Palabras para encontrar una tarea por su título o sus notas, sin necesidad de ' +
+          'que coincidan exactas. Varias alternativas separadas por comas: "luz, factura".',
+      },
+      period: {
+        type: 'string',
+        description:
+          `${PERIOD_HINT} Con status="done" filtra por cuándo se hizo; si no, por cuándo ` +
+          'vence.',
       },
       limit: { type: 'integer', description: 'Máximo de tareas a devolver. Por defecto 20.' },
     },
@@ -293,17 +309,53 @@ export const listTasks: ToolDefinition = {
     const dueBefore = optionalIsoDate(args, 'due_before');
     if (dueBefore) filters['due_at'] = `lt.${dueBefore}`;
 
-    const tasks = await ctx.db.select<TaskRow>('tasks', {
+    // What is finished is asked about by when it was finished, most recent first; what is
+    // pending, by when it is due.
+    const dateColumn = status === 'done' ? 'completed_at' : 'due_at';
+    const period = optionalString(args, 'period', 20);
+    if (period !== null) {
+      const range = periodInstants(period, new Date(), ctx.timezone);
+      if (range === null) {
+        return { ok: false, error: `period "${period}" no válido. ${PERIOD_HINT}` };
+      }
+      // `and` rather than two keys: a filter object holds one expression per column, and
+      // due_before may already be using this one.
+      filters['and'] =
+        `(${dateColumn}.gte.${range.from.toISOString()},${dateColumn}.lt.${range.to.toISOString()})`;
+    }
+
+    const query = optionalString(args, 'query', 200);
+    const alternatives = query === null ? [] : parseQuery(query);
+    const limit = optionalInt(args, 'limit', 1, 100) ?? 20;
+
+    const rows = await ctx.db.select<TaskRow>('tasks', {
       filters,
-      order: 'due_at.asc.nullslast,priority.asc',
-      limit: optionalInt(args, 'limit', 1, 100) ?? 20,
+      order:
+        status === 'done'
+          ? 'completed_at.desc.nullslast'
+          : 'due_at.asc.nullslast,priority.asc',
+      limit: alternatives.length > 0 ? MAX_SEARCHED_ROWS : limit,
     });
+    const tasks = (
+      alternatives.length > 0
+        ? rows.filter((task) => matchesQuery(alternatives, `${task.title} ${task.notes ?? ''}`))
+        : rows
+    ).slice(0, limit);
 
     return {
       ok: true,
       data: {
         count: tasks.length,
         tasks: tasks.map((task) => summarize(task, ctx.timezone)),
+        ...(alternatives.length > 0 && tasks.length === 0
+          ? {
+              note:
+                EMPTY_SEARCH_NOTE +
+                (status === 'pending'
+                  ? ' Si pregunta por algo que ya hizo, busca también con status="done".'
+                  : ''),
+            }
+          : {}),
       },
     };
   },
@@ -571,7 +623,9 @@ async function rollForward(task: TaskRow, ctx: ToolContext): Promise<ToolResult>
 
   // Both dates advance, each from its own value: a task due on the 1st that warns on the
   // 28th has to keep those three days between them.
-  const patch: Record<string, unknown> = { reminded_at: null };
+  // `completed_at` on a row that stays pending: the last time it was done. Without it
+  // "¿cuándo saqué la basura?" had no answer, since the row only ever looks forward.
+  const patch: Record<string, unknown> = { reminded_at: null, completed_at: now.toISOString() };
   let announced: Date | null = null;
 
   for (const field of ['due_at', 'remind_at'] as const) {
@@ -668,6 +722,16 @@ function summarize(task: TaskRow, timezone: string) {
     // tell the user that completing this one will not make it go away.
     ...(task.recurrence ? { repeats: repeatPhrase(task.recurrence) ?? task.recurrence } : {}),
     status: task.status,
+    // When it was done: the closing date of a finished one, or the last time of one that
+    // repeats and so is still pending. With how long ago, since that is a subtraction.
+    ...(task.completed_at
+      ? {
+          [task.status === 'done' ? 'done' : 'last_done']:
+            `${formatDate(task.completed_at, timezone)} (${relativeDays(
+              daysFromToday(new Date(task.completed_at), new Date(), timezone),
+            )})`,
+        }
+      : {}),
   };
 }
 

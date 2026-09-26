@@ -1,5 +1,6 @@
 import type { Db } from '../db/client';
 import type { ProjectLink, ProjectRow } from '../db/types';
+import { EMPTY_SEARCH_NOTE, MAX_SEARCHED_ROWS, matchesQuery, parseQuery } from '../lib/text-match';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { ToolValidationError, optionalInt, optionalString, requireString } from './types';
 
@@ -179,7 +180,8 @@ export const listProjects: ToolDefinition = {
       query: {
         type: 'string',
         description:
-          'Busca en el nombre, la descripción y las notas. Una palabra suelta, no una frase.',
+          'Busca en el nombre, la descripción y las notas, sin necesidad de que coincida ' +
+          'exacto. Varias alternativas separadas por comas: "web, landing".',
       },
       limit: { type: 'integer', description: 'Máximo de proyectos a devolver. Por defecto 20.' },
     },
@@ -199,29 +201,34 @@ export const listProjects: ToolDefinition = {
     const filters: Record<string, string> = { user_id: `eq.${ctx.userId}` };
     if (status !== null) filters['status'] = `eq.${status}`;
 
-    const query = optionalString(args, 'query', 100);
-    if (query) {
-      // Same substring search as recall() and list_books. The links are deliberately out
-      // of it: a url matches on its domain and would drag in every project hosted on the
-      // same one.
-      const escaped = query.replace(/[%,()]/g, ' ').trim();
-      if (escaped) {
-        filters['or'] =
-          `(name.ilike.*${escaped}*,description.ilike.*${escaped}*,notes.ilike.*${escaped}*)`;
-      }
-    }
+    const query = optionalString(args, 'query', 200);
+    const alternatives = query === null ? [] : parseQuery(query);
+    const limit = optionalInt(args, 'limit', 1, 50) ?? 20;
 
-    const projects = await ctx.db.select<ProjectRow>('projects', {
+    const rows = await ctx.db.select<ProjectRow>('projects', {
       filters,
       order: 'updated_at.desc',
-      limit: optionalInt(args, 'limit', 1, 50) ?? 20,
+      limit: alternatives.length > 0 ? MAX_SEARCHED_ROWS : limit,
     });
+    // Same loose match as recall() and list_books. The links are deliberately out of it: a
+    // url matches on its domain and would drag in every project hosted on the same one.
+    const projects = (
+      alternatives.length > 0
+        ? rows.filter((project) =>
+            matchesQuery(
+              alternatives,
+              [project.name, project.description, project.notes].filter(Boolean).join(' '),
+            ),
+          )
+        : rows
+    ).slice(0, limit);
 
     return {
       ok: true,
       data: {
         count: projects.length,
         projects: projects.map(summarize),
+        ...(alternatives.length > 0 && projects.length === 0 ? { note: EMPTY_SEARCH_NOTE } : {}),
       },
     };
   },

@@ -1,4 +1,5 @@
 import type { BookRow } from '../db/types';
+import { EMPTY_SEARCH_NOTE, MAX_SEARCHED_ROWS, matchesQuery, parseQuery } from '../lib/text-match';
 import type { ToolContext, ToolDefinition, ToolResult } from './types';
 import { optionalInt, optionalString, requireString } from './types';
 
@@ -156,8 +157,8 @@ export const listBooks: ToolDefinition = {
       query: {
         type: 'string',
         description:
-          'Busca en título, autor, temas y notas. Para un tema concreto ("¿qué he leído ' +
-          'de historia?"), una palabra suelta y en singular.',
+          'Busca en título, autor, temas y notas, sin necesidad de que coincida exacto. ' +
+          'Varias alternativas separadas por comas: "historia, biografía".',
       },
       limit: { type: 'integer', description: 'Máximo de libros a devolver. Por defecto 30.' },
     },
@@ -177,32 +178,36 @@ export const listBooks: ToolDefinition = {
     const filters: Record<string, string> = { user_id: `eq.${ctx.userId}` };
     if (status !== null) filters['status'] = `eq.${status}`;
 
-    const query = optionalString(args, 'query', 100);
-    if (query) {
-      // Substring search, case insensitive, like recall(): same reasoning and at this
-      // volume it is enough. Characters that are syntax inside a PostgREST `or` are
-      // dropped rather than escaped.
-      const escaped = query.replace(/[%,()]/g, ' ').trim();
-      if (escaped) {
-        filters['or'] =
-          `(title.ilike.*${escaped}*,author.ilike.*${escaped}*,` +
-          `topics.ilike.*${escaped}*,notes.ilike.*${escaped}*)`;
-      }
-    }
+    const query = optionalString(args, 'query', 200);
+    const alternatives = query === null ? [] : parseQuery(query);
+    const limit = optionalInt(args, 'limit', 1, 100) ?? 30;
 
-    const books = await ctx.db.select<BookRow>('books', {
+    const rows = await ctx.db.select<BookRow>('books', {
       filters,
       // Best first, and that is not cosmetic: this list is read to work out a taste, so
       // when the limit cuts it what has to survive is the part that says what he likes.
       order: 'rating.desc.nullslast,updated_at.desc',
-      limit: optionalInt(args, 'limit', 1, 100) ?? 30,
+      // A search reads the whole shelf and matches here, like recall(): the order above
+      // survives the filter, so the cut still keeps the best.
+      limit: alternatives.length > 0 ? MAX_SEARCHED_ROWS : limit,
     });
+    const books = (
+      alternatives.length > 0
+        ? rows.filter((book) =>
+            matchesQuery(
+              alternatives,
+              [book.title, book.author, book.topics, book.notes].filter(Boolean).join(' '),
+            ),
+          )
+        : rows
+    ).slice(0, limit);
 
     return {
       ok: true,
       data: {
         count: books.length,
         books: books.map(summarize),
+        ...(alternatives.length > 0 && books.length === 0 ? { note: EMPTY_SEARCH_NOTE } : {}),
       },
     };
   },

@@ -93,7 +93,8 @@ jarvis/
 │  │  ├─ recurrence.ts         # frequencies: the next occurrence of what repeats
 │  │  ├─ events.ts             # shared shapes for calendar events
 │  │  ├─ slots.ts              # interval arithmetic: busy time and free gaps
-│  │  └─ text-match.ts         # "peluquero" finds "Peluquería": loose name search
+│  │  ├─ text-match.ts         # "peluquero" finds "Peluquería": loose name search
+│  │  └─ periods.ts            # "el mes pasado" as days, and "hace 26 días"
 │  │
 │  ├─ telegram/
 │  │  ├─ guard.ts              # secret token, whitelist, dedupe
@@ -115,6 +116,7 @@ jarvis/
 │  │  ├─ calendar.ts           # create/list/update/delete_event + overlap check
 │  │  ├─ agenda.ts             # find_free_slots, what_now
 │  │  ├─ memory.ts             # remember, recall
+│  │  ├─ history.ts            # search_history: what was said beyond the window
 │  │  ├─ books.ts              # log_book, list_books, delete_book
 │  │  ├─ search.ts             # search_web (in the turn), read_url (queued)
 │  │  ├─ telegram.ts           # send_to_telegram: the voice channel writing to the phone
@@ -1390,6 +1392,9 @@ day, the time and the title. Three failures stacked up:
   exist. The query takes comma-separated alternatives so the model can try the synonyms
   in one call instead of spending the three rounds of §8 one word at a time.
 
+Phase 31 took the same fix to the other domains and added named periods, the retry over
+the whole year, and the last/next/pattern fields: see §20.
+
 The price is the page size: a search asks Google for up to 1,000 events instead of 20,
 with `fields` trimmed to what is read —the description, which can be a pasted email, is
 most of the weight and all of the CPU. If the page fills, the result says the end of the
@@ -1964,7 +1969,74 @@ moves to `done`, it leaves the injected index, and what was built stays queryabl
 
 ---
 
-## 20. Roadmap
+## 20. Asking about the past (phase 31)
+
+Phase 31 generalises what the hairdresser failure in §13 taught. That failure was not
+really about the calendar. Every domain had the same three weaknesses, just smaller:
+
+- **Searches that wanted the exact word.** `recall`, `list_books` and `list_projects`
+  looked up `ilike *<the model's whole phrase>*`, accents included. "Pilares de la
+  Tierra" missed a title typed without the accents, and "el trabajo de mi hermana" missed
+  "hermana: trabaja en un hospital". These tables hold tens of rows, so they are now read
+  in full (up to 300) and matched with the same
+  [src/lib/text-match.ts](src/lib/text-match.ts) as the calendar. `list_tasks` had no
+  text search at all and gained one.
+- **Date arithmetic left to the model.** "El mes pasado" on 24 September turned into
+  "the month before August". [src/lib/periods.ts](src/lib/periods.ts) resolves a closed
+  list of names —`mes_pasado`, `esta_semana`, `ano_pasado`, or a bare `YYYY-MM`— into
+  local days, and the tools take it as `period`. Weeks run Monday to Sunday. The model
+  picks the name it heard and the code does the calendar, the same split as with
+  `due_in_minutes`.
+- **Answers that were a subtraction.** "¿Cuándo fue la última vez?" means comparing
+  every date on the list with today, and "¿cada cuánto?" means averaging the gaps
+  between them. `list_events` now works these out over every match, before the `limit`
+  cut, because the last and the next time are exactly what a busy name would lose to
+  it. The result carries `last` and `next` with their "hace 4 semanas", and `pattern`
+  and `due_around` only when at least three past occurrences sit within 40% of their
+  average gap. An irregular list gets no pattern: "sueles ir cada cinco semanas" said on
+  bad evidence is the invented data the prompt forbids.
+
+### Two things the tools now do instead of the model
+
+- **An empty search with dates retries over the whole year**, inside the same handler,
+  when there is room for it (`WIDEN_MIN_ROOM_MS`, the same sum as the overlap check).
+  When the thing exists but not in the named dates, the dates are the likelier mistake.
+  Leaving the retry to the model cost one of its three rounds, and it often did not
+  spend it: it answered "no hay" instead.
+- **Every empty search carries the same note** (`EMPTY_SEARCH_NOTE`): no result does not
+  prove the thing does not exist, try other words, and if it still does not show up, say
+  what was searched. The prompt says it too, but a line in the result is read right
+  when it matters.
+
+### What repeats, and the last time it was done
+
+A repeating task rolls forward instead of closing (§12), so "¿cuándo saqué la basura?"
+had no answer. The row only ever looked forward. `rollForward` now also stamps
+`completed_at`, and `list_tasks` shows it as `last_done` on a row that is still
+`pending`. The weekly review keeps reading `tool_call_logs` (§12), which is still the
+only complete count. This field holds the last time, not the history.
+
+### The conversation, beyond the window
+
+The model is replayed the last `HISTORY_WINDOW` turns and nothing older. "¿Qué te dije
+del piso?" from three weeks ago was answered from nothing. `search_history` reads
+`messages` —user and assistant rows only, since tool rows are JSON the next assistant
+turn already put into words— within a `period` or the last 180 days, and returns up to
+eight matches, newest first, saying who said each one. It adds no storage: the rows
+were already there (§5). `/reset` still deletes for real, so what he asked to forget
+does not come back through here.
+
+### The cost
+
+A search now reads more than it returns: up to 1,000 events from Google with `fields`
+trimmed, 300 rows from a small table, or 400 messages. All of it is parsed inside the
+10 ms of CPU (§11), which is why the descriptions stay out of the calendar page and the
+history reads only text rows. Every one of these limits says so in the result when it
+is reached, rather than cutting silently.
+
+---
+
+## 21. Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -1999,6 +2071,7 @@ moves to `done`, it leaves the injected index, and what was built stays queryabl
 | **28** | The weekly routine: what a normal week looks like | ⬜ Pending |
 | **29** | Places: home, the office, and the address of each | ⬜ Pending |
 | **30** | A decision log hanging off the projects | ⬜ Pending |
+| **31** | Asking about the past: loose search, named periods, the conversation | ✅ Done |
 
 Every phase is deployed and used on its own. Phase 2 is where it stops being a chatbot
 and becomes an assistant; phase 5 is where it becomes proactive.

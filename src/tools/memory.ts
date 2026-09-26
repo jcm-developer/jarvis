@@ -1,4 +1,5 @@
 import type { MemoryRow } from '../db/types';
+import { EMPTY_SEARCH_NOTE, MAX_SEARCHED_ROWS, matchesQuery, parseQuery } from '../lib/text-match';
 import type { ToolDefinition, ToolResult } from './types';
 import { optionalString, requireString } from './types';
 
@@ -69,7 +70,9 @@ export const recall: ToolDefinition = {
     properties: {
       query: {
         type: 'string',
-        description: 'Texto a buscar en las claves y los valores.',
+        description:
+          'Palabras a buscar en las claves y los valores; no hace falta que coincidan ' +
+          'exactas. Varias alternativas separadas por comas: "hermana, familia".',
       },
     },
     required: ['query'],
@@ -77,24 +80,29 @@ export const recall: ToolDefinition = {
   mutates: false,
   requiresConfirmation: false,
   handler: async (args, ctx): Promise<ToolResult> => {
-    const query = requireString(args, 'query', 100);
+    const query = requireString(args, 'query', 200);
+    const alternatives = parseQuery(query);
+    if (alternatives.length === 0) {
+      return { ok: false, error: `"${query}" no tiene ninguna palabra que buscar.` };
+    }
 
-    // ilike with wildcards: substring search, case insensitive. Good enough while
-    // there are few memories; at volume this will call for pgvector.
-    const escaped = query.replace(/[%,()]/g, ' ').trim();
-    const memories = await ctx.db.select<MemoryRow>('memories', {
-      filters: {
-        user_id: `eq.${ctx.userId}`,
-        or: `(key.ilike.*${escaped}*,value.ilike.*${escaped}*)`,
-      },
-      limit: 10,
+    // Read whole and matched here (lib/text-match.ts): a few dozen rows. At the volume
+    // where that stops being true this calls for pgvector, not for ilike again.
+    const rows = await ctx.db.select<MemoryRow>('memories', {
+      filters: { user_id: `eq.${ctx.userId}` },
+      order: 'updated_at.desc',
+      limit: MAX_SEARCHED_ROWS,
     });
+    const memories = rows
+      .filter((memory) => matchesQuery(alternatives, `${memory.key} ${memory.value}`))
+      .slice(0, 10);
 
     return {
       ok: true,
       data: {
         count: memories.length,
         memories: memories.map((memory) => ({ key: memory.key, value: memory.value })),
+        ...(memories.length === 0 ? { note: EMPTY_SEARCH_NOTE } : {}),
       },
     };
   },

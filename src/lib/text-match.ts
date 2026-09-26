@@ -58,6 +58,27 @@ export function matchesQuery(alternatives: string[][], text: string): boolean {
   );
 }
 
+/**
+ * Rows a small table is read in full to be searched here instead of with `ilike`.
+ *
+ * `ilike *frase*` looked for the model's whole sentence as one substring, and with its
+ * accents: "Pilares de la Tierra" missed "Los pilares de la tierra" typed without them,
+ * and "el trabajo de mi hermana" missed "hermana: trabaja en...". Memories, books and
+ * projects are tens of rows, so reading them all costs less than the round a miss costs.
+ */
+export const MAX_SEARCHED_ROWS = 300;
+
+/**
+ * What an empty search is told to the model, by every tool that searches.
+ *
+ * The failure it answers was never the search, it was the reading: an empty result was
+ * repeated to him as "you have no such thing", twice, while it was there.
+ */
+export const EMPTY_SEARCH_NOTE =
+  'Nada con esas palabras. Eso no prueba que no exista: pudo decirlo o apuntarlo con ' +
+  'otras. Antes de decirle que no está, prueba con otras palabras que pudo usar; si ' +
+  'tampoco sale, dile qué has buscado, no "no tienes ninguno".';
+
 function sameWord(a: string, b: string): boolean {
   if (a === b) return true;
   const shorter = Math.min(a.length, b.length);

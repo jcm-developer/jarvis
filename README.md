@@ -1121,6 +1121,30 @@ portal while the phase was alive. There are also three secrets nothing reads any
 `IMPUTE_USR`, `IMPUTE_PASS`, `IMPUTE_BASE_URL` — which can be deleted from the Cloudflare
 dashboard.
 
+## What phase 31 does: it can answer about the past
+
+```
+¿cuándo fui al peluquero por última vez?
+¿cada cuánto voy al dentista?
+¿qué tuve la semana pasada?
+¿cuándo pagué la luz?
+¿qué te dije del piso?
+```
+
+Searching no longer needs the exact word, anywhere: calendar, tasks, memories, books and
+projects all match "peluquero" to "Peluquería" and ignore accents. Named ranges like
+"el mes pasado", "esta semana" or "en marzo" are worked out by the code, not by the model.
+If a name is not in the dates you gave, it looks through the whole year before
+answering and tells you it was another day.
+
+Answers that need arithmetic come ready-made: the last and the next time with how long
+ago or how far off they are, and, only when the past ones are regular, how often you
+usually go and when the next one would fall. Tasks you have already done can be looked
+up, and so can the last time you did a repeating one.
+
+It can also search what the two of you said beyond the last messages it sees. What you
+wiped with `/reset` stays wiped.
+
 ## Several things in one message
 
 This already worked from phase 2 — the loop runs every `tool_call` of one response — and
